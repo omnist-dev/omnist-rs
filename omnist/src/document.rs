@@ -134,7 +134,7 @@ struct Entry {
 /// the tree calls this before creating a node -- see the module-level test
 /// `every_tree_mutating_entry_point_enforces_the_depth_guard` for the audit
 /// that walks every public entry point and confirms each one does.
-fn check_write_depth(depth: usize, path: &str) -> Result<(), DocumentError> {
+pub(crate) fn check_write_depth(depth: usize, path: &str) -> Result<(), DocumentError> {
     if depth > MAX_DEPTH {
         return Err(DocumentError::new(
             path,
@@ -547,6 +547,74 @@ impl<'a> Cursor<'a> {
     }
 }
 
+/// The *raw* canonical Document node: either a leaf scalar, or an ordered
+/// list of `(label, child)` edges that may repeat **and interleave** a label
+/// arbitrarily (`[("b",1),("c",2),("b",3)]` is representable exactly).
+///
+/// This is distinct from [`Value`]: `Value::Object`'s `IndexMap` can't hold
+/// a repeated key, so its "repeated label" convention (a `Value::Array`
+/// under one key, per [`child_specs`]) only ever expands to a *contiguous*
+/// run of same-label edges. OML is the one format that must round-trip
+/// arbitrary interleaving losslessly (per its own docs: "no adjustment ever
+/// needed"), so its reader/writer (`crate::oml`) builds/walks a `Doc`
+/// through this type instead of going through `Value`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RawNode {
+    Leaf(Scalar),
+    Edges(Vec<(String, RawNode)>),
+}
+
+impl Doc {
+    /// Build a `Doc` from a [`RawNode`], preserving edge order and
+    /// interleaving exactly. Depth-guarded via the same
+    /// [`check_write_depth`] every other construction path uses.
+    pub fn from_raw(root: RawNode) -> Result<Doc, DocumentError> {
+        let mut arena = Vec::new();
+        let root_id = push_raw(&mut arena, root, 0)?;
+        Ok(Doc {
+            arena,
+            root: root_id,
+        })
+    }
+
+    /// The inverse of [`Doc::from_raw`]: a lossless walk back into
+    /// [`RawNode`] form, preserving edge order and interleaving exactly.
+    pub fn to_raw(&self) -> RawNode {
+        self.raw_at(self.root)
+    }
+
+    fn raw_at(&self, id: NodeId) -> RawNode {
+        match &self.entry(id).data {
+            NodeData::Leaf(s) => RawNode::Leaf(s.clone()),
+            NodeData::Internal(edges) => RawNode::Edges(
+                edges
+                    .iter()
+                    .map(|(label, child)| (label.clone(), self.raw_at(*child)))
+                    .collect(),
+            ),
+        }
+    }
+}
+
+fn push_raw(arena: &mut Vec<Entry>, node: RawNode, depth: usize) -> Result<NodeId, DocumentError> {
+    // Path information isn't meaningful during a from-source OML parse (no
+    // dotted-key path exists yet), so a fixed placeholder is used here --
+    // matching the depth guard's own error message, which never mentions
+    // path for depth violations anyway (see `check_write_depth`).
+    check_write_depth(depth, "$")?;
+    match node {
+        RawNode::Leaf(s) => Ok(push(arena, NodeData::Leaf(s), depth)),
+        RawNode::Edges(edges) => {
+            let mut out = Vec::with_capacity(edges.len());
+            for (label, child) in edges {
+                let cid = push_raw(arena, child, depth + 1)?;
+                out.push((label, cid));
+            }
+            Ok(push(arena, NodeData::Internal(out), depth))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -917,5 +985,51 @@ mod tests {
         assert_eq!(Scalar::Int(1).to_string(), "1");
         assert_eq!(Scalar::Float(1.5).to_string(), "1.5");
         assert_eq!(Scalar::Str("x".to_string()).to_string(), "\"x\"");
+    }
+
+    // -- RawNode / from_raw / to_raw (interleaved-edge round trip) ---------
+
+    #[test]
+    fn from_raw_to_raw_round_trips_interleaved_repeated_labels() {
+        // ("b",1),("c",2),("b",3): interleaved, not a contiguous run --
+        // exactly the shape `Value`/`IndexMap` cannot represent, which is
+        // why the OML codec goes through RawNode instead.
+        let raw = RawNode::Edges(vec![
+            ("b".to_string(), RawNode::Leaf(Scalar::Int(1))),
+            ("c".to_string(), RawNode::Leaf(Scalar::Int(2))),
+            ("b".to_string(), RawNode::Leaf(Scalar::Int(3))),
+        ]);
+        let doc = Doc::from_raw(raw.clone()).unwrap();
+        assert_eq!(doc.to_raw(), raw);
+        let labels: Vec<String> = doc
+            .root()
+            .edges()
+            .unwrap()
+            .into_iter()
+            .map(|(l, _)| l)
+            .collect();
+        assert_eq!(labels, vec!["b", "c", "b"]);
+    }
+
+    #[test]
+    fn from_raw_leaf_round_trips() {
+        let raw = RawNode::Leaf(Scalar::Str("hi".to_string()));
+        let doc = Doc::from_raw(raw.clone()).unwrap();
+        assert!(doc.root().is_leaf());
+        assert_eq!(doc.to_raw(), raw);
+    }
+
+    #[test]
+    fn from_raw_enforces_the_depth_guard() {
+        fn nest_raw(levels: usize) -> RawNode {
+            let mut n = RawNode::Leaf(Scalar::Int(0));
+            for _ in 0..levels {
+                n = RawNode::Edges(vec![("a".to_string(), n)]);
+            }
+            n
+        }
+        assert!(Doc::from_raw(nest_raw(MAX_DEPTH)).is_ok());
+        let err = Doc::from_raw(nest_raw(MAX_DEPTH + 1)).unwrap_err();
+        assert!(err.message.contains("maximum depth"));
     }
 }
