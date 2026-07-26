@@ -1,0 +1,12 @@
+[book]
+title = "omnist"
+description = "One canonical data model for JSON, YAML, TOML, XML, and OML, with a schema language (OSD) to validate and compare shapes over it."
+authors = ["omnist-dev"]
+language = "en"
+src = "src"
+
+[output.html]
+git-repository-url = "https://github.com/omnist-dev/omnist-rs"
+edit-url-template = "https://github.com/omnist-dev/omnist-rs/edit/main/{path}"
+default-theme = "light"
+preferred-dark-theme = "navy"
