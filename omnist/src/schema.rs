@@ -63,11 +63,11 @@ pub(crate) static DATETIME_RE: LazyLock<Regex> = LazyLock::new(|| {
     .unwrap()
 });
 
-fn is_leap_year(y: u32) -> bool {
+pub(crate) fn is_leap_year(y: u32) -> bool {
     (y.is_multiple_of(4) && !y.is_multiple_of(100)) || y.is_multiple_of(400)
 }
 
-fn days_in_month(y: u32, m: u32) -> u32 {
+pub(crate) fn days_in_month(y: u32, m: u32) -> u32 {
     match m {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
         4 | 6 | 9 | 11 => 30,
@@ -84,12 +84,12 @@ fn days_in_month(y: u32, m: u32) -> u32 {
 
 /// Whether `(y, m, d)` is a real calendar date (`datetime.date`'s domain:
 /// year 1..=9999, per Python's `MINYEAR`/`MAXYEAR`).
-fn valid_ymd(y: u32, m: u32, d: u32) -> bool {
+pub(crate) fn valid_ymd(y: u32, m: u32, d: u32) -> bool {
     (1..=9999).contains(&y) && (1..=12).contains(&m) && d >= 1 && d <= days_in_month(y, m)
 }
 
 /// Whether `(h, m, s)` is a real clock time (`00:00:00..=23:59:59`).
-fn valid_hms(h: u32, m: u32, s: u32) -> bool {
+pub(crate) fn valid_hms(h: u32, m: u32, s: u32) -> bool {
     h <= 23 && m <= 59 && s <= 59
 }
 
