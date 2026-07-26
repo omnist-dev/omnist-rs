@@ -88,6 +88,32 @@ impl From<DocumentError> for WriteError {
     }
 }
 
+/// A freshly-read node could not be made to conform to a `Schema` --
+/// raised by [`crate::materialize::materialize`] (issue #14), mirroring
+/// Python's `ParseError(str(res), errors=res.errors)` raised by
+/// `~/dev/omnist/omnist/deserialize.py`. Wraps a
+/// [`crate::schema::ValidationResult`] directly rather than duplicating its
+/// `(path, message, code)` collection machinery -- `materialize` already
+/// walks the tree using the exact same shape-check rules `Schema::validate`
+/// does, so its error report reuses the same collector type.
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+#[error("{0}")]
+pub struct MaterializeError(pub crate::schema::ValidationResult);
+
+impl MaterializeError {
+    pub fn new(result: crate::schema::ValidationResult) -> Self {
+        Self(result)
+    }
+
+    pub fn result(&self) -> &crate::schema::ValidationResult {
+        &self.0
+    }
+
+    pub fn errors(&self) -> &[crate::schema::ValidationError] {
+        self.0.errors()
+    }
+}
+
 /// Crate-wide top-level error, mirroring Python's `OmnistError` base class.
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum OmnistError {
@@ -95,6 +121,8 @@ pub enum OmnistError {
     Document(#[from] DocumentError),
     #[error(transparent)]
     Schema(#[from] SchemaError),
+    #[error(transparent)]
+    Materialize(#[from] MaterializeError),
     #[error(transparent)]
     Parse(#[from] ParseError),
     #[error(transparent)]
@@ -170,5 +198,36 @@ mod tests {
         let wrapped: OmnistError = e.clone().into();
         assert_eq!(wrapped.to_string(), e.to_string());
         assert!(matches!(wrapped, OmnistError::Write(ref inner) if *inner == e));
+    }
+
+    #[test]
+    fn materialize_error_new_result_and_errors_accessors() {
+        let fields = vec![crate::schema::Field::required("x", crate::schema::STRING).unwrap()];
+        let rec = crate::schema::Record::new(fields).unwrap();
+        let mut env: indexmap::IndexMap<String, crate::schema::Record> = indexmap::IndexMap::new();
+        env.insert("Root".to_string(), rec);
+        let schema = crate::schema::Schema::new(crate::schema::Ref::new("Root"), env).unwrap();
+        // An empty node under a schema requiring field "x" -- one
+        // cardinality error, giving a non-empty `ValidationResult` to test
+        // the accessors against.
+        let node = crate::document::RawNode::Edges(vec![]);
+        let res = crate::materialize::materialize(&node, Some(&schema))
+            .unwrap_err()
+            .0;
+        assert!(!res.ok());
+
+        let e = MaterializeError::new(res.clone());
+        assert_eq!(e.result(), &res);
+        assert_eq!(e.errors(), res.errors());
+        assert_eq!(e.to_string(), res.to_string());
+    }
+
+    #[test]
+    fn omnist_error_wraps_materialize_error_transparently() {
+        let res = crate::schema::ValidationResult::new();
+        let e = MaterializeError::new(res);
+        let wrapped: OmnistError = e.clone().into();
+        assert_eq!(wrapped.to_string(), e.to_string());
+        assert!(matches!(wrapped, OmnistError::Materialize(ref inner) if *inner == e));
     }
 }
