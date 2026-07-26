@@ -106,9 +106,14 @@ fn reachable_from_root(s: &Schema, sat: &IndexSet<String>, root_ok: bool) -> Ind
         if seen.contains(&name) {
             continue;
         }
-        let Some(rec) = s.env().get(&name) else {
-            continue;
-        };
+        // Every name here is either the root or a Ref target found on an
+        // already-visited record -- `Schema::new`'s `check_refs` guarantees
+        // both always resolve, so a fallible lookup is dead code (see
+        // `lint::reachable`'s identical note).
+        let rec = s
+            .env()
+            .get(&name)
+            .expect("Schema's own invariant: every Ref target resolves within its env");
         seen.insert(name.clone());
         let is_unpruned_root = name == s.root().name && !root_ok;
         for f in rec.fields() {
@@ -149,6 +154,7 @@ fn prune_record(rec: &Record, sat: &IndexSet<String>) -> Record {
         })
         .cloned()
         .collect();
-    Record::new(kept)
-        .expect("filtering fields out of an already-valid Record cannot introduce a duplicate label")
+    Record::new(kept).expect(
+        "filtering fields out of an already-valid Record cannot introduce a duplicate label",
+    )
 }
