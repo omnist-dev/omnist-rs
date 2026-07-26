@@ -1,0 +1,12 @@
+[package]
+name = "omnist"
+version = "0.0.1-alpha"
+edition = "2024"
+description = "One data model, many formats: read, validate, and write JSON, YAML, TOML, XML, and OML. (Rust port of https://github.com/omnist-dev/omnist)"
+license = "Apache-2.0"
+repository = "https://github.com/omnist-dev/omnist-rs"
+publish = false
+
+[dependencies]
+indexmap = "2"
+thiserror = "2"

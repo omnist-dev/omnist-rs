@@ -1,0 +1,15 @@
+[package]
+name = "omnist-cli"
+version = "0.0.1-alpha"
+edition = "2024"
+description = "CLI for omnist (Rust port)."
+license = "Apache-2.0"
+repository = "https://github.com/omnist-dev/omnist-rs"
+publish = false
+
+[[bin]]
+name = "omnist"
+path = "src/main.rs"
+
+[dependencies]
+omnist = { path = "../omnist" }
