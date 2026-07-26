@@ -10,3 +10,4 @@ publish = false
 [dependencies]
 indexmap = "2"
 thiserror = "2"
+regex = "1"

@@ -32,11 +32,26 @@ impl DocumentError {
     }
 }
 
+/// A Schema definition is invalid (bad cardinality, duplicate field label,
+/// unknown scalar/ref name) -- raised by [`crate::schema`] at construction
+/// time, mirroring Python's `SchemaError` in `~/dev/omnist/omnist/errors.py`.
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+#[error("{0}")]
+pub struct SchemaError(pub String);
+
+impl SchemaError {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self(message.into())
+    }
+}
+
 /// Crate-wide top-level error, mirroring Python's `OmnistError` base class.
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum OmnistError {
     #[error(transparent)]
     Document(#[from] DocumentError),
+    #[error(transparent)]
+    Schema(#[from] SchemaError),
 }
 
 #[cfg(test)]
@@ -54,9 +69,7 @@ mod tests {
         let doc_err = DocumentError::new("$.foo", "boom");
         let wrapped: OmnistError = doc_err.clone().into();
         assert_eq!(wrapped.to_string(), doc_err.to_string());
-        match wrapped {
-            OmnistError::Document(inner) => assert_eq!(inner, doc_err),
-        }
+        assert!(matches!(wrapped, OmnistError::Document(ref inner) if *inner == doc_err));
     }
 
     #[test]
@@ -64,5 +77,20 @@ mod tests {
         let a = DocumentError::new("$", "x");
         let b = a.clone();
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn schema_error_display_and_eq() {
+        let e = SchemaError::new("unknown type 'Missing'");
+        assert_eq!(e.to_string(), "unknown type 'Missing'");
+        assert_eq!(e.clone(), e);
+    }
+
+    #[test]
+    fn omnist_error_wraps_schema_error_transparently() {
+        let schema_err = SchemaError::new("boom");
+        let wrapped: OmnistError = schema_err.clone().into();
+        assert_eq!(wrapped.to_string(), schema_err.to_string());
+        assert!(matches!(wrapped, OmnistError::Schema(ref inner) if *inner == schema_err));
     }
 }

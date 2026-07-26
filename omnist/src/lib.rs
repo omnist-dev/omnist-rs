@@ -1,7 +1,8 @@
 pub mod document;
 pub mod error;
+pub mod schema;
 
-pub use error::{DocumentError, OmnistError};
+pub use error::{DocumentError, OmnistError, SchemaError};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
