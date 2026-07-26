@@ -975,6 +975,17 @@ pub fn write_oml_compact(node: &RawNode) -> Result<String, WriteError> {
     }
 }
 
+/// Report what writing OML would adjust, without producing output. Added
+/// for issue #31 (the format registry): OML is lossless for every
+/// `Document` (see this module's doc comment), so there is never anything
+/// to report -- mirrors Python's `check_oml`, which is exactly `return
+/// WriteReport()`. Every other builtin format has a `check_*` function
+/// already; this is the OML counterpart, needed so the `"oml"` registry
+/// entry has a `check` callable like the other four.
+pub fn check_oml(_doc: &crate::document::Doc) -> crate::report::WriteReport {
+    crate::report::WriteReport::new()
+}
+
 /// `node_depth` is *this edges list's own* depth, matching
 /// `document.rs`'s `push_raw`/`build_node` convention exactly: the guard is
 /// checked for every node (container *and* leaf) at its own depth, with a

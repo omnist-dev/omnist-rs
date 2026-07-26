@@ -606,6 +606,50 @@ impl Doc {
     }
 }
 
+/// Name-keyed dispatch through [`crate::registry`] (issue #31), mirroring
+/// Python's `Doc.from_format`/`to_format`/`check_format` in
+/// `~/dev/omnist/omnist/document.py`. Kept as its own `impl Doc` block
+/// (rather than folded into the constructors/export blocks above) since it
+/// is the one place `Doc` depends on the registry module rather than a
+/// single format module directly.
+impl Doc {
+    /// Read `text` as the registered format `name` (an
+    /// [`crate::error::OmnistError::Format`] if `name` isn't registered).
+    /// Mirrors Python's `Doc.from_format(name, text)`.
+    pub fn from_format(name: &str, text: &str) -> Result<Doc, crate::error::OmnistError> {
+        let fmt = crate::registry::get_format(name)?;
+        (fmt.read)(text)
+    }
+
+    /// Write `self` as the registered format `name`. Mirrors Python's
+    /// `Doc.to_format(name)`.
+    pub fn to_format(&self, name: &str) -> Result<String, crate::error::OmnistError> {
+        let fmt = crate::registry::get_format(name)?;
+        (fmt.write)(self)
+    }
+
+    /// Simulate writing `self` as the registered format `name`, without
+    /// producing output. Mirrors Python's `Doc.check_format(name)`: an
+    /// [`crate::error::OmnistError::Document`] if `name`'s registered
+    /// [`crate::registry::Format`] has no `check` callable (a plugin
+    /// registered via [`crate::registry::Format::new`] alone) -- not a
+    /// panic.
+    pub fn check_format(
+        &self,
+        name: &str,
+    ) -> Result<crate::report::WriteReport, crate::error::OmnistError> {
+        let fmt = crate::registry::get_format(name)?;
+        match &fmt.check {
+            Some(check) => Ok(check(self)),
+            None => Err(DocumentError::new(
+                "$",
+                format!("format {name:?} has no check() -- cannot simulate a write"),
+            )
+            .into()),
+        }
+    }
+}
+
 fn push_raw(arena: &mut Vec<Entry>, node: RawNode, depth: usize) -> Result<NodeId, DocumentError> {
     // Path information isn't meaningful during a from-source OML parse (no
     // dotted-key path exists yet), so a fixed placeholder is used here --

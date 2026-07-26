@@ -67,6 +67,25 @@ impl ParseError {
     }
 }
 
+/// An unknown format name was looked up in the format registry -- raised by
+/// [`crate::registry::get_format`] (and therefore
+/// [`crate::document::Doc::from_format`]/`to_format`/`check_format`),
+/// mirroring Python's `OmnistError(f"unknown format {name!r}; registered:
+/// ...")` raised directly (not as a distinct exception subclass) in
+/// `~/dev/omnist/omnist/registry.py::get_format`. Given its own leaf type
+/// here (rather than reusing `DocumentError`/`SchemaError`) because "no such
+/// registered format" isn't a Document-shape or Schema-definition problem --
+/// it's specifically a registry lookup miss, issue #31.
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+#[error("{0}")]
+pub struct FormatError(pub String);
+
+impl FormatError {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self(message.into())
+    }
+}
+
 /// An in-memory Document could not be written -- raised by
 /// [`crate::oml::write_oml`] (depth guard only; OML is otherwise lossless
 /// for every Document -- see that module's doc comment) and, from issue
@@ -152,6 +171,8 @@ pub enum OmnistError {
     Parse(#[from] ParseError),
     #[error(transparent)]
     Write(#[from] WriteError),
+    #[error(transparent)]
+    Format(#[from] FormatError),
 }
 
 #[cfg(test)]

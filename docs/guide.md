@@ -141,6 +141,55 @@ mode turns any adjustment into an error instead of a silent write. See
 [formats/](formats/) for what each format actually adjusts, verified
 against each codec's own merged PR.
 
+### The format registry
+
+Alongside the per-format functions, [`Doc::from_format`]/`to_format`/
+`check_format` dispatch by format **name** through a runtime registry
+(`omnist::formats`/`register_format`/`get_format`), so a new format can be
+registered under an arbitrary name at runtime and used everywhere a format
+name is accepted -- not just the five builtins. `register_format` takes a
+[`Format`] (`name` + `read`/`write` closures, plus an optional `check`); a
+plugin with no `check` still works for `from_format`/`to_format`, but
+`check_format` on it returns a clean error rather than panicking.
+
+```rust
+use omnist::document::Doc;
+use omnist::{Format, formats, register_format};
+
+let d = Doc::from_format("json", r#"{"a": 1}"#).unwrap();
+assert_eq!(d.to_format("yaml").unwrap(), "a: 1");
+
+register_format(Format::new(
+    "kv",
+    |text| {
+        let edges = text
+            .split(',')
+            .map(|pair| {
+                let (k, v) = pair.split_once('=').unwrap();
+                (k.to_string(), omnist::document::RawNode::Leaf(
+                    omnist::document::Scalar::Str(v.to_string()),
+                ))
+            })
+            .collect();
+        Doc::from_raw(omnist::document::RawNode::Edges(edges)).map_err(Into::into)
+    },
+    |doc| {
+        let omnist::document::RawNode::Edges(edges) = doc.to_raw() else {
+            return Ok(String::new());
+        };
+        Ok(edges.iter().map(|(k, v)| {
+            let omnist::document::RawNode::Leaf(omnist::document::Scalar::Str(s)) = v else {
+                unreachable!()
+            };
+            format!("{k}={s}")
+        }).collect::<Vec<_>>().join(","))
+    },
+));
+assert!(formats().contains(&"kv".to_string()));
+assert_eq!(Doc::from_format("kv", "a=1,b=2").unwrap().to_format("kv").unwrap(), "a=1,b=2");
+```
+<!-- verified-by: omnist/tests/examples.rs::format_registry -->
+
 ## Inferring a schema
 
 `omnist::infer::infer` drafts a `record` schema that accepts a set of sample
