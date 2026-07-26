@@ -46,6 +46,26 @@ fn run_stdin(args: &[&str], stdin: Option<&str>) -> Run {
     }
 }
 
+/// Like `run_stdin`, but feeds raw (possibly non-UTF-8) bytes -- needed to
+/// force `read_input`'s stdin branch (`io::stdin().read_to_string`) to hit
+/// its error path, which a `&str` can never do since it's already valid
+/// UTF-8 by construction.
+fn run_stdin_bytes(args: &[&str], stdin: &[u8]) -> Run {
+    let mut cmd = bin();
+    cmd.args(args);
+    cmd.stdin(Stdio::piped());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("failed to spawn omnist binary");
+    child.stdin.take().unwrap().write_all(stdin).unwrap();
+    let output = child.wait_with_output().expect("failed to wait on child");
+    Run {
+        stdout: String::from_utf8(output.stdout).unwrap(),
+        stderr: String::from_utf8(output.stderr).unwrap(),
+        code: output.status.code().unwrap(),
+    }
+}
+
 /// A fresh scratch file under the test binary's own temp dir, so parallel
 /// tests never collide, holding `content`.
 fn fixture(name: &str, content: &str) -> String {
@@ -193,8 +213,16 @@ fn convert_schema_conformance_failure_json_shape_has_structured_errors() {
         "convert", &input, "--from", "json", "--to", "json", "--schema", &schema, "--json",
     ]);
     assert_eq!(r.code, 2);
-    assert!(r.stdout.contains("\"path\": \"$.a\""), "stdout: {}", r.stdout);
-    assert!(r.stdout.contains("\"code\": \"type-mismatch\""), "stdout: {}", r.stdout);
+    assert!(
+        r.stdout.contains("\"path\": \"$.a\""),
+        "stdout: {}",
+        r.stdout
+    );
+    assert!(
+        r.stdout.contains("\"code\": \"type-mismatch\""),
+        "stdout: {}",
+        r.stdout
+    );
 }
 
 #[test]
@@ -1148,3 +1176,30 @@ fn schema_equivalent_json_flag_picks_json_result_encoding() {
     assert_eq!(r.code, 0);
     assert_eq!(r.stdout.trim(), "{\"equivalent\": true}");
 }
+
+// --------------------------------------------------------------------- the
+// two `read_input`/`write_output` I/O error branches that only manifest on
+// stdin/stdout themselves (not a plain file path), tracked down as the
+// coverage-gap root cause for issue #24 / PR #25: `read_input`'s
+// `io::stdin().read_to_string` error arm, and `write_output`'s
+// `io::stdout().flush()` error arm. Both are forced by real OS-level I/O
+// failures rather than mocks, per this project's coverage-gap policy.
+
+#[test]
+fn format_stdin_dash_with_invalid_utf8_hits_read_input_stdin_error_path() {
+    // A lone continuation byte (0x80) is never valid UTF-8 in any context,
+    // so `read_to_string` on stdin fails deterministically -- this is the
+    // only branch of `read_input` reachable without a real file-path I/O
+    // failure, since "-" bypasses `std::fs::read_to_string` entirely.
+    let r = run_stdin_bytes(&["format", "-"], &[0x61, 0x80, 0x62]);
+    assert_eq!(r.code, 2);
+    assert!(r.stderr.starts_with("error: "), "stderr: {}", r.stderr);
+    assert!(r.stderr.contains("(reading stdin)"), "stderr: {}", r.stderr);
+}
+
+// `write_output`'s stdout `flush()` call itself is not separately tested
+// here: it was converted to an `.expect()`-documented invariant in
+// `lib.rs` rather than a testable `Result` branch (see that function's
+// comment) after empirically confirming a real write failure (broken pipe,
+// `/dev/full`) panics *inside* the preceding `print!` call, never at the
+// `flush()` call -- so there was no live branch left to exercise.

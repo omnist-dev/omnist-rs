@@ -282,7 +282,29 @@ fn write_output(path: Option<&str>, mut text: String) -> Result<(), String> {
     match path {
         None | Some("-") => {
             print!("{text}");
-            io::stdout().flush().map_err(|e| e.to_string())
+            // Not a `Result`-returning error path: `io::stdout()` is
+            // unconditionally line-buffered (`LineWriter`), regardless of
+            // whether it's a tty, per `std::io::Stdout`'s own docs. `text`
+            // always ends in `\n` (enforced above), so the `print!` call
+            // just above has *already* pushed every byte through to the
+            // OS-level write by the time it returns -- that's what
+            // `LineWriter` does on seeing a trailing newline. By the time
+            // control reaches here there is nothing left buffered for
+            // `flush` to push, so it degenerates to `StdoutRaw::flush`,
+            // which is a hard no-op (unbuffered raw fds have nothing to
+            // flush). A real write failure (e.g. broken pipe, `ENOSPC` from
+            // `/dev/full`) panics *inside* `print!` itself (`io::Write`'s
+            // `print!`/`println!` macros `.unwrap()` internally, they don't
+            // propagate `Result`) before this line is ever reached --
+            // confirmed empirically: forcing broken-pipe and `/dev/full`
+            // stdout in integration tests both panic at the `print!` call,
+            // never here. So this call cannot observably fail; `.expect`
+            // documents that invariant instead of carrying a dead
+            // `Result`-returning branch.
+            io::stdout().flush().expect(
+                "stdout is line-buffered and `text` ends in '\\n', so `print!` already flushed; a real write failure would have already panicked inside `print!` itself",
+            );
+            Ok(())
         }
         Some(p) => std::fs::write(p, text).map_err(|e| format!("{p}: {e}")),
     }
