@@ -545,6 +545,16 @@ impl<'a> Cursor<'a> {
     pub fn child(&self, label: &str) -> Result<Cursor<'a>, DocumentError> {
         self.get_one(label)
     }
+
+    /// A lossless [`RawNode`] copy of the subtree rooted at this cursor,
+    /// preserving edge order and interleaving exactly. Used by
+    /// `crate::materialize` to carry an untouched subtree forward (e.g. an
+    /// unexpected field it still has to emit for a caller inspecting the
+    /// materialized-but-erroring result) without a second, hand-rolled
+    /// tree-copy routine.
+    pub fn to_raw(&self) -> RawNode {
+        self.doc.raw_at(self.id)
+    }
 }
 
 /// The *raw* canonical Document node: either a leaf scalar, or an ordered

@@ -465,7 +465,17 @@ impl ValidationResult {
         &self.errors
     }
 
-    fn add(&mut self, path: impl Into<String>, message: impl Into<String>, code: ErrorCode) {
+    /// `pub(crate)` (rather than private) so `materialize` can share this
+    /// exact multi-error-collection mechanism instead of duplicating it --
+    /// per issue #14, materialize's shape-check pass reuses the same
+    /// `ValidationResult`/`ValidationError`/`ErrorCode` types `validate`
+    /// already built.
+    pub(crate) fn add(
+        &mut self,
+        path: impl Into<String>,
+        message: impl Into<String>,
+        code: ErrorCode,
+    ) {
         self.errors.push(ValidationError {
             path: path.into(),
             message: message.into(),
@@ -519,7 +529,7 @@ pub fn matches_kind(value: &DocScalar, kind: ScalarKind) -> bool {
 /// The most specific scalar kind name a [`document::Scalar`] value matches,
 /// for error messages (`integer` is reported even though it also matches
 /// `number`).
-fn value_kind_name(v: &DocScalar) -> &'static str {
+pub(crate) fn value_kind_name(v: &DocScalar) -> &'static str {
     match v {
         DocScalar::Null => "null",
         DocScalar::Bool(_) => "boolean",
