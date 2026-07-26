@@ -12,3 +12,4 @@
 //! This issue (#16) adds the first of the four: [`json`].
 
 pub mod json;
+pub mod yaml;
