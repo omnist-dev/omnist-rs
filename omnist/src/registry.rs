@@ -176,7 +176,7 @@ pub fn get_format(name: &str) -> Result<Format, OmnistError> {
         let mut known: Vec<&str> = reg.keys().map(String::as_str).collect();
         known.sort_unstable();
         FormatError::new(format!(
-            "unknown format {name:?}; registered: {}",
+            "unknown format '{name}'; registered: {}",
             known.join(", ")
         ))
         .into()
