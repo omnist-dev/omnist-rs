@@ -186,6 +186,18 @@ fn convert_schema_conformance_failure_exits_2() {
 }
 
 #[test]
+fn convert_schema_conformance_failure_json_shape_has_structured_errors() {
+    let input = fixture("convert_schema_bad_json", r#"{"a": "nope", "b": "x"}"#);
+    let schema = fixture("convert_schema_bad_osd_json", SCHEMA_OSD);
+    let r = run(&[
+        "convert", &input, "--from", "json", "--to", "json", "--schema", &schema, "--json",
+    ]);
+    assert_eq!(r.code, 2);
+    assert!(r.stdout.contains("\"path\": \"$.a\""), "stdout: {}", r.stdout);
+    assert!(r.stdout.contains("\"code\": \"type-mismatch\""), "stdout: {}", r.stdout);
+}
+
+#[test]
 fn convert_strict_refuses_a_lossy_write_with_exit_1() {
     let input = fixture("convert_strict_in", r#"{"a": NaN}"#);
     let r = run(&[
@@ -744,6 +756,25 @@ fn validate_result_format_json_non_flag_variant() {
     ]);
     assert_eq!(r.code, 0);
     assert_eq!(r.stdout.trim(), "{\"ok\": true, \"errors\": []}");
+}
+
+#[test]
+fn validate_result_format_json_non_flag_variant_with_errors() {
+    let input = fixture("validate_rf_json_err_in", r#"{"a": "nope", "b": "x"}"#);
+    let schema = fixture("validate_rf_json_err_schema", SCHEMA_OSD);
+    let r = run(&[
+        "validate",
+        &input,
+        "--from",
+        "json",
+        "--schema",
+        &schema,
+        "--result-format",
+        "json",
+    ]);
+    assert_eq!(r.code, 1);
+    assert!(r.stdout.contains("\"path\": \"$.a\""));
+    assert!(!r.stdout.contains("\"code\""));
 }
 
 #[test]
