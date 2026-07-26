@@ -584,9 +584,18 @@ impl Scanner {
         let text: String = self.chars[start..end].iter().collect();
         self.pos = end;
         if is_float {
+            // `text` was built exclusively from ASCII digits, an optional
+            // leading `-`, an optional `.digits` fraction, and an optional
+            // `e`/`E`[+-]digits exponent (see `digits_from`/`try_exponent`
+            // above). That shape always parses as an `f64` -- `f64::from_str`
+            // never errors on this grammar; on overflow it yields +/-inf
+            // rather than `Err`. A fallible `map_err` here is therefore dead
+            // code that `cargo llvm-cov` correctly flags as unreachable, so
+            // it's replaced with an `expect` documenting the invariant
+            // instead of an uncoverable error branch.
             let v: f64 = text
                 .parse()
-                .map_err(|_| self.error_at(start, format!("invalid number {text:?}")))?;
+                .expect("scanner only emits float-shaped digit/exponent text, which f64::from_str always parses");
             Ok((TokKind::Float(v), start, end))
         } else {
             let digits = &text[if text.starts_with('-') { 1 } else { 0 }..];
