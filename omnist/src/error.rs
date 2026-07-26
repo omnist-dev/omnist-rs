@@ -67,24 +67,49 @@ impl ParseError {
     }
 }
 
-/// An in-memory Document could not be written as OML -- raised by
-/// [`crate::oml::write_oml`], mirroring Python's `WriteError`. In practice
-/// the only way this fires is the shared depth guard (OML is otherwise
-/// lossless for every Document -- see the module doc comment on
-/// `crate::oml`).
+/// An in-memory Document could not be written -- raised by
+/// [`crate::oml::write_oml`] (depth guard only; OML is otherwise lossless
+/// for every Document -- see that module's doc comment) and, from issue
+/// #16 onward, by `strict=true` format writers via
+/// [`crate::report::finish_write`], mirroring Python's
+/// `WriteError(str(rep), report=rep)`. The optional [`crate::report::WriteReport`]
+/// carries the adjustments that triggered a strict-mode raise; `None` for
+/// every other `WriteError` site (e.g. the depth guard, which has no
+/// report to attach).
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
-#[error("{0}")]
-pub struct WriteError(pub String);
+#[error("{message}")]
+pub struct WriteError {
+    pub message: String,
+    pub report: Option<crate::report::WriteReport>,
+}
 
 impl WriteError {
     pub fn new(message: impl Into<String>) -> Self {
-        Self(message.into())
+        Self {
+            message: message.into(),
+            report: None,
+        }
+    }
+
+    /// Construct a `WriteError` carrying the [`crate::report::WriteReport`]
+    /// that caused a strict-mode write to raise.
+    pub fn with_report(message: impl Into<String>, report: crate::report::WriteReport) -> Self {
+        Self {
+            message: message.into(),
+            report: Some(report),
+        }
+    }
+
+    /// The report attached to this error, if any (only strict-mode format
+    /// writers attach one).
+    pub fn report(&self) -> Option<&crate::report::WriteReport> {
+        self.report.as_ref()
     }
 }
 
 impl From<DocumentError> for WriteError {
     fn from(e: DocumentError) -> Self {
-        WriteError(e.message)
+        WriteError::new(e.message)
     }
 }
 
