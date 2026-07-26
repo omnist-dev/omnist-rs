@@ -359,3 +359,27 @@ fn cardinality_array_field_accepts_repeated_labels() {
     };
     assert_eq!(out_edges.len(), 3);
 }
+
+// ---------------------------------------------------------------------------
+// `any` field: passes any node through untouched, no shape check/upgrade.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn any_field_passes_scalar_and_object_nodes_through_untouched() {
+    let fields = vec![Field::required("x", crate::schema::FieldType::Any).unwrap()];
+    let root = Record::new(fields).unwrap();
+    let mut env = IndexMap::new();
+    env.insert("Root".to_string(), root);
+    let schema = Schema::new(Ref::new("Root"), env).unwrap();
+
+    let scalar_node = edges(vec![("x", leaf(DocScalar::Int(1)))]);
+    let out = materialize(&scalar_node, Some(&schema)).unwrap();
+    assert_eq!(out, scalar_node);
+
+    let object_node = edges(vec![(
+        "x",
+        edges(vec![("nested", leaf(DocScalar::Str("v".into())))]),
+    )]);
+    let out2 = materialize(&object_node, Some(&schema)).unwrap();
+    assert_eq!(out2, object_node);
+}

@@ -18,11 +18,12 @@
 //!   Passing `--arrays` where it would apply to OML output (`format`,
 //!   `convert --to oml`) is accepted by the argument parser (matching the
 //!   Python surface) but reported as a clear, non-panicking "not supported
-//!   yet" error (exit 2) rather than silently ignored or faked -- the same
-//!   scoping pattern `infer.rs`'s `allow_any` gap and `ops`'s `any`-type
-//!   gap already established in this port. Wherever `--arrays` has no
-//!   effect per spec (OSD output, or a `--to` other than `oml`), it is
-//!   accepted and silently ignored, matching Python exactly.
+//!   yet" error (exit 2) rather than silently ignored or faked. Wherever
+//!   `--arrays` has no effect per spec (OSD output, or a `--to` other than
+//!   `oml`), it is accepted and silently ignored, matching Python exactly.
+//!   (`infer`'s `--allow-any` used to be scoped out the same way -- it is
+//!   now fully wired to [`omnist::infer_with_report`]'s `allow_any`, issue
+//!   #29.)
 //! - **schema-directed `--schema` on `convert`**: implemented via
 //!   [`omnist::materialize::materialize`] on the raw node after a
 //!   schema-less read, exactly mirroring Python's `_materialize(node,
@@ -745,15 +746,6 @@ fn cmd_infer(args: InferArgs) -> i32 {
     if args.arrays {
         return fail(args.json, ARRAYS_OSD_ONLY_MSG, &[], 2);
     }
-    if args.allow_any {
-        return fail(
-            args.json,
-            "--allow-any is not supported by this port's `infer` yet (no `any` schema type; \
-             see omnist::infer's module doc)",
-            &[],
-            2,
-        );
-    }
     let mut docs = Vec::with_capacity(args.input.len());
     for path in &args.input {
         let text = match read_input(path) {
@@ -765,10 +757,13 @@ fn cmd_infer(args: InferArgs) -> i32 {
             Err(e) => return generic_fail(args.json, &e),
         }
     }
-    let schema = match omnist::infer(&docs, "Root") {
-        Ok(s) => s,
+    let (schema, fallbacks) = match omnist::infer_with_report(&docs, "Root", args.allow_any) {
+        Ok(r) => r,
         Err(e) => return generic_fail(args.json, &e.into()),
     };
+    for fb in &fallbacks {
+        eprintln!("warning: {} opened as `any` ({})", fb.location, fb.reason);
+    }
     let text_out = to_osd_text(&schema, args.compact);
     if let Err(e) = write_output(args.output.as_deref(), text_out) {
         return io_fail(args.json, &e);

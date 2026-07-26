@@ -53,11 +53,11 @@
 //! untouched), matching the Python reference's `schema=None` convention at
 //! the reader call sites.
 //!
-//! ## The `any` type is out of scope
+//! ## The `any` type
 //!
-//! Same scoping as `crate::ops` (issue #12): this port's [`crate::schema`]
-//! has no `AnyType` equivalent, so there is no `AnyType` branch to
-//! materialize through here either.
+//! An `Any`-typed field passes its node through completely untouched --
+//! no shape check, no scalar upgrade -- mirroring Python's
+//! `_materialize_type`: `if isinstance(d, AnyType): return node`.
 
 use crate::document::{RawNode, Scalar as DocScalar};
 use crate::error::MaterializeError;
@@ -90,6 +90,9 @@ fn materialize_type(
     res: &mut ValidationResult,
 ) -> RawNode {
     match schema.resolve(ty) {
+        // `any` accepts every legal value unchecked -- pass the node through
+        // exactly as read, no shape check or scalar upgrade.
+        Resolved::Any => node.clone(),
         Resolved::Scalar(s) => materialize_scalar(node, s.kind(), s.is_nullable(), path, res),
         Resolved::Record(rec) => materialize_record(node, schema, rec, path, res),
     }

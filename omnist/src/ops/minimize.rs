@@ -172,7 +172,7 @@ fn refine_key(rec: &Record, block_of: &IndexMap<String, usize>) -> RefineKey {
                         .get(&r.name)
                         .expect("every ref target is classified before refine_key runs on it"),
                 ),
-                FieldType::Scalar(_) => None,
+                FieldType::Scalar(_) | FieldType::Any => None,
             };
             (f.label.clone(), f.min, f.max, blk)
         })
@@ -199,6 +199,7 @@ fn remap(rec: &Record, rep: &IndexMap<String, String>) -> Record {
                         .expect("every ref target is classified into rep"),
                 )),
                 FieldType::Scalar(s) => FieldType::Scalar(*s),
+                FieldType::Any => FieldType::Any,
             };
             Field::new(f.label.clone(), ty, f.min, f.max)
                 .expect("remapping a ref target name changes neither label nor cardinality")

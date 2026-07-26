@@ -16,17 +16,15 @@
 //! There is no value-domain composition (no `|`, enum, literal fields, or
 //! `union`).
 //!
-//! ## The `any` type is deliberately out of scope
+//! ## The `any` keyword
 //!
 //! Python's `osd.py` recognizes `"any"` as a reserved type keyword and
-//! implements it (`AnyType`/`ANY`, imported from `schema.py`). This Rust
-//! port's [`crate::schema`] (issue #6/PR #7) deliberately did not implement
-//! `any` -- that type's inclusion in the public API is an explicitly
-//! deferred decision pending user sign-off. This module keeps the same
-//! scoping: `any` is still recognized as a reserved name (so it can't be
-//! used as a record name, matching the grammar), but using it as a field's
-//! type produces a clear [`SchemaError`] explaining it isn't supported yet,
-//! rather than silently misparsing or guessing.
+//! parses it to `ANY` (`RESERVED_TYPE_NAMES = SCALAR_NAMES | {"any"}`). This
+//! module mirrors that: `any` in a type position parses to
+//! [`crate::schema::FieldType::Any`], and -- exactly like Python -- `any` is
+//! still a reserved name that cannot be used as a record name (matching the
+//! grammar). Since `Any` already includes `null`, a trailing `?` after `any`
+//! (`"a": any?`) is a [`SchemaError`] ("redundant"), not silently accepted.
 
 use indexmap::IndexMap;
 use regex::Regex;
@@ -148,12 +146,11 @@ fn unquote(s: &str) -> String {
 // ---------------------------------------------------------------------------
 
 /// A field's type as produced by the parser, before being wired into
-/// [`Field::new`]. Kept private -- `Any` never survives past [`parse_type`],
-/// which turns it into an error immediately (see the module doc's scoping
-/// note).
+/// [`Field::new`].
 enum ParsedType {
     Scalar(Scalar),
     Ref(Ref),
+    Any,
 }
 
 impl From<ParsedType> for crate::schema::FieldType {
@@ -161,6 +158,7 @@ impl From<ParsedType> for crate::schema::FieldType {
         match t {
             ParsedType::Scalar(s) => s.into(),
             ParsedType::Ref(r) => r.into(),
+            ParsedType::Any => crate::schema::FieldType::Any,
         }
     }
 }
@@ -353,11 +351,14 @@ impl Parser {
             )));
         }
         if t.text == "any" {
-            return Err(SchemaError::new(format!(
-                "the 'any' type is not supported by this port yet (scoped out; \
-                 see omnist-rs issue #8) -- found at {}",
-                t.pos
-            )));
+            if self.peek().text == "?" {
+                let q = self.next_tok();
+                return Err(SchemaError::new(format!(
+                    "'any' already includes null; 'any?' is redundant at {}",
+                    q.pos
+                )));
+            }
+            return Ok(ParsedType::Any);
         }
         let mut nullable = false;
         if self.peek().text == "?" {
@@ -451,6 +452,7 @@ fn osd_type(t: &crate::schema::FieldType) -> String {
                 if s.is_nullable() { "?" } else { "" }
             )
         }
+        crate::schema::FieldType::Any => "any".to_string(),
     }
 }
 
@@ -702,15 +704,31 @@ mod tests {
         );
     }
 
-    // -- The `any` keyword: scoped-out, clear error --------------------------
+    // -- The `any` keyword: real support --------------------------------------
 
     #[test]
-    fn any_as_field_type_is_a_clear_scoped_out_error() {
-        let err = parse_schema(r#"record X { "a": any } root X"#).unwrap_err();
+    fn any_as_field_type_parses_to_the_any_field_type() {
+        let schema = parse_schema(r#"record X { "a": any } root X"#).unwrap();
+        let rec = schema.env().get("X").unwrap();
+        assert_eq!(rec.field("a").unwrap().ty, FieldType::Any);
+    }
+
+    #[test]
+    fn any_with_nullable_marker_is_redundant_error() {
+        let err = parse_schema(r#"record X { "a": any? } root X"#).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("'any'"));
-        assert!(msg.contains("not supported"));
-        assert!(msg.contains("issue #8"));
+        assert!(msg.contains("already includes null"));
+        assert!(msg.contains("redundant"));
+    }
+
+    #[test]
+    fn any_round_trips_through_to_osd() {
+        let src = r#"record X { "a": any } root X"#;
+        let schema = parse_schema(src).unwrap();
+        let rendered = to_osd(&schema, None);
+        assert_eq!(rendered, "record X { \"a\": any } root X\n");
+        let reparsed = parse_schema(&rendered).unwrap();
+        assert_eq!(reparsed, schema);
     }
 
     #[test]

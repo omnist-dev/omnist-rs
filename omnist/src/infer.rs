@@ -24,24 +24,23 @@
 //! schema is wanted (issue #12, itself resolving issues #143/#151 in the
 //! Python reference).
 //!
-//! ## Scoping: no `any`/`allow_any`
+//! ## `allow_any` and `AnyFallback`
 //!
-//! The Python reference has an `AnyFallback` mechanism and an
-//! `allow_any` option that opens a field as `any` when inference can't
-//! otherwise resolve it to one precise type. This port's [`crate::schema`]
-//! has no `any`/`AnyType` equivalent (that's an explicitly deferred design
-//! question upstream, same scoping as issue #8's OSD `any`-keyword handling
-//! and issue #12's schema-algebra `any` scoping). So **this port does not
-//! implement `allow_any`**: the two scenarios Python would resolve via
-//! `allow_any` instead return a [`SchemaError`] explaining why, rather than
-//! silently misbehaving:
+//! [`infer`] keeps its original two-argument signature and always infers
+//! with `allow_any: false` (matching its long-standing behavior). Two
+//! scenarios can't be resolved to one precise type from the samples alone:
 //!
-//! 1. a label whose samples mix objects and scalars ("mixes objects and
-//!    values; cannot infer one type without the `any` fallback this port
-//!    doesn't yet support");
+//! 1. a label whose samples mix objects and scalars;
 //! 2. a label whose scalar samples disagree on kind in a way that isn't the
 //!    integer/number subset relation (e.g. `string` and `boolean` seen
 //!    under the same label).
+//!
+//! With `allow_any: false` (via [`infer`], or [`infer_with_report`] called
+//! that way), both scenarios are a [`SchemaError`]. [`infer_with_report`]
+//! additionally accepts `allow_any: true`, matching Python's
+//! `infer_with_report`/`AnyFallback`: instead of erroring, the field is
+//! opened as [`crate::schema::FieldType::Any`] and one [`AnyFallback`] is
+//! recorded (`location` is `RecordName.label`; `reason` says why).
 //!
 //! ## No native temporal input
 //!
@@ -60,11 +59,34 @@ use crate::document::{Doc, Scalar as DocScalar};
 use crate::error::SchemaError;
 use crate::schema::{Field, FieldType, Record, Ref, Scalar, ScalarKind, Schema};
 
+/// A single field [`infer_with_report`] opened as `any` under
+/// `allow_any: true`. `location` reads `RecordName.label`; `reason` says why
+/// the field could not be given a single precise type. Mirrors Python's
+/// `AnyFallback` dataclass.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnyFallback {
+    pub location: String,
+    pub reason: String,
+}
+
 /// Infers a `record` [`Schema`] (rooted at `root_name`) that accepts every
 /// sample in `samples`. Every sample's root must be an object (a record
 /// shape) -- an empty `samples` list, or any sample whose root is a bare
-/// scalar, is a [`SchemaError`].
+/// scalar, is a [`SchemaError`]. Always infers with `allow_any: false` --
+/// see [`infer_with_report`] for the `allow_any: true` variant.
 pub fn infer(samples: &[Doc], root_name: &str) -> Result<Schema, SchemaError> {
+    infer_with_report(samples, root_name, false).map(|(schema, _)| schema)
+}
+
+/// Like [`infer`], but also takes `allow_any` and returns every
+/// [`AnyFallback`] recorded along the way (empty when `allow_any` is
+/// `false`, since every ambiguous field is a hard error in that mode
+/// instead). Mirrors Python's `infer_with_report`.
+pub fn infer_with_report(
+    samples: &[Doc],
+    root_name: &str,
+    allow_any: bool,
+) -> Result<(Schema, Vec<AnyFallback>), SchemaError> {
     if samples.is_empty() {
         return Err(SchemaError::new("cannot infer a schema from zero samples"));
     }
@@ -77,9 +99,18 @@ pub fn infer(samples: &[Doc], root_name: &str) -> Result<Schema, SchemaError> {
     }
     let mut env: IndexMap<String, Record> = IndexMap::new();
     let mut used: IndexSet<String> = IndexSet::new();
+    let mut fallbacks: Vec<AnyFallback> = Vec::new();
     let roots: Vec<_> = samples.iter().map(Doc::root).collect();
-    infer_record(&roots, root_name, &mut env, &mut used)?;
-    Schema::new(Ref::new(root_name), env)
+    infer_record(
+        &roots,
+        root_name,
+        &mut env,
+        &mut used,
+        allow_any,
+        &mut fallbacks,
+    )?;
+    let schema = Schema::new(Ref::new(root_name), env)?;
+    Ok((schema, fallbacks))
 }
 
 // Note: unlike the Python reference's `_infer_record`, there is no explicit
@@ -99,6 +130,8 @@ fn infer_record(
     name: &str,
     env: &mut IndexMap<String, Record>,
     used: &mut IndexSet<String>,
+    allow_any: bool,
+    fallbacks: &mut Vec<AnyFallback>,
 ) -> Result<(), SchemaError> {
     used.insert(name.to_string());
 
@@ -140,7 +173,15 @@ fn infer_record(
         let lo = *counts.iter().min().unwrap();
         let hi = *counts.iter().max().unwrap();
         let (cmin, cmax) = if hi > 1 { (0, None) } else { (lo, Some(1)) };
-        let ty = infer_type(&children[label], label, name, env, used)?;
+        let ty = infer_type(
+            &children[label],
+            label,
+            name,
+            env,
+            used,
+            allow_any,
+            fallbacks,
+        )?;
         fields.push(Field::new(label.clone(), ty, cmin, cmax)?);
     }
     env.insert(name.to_string(), Record::new(fields)?);
@@ -153,17 +194,25 @@ fn infer_type(
     record_name: &str,
     env: &mut IndexMap<String, Record>,
     used: &mut IndexSet<String>,
+    allow_any: bool,
+    fallbacks: &mut Vec<AnyFallback>,
 ) -> Result<FieldType, SchemaError> {
     let is_obj: Vec<bool> = child_nodes.iter().map(|c| !c.is_leaf()).collect();
     if is_obj.iter().all(|&b| b) {
         let rec_name = unique_name(label, used);
-        infer_record(child_nodes, &rec_name, env, used)?;
+        infer_record(child_nodes, &rec_name, env, used, allow_any, fallbacks)?;
         return Ok(FieldType::Ref(Ref::new(rec_name)));
     }
     if is_obj.iter().any(|&b| b) {
+        if allow_any {
+            fallbacks.push(AnyFallback {
+                location: format!("{record_name}.{label}"),
+                reason: "mixes objects and values".to_string(),
+            });
+            return Ok(FieldType::Any);
+        }
         return Err(SchemaError::new(format!(
-            "{record_name}.{label} mixes objects and values; cannot infer one \
-             type without the `any` fallback this port doesn't yet support"
+            "label {label:?} mixes objects and values; cannot infer one type"
         )));
     }
     // All scalars.
@@ -206,10 +255,19 @@ fn infer_type(
     if names.len() > 1 {
         let mut sorted: Vec<&str> = names.into_iter().collect();
         sorted.sort_unstable();
+        if allow_any {
+            fallbacks.push(AnyFallback {
+                location: format!("{record_name}.{label}"),
+                reason: format!(
+                    "values of more than one scalar kind ({})",
+                    sorted.join(", ")
+                ),
+            });
+            return Ok(FieldType::Any);
+        }
         return Err(SchemaError::new(format!(
-            "{record_name}.{label} has values of more than one scalar ({}); \
-             cannot infer one scalar type without the `any` fallback this \
-             port doesn't yet support",
+            "label {label:?} has values of more than one scalar ({}); cannot infer one \
+             scalar type",
             sorted.join(", ")
         )));
     }
