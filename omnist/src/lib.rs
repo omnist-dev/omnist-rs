@@ -1,6 +1,7 @@
 pub mod document;
 pub mod error;
 pub mod oml;
+pub mod ops;
 pub mod osd;
 pub mod schema;
 
