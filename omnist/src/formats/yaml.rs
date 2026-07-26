@@ -64,7 +64,14 @@
 //! `tag:yaml.org,2002:timestamp` resolver accepts, so a YAML value like
 //! `2001-12-14 21:59:43.10 -5` round-trips to the same canonical
 //! `2001-12-14T21:59:43.100000-05:00` shape Python's `datetime.isoformat()`
-//! would produce, not the original loose spelling.
+//! would produce, not the original loose spelling. A timestamp-shaped string
+//! naming a calendar/clock value that doesn't exist (`2024-13-01`,
+//! `2024-02-30`) is a [`ParseError`], not a silent string fallback --
+//! live-confirmed: PyYAML's construction step raises `ValueError` there,
+//! which fails the whole document. Calendar/clock validity itself reuses
+//! [`crate::schema::valid_ymd`]/[`crate::schema::valid_hms`] rather than a
+//! second copy of that logic, even though the *shape* regex is necessarily
+//! separate (looser than `schema.rs`'s).
 //!
 //! ## Native NaN/Infinity support (no lossy adjustment, unlike JSON)
 //!
@@ -421,13 +428,20 @@ fn explicit_tag_to_value(text: &str, suffix: &str) -> Result<Value, ParseError> 
     match suffix {
         "str" => Ok(Value::Str(text.to_string())),
         "null" => Ok(Value::Null),
-        "bool" => match text {
-            "true" | "True" | "TRUE" => Ok(Value::Bool(true)),
-            "false" | "False" | "FALSE" => Ok(Value::Bool(false)),
-            other => Err(ParseError::new(
+        // PyYAML's `SafeConstructor.construct_yaml_bool` looks up
+        // `node.value.lower()` in `bool_values = {"yes": True, "no": False,
+        // "true": True, "false": False, "on": True, "off": False}`
+        // regardless of how the `!!bool` tag got attached (explicit or
+        // implicit) -- live-confirmed (see module doc comment): `!!bool
+        // "YES"`/`"On"`/`"OFF"` all construct successfully, not just
+        // true/false spellings; bare `y`/`n`/`1`/`0` do not (`KeyError`).
+        "bool" => match text.to_ascii_lowercase().as_str() {
+            "true" | "yes" | "on" => Ok(Value::Bool(true)),
+            "false" | "no" | "off" => Ok(Value::Bool(false)),
+            _ => Err(ParseError::new(
                 1,
                 1,
-                format!("invalid YAML: {other:?} is not a valid !!bool value"),
+                format!("invalid YAML: {text:?} is not a valid !!bool value"),
             )),
         },
         "int" => parse_int_literal(text),
@@ -460,7 +474,7 @@ fn resolve_plain_scalar(text: &str) -> Result<Value, ParseError> {
     if is_float_literal_shape(text) {
         return parse_float_literal(text);
     }
-    if let Some(iso) = normalize_timestamp(text) {
+    if let Some(iso) = normalize_timestamp(text)? {
         return Ok(Value::Str(iso));
     }
     Ok(Value::Str(text.to_string()))
@@ -560,30 +574,50 @@ fn parse_float_literal(text: &str) -> Result<Value, ParseError> {
 /// re-spelled the way `datetime.date.isoformat()`/`datetime.datetime.isoformat()`
 /// would: zero-padded, `T`-joined, offset as `+HH:MM`/`-HH:MM` (a bare `Z`
 /// becomes `+00:00`, matching `datetime.timezone.utc`'s own `isoformat()`).
-/// Returns `None` for anything not shaped like a timestamp at all (the
+/// Returns `Ok(None)` for anything not shaped like a timestamp at all (the
 /// overwhelmingly common case -- most plain scalars are plain strings).
-fn normalize_timestamp(text: &str) -> Option<String> {
+///
+/// A string that *is* timestamp-shaped but names a calendar/clock value that
+/// doesn't exist (`2024-13-01`, `2024-02-30`, `2024-01-01T25:00:00`, an
+/// out-of-range timezone offset) is a [`ParseError`], **not** a silent
+/// fallback to a plain string -- live-confirmed against PyYAML (see this
+/// module's doc comment): `yaml.safe_load` calls `datetime.date`/
+/// `datetime.datetime`'s constructor on the captured fields, which raises a
+/// `ValueError` PyYAML doesn't catch, so the *whole document* fails to parse
+/// rather than quietly typing the value as a string. Calendar-date validity
+/// (leap years, per-month day counts) reuses [`crate::schema::valid_ymd`]/
+/// [`crate::schema::valid_hms`] rather than a second copy of that logic.
+fn normalize_timestamp(text: &str) -> Result<Option<String>, ParseError> {
     static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
         regex::Regex::new(
             r"^(?P<year>[0-9]{4})-(?P<month>[0-9][0-9]?)-(?P<day>[0-9][0-9]?)(?:(?:[Tt]|[ \t]+)(?P<hour>[0-9][0-9]?):(?P<minute>[0-9][0-9]):(?P<second>[0-9][0-9])(?:\.(?P<fraction>[0-9]*))?(?:[ \t]*(?:Z|(?P<tz_sign>[-+])(?P<tz_hour>[0-9][0-9]?)(?::(?P<tz_minute>[0-9][0-9]))?))?)?$",
         )
         .unwrap()
     });
-    let caps = RE.captures(text)?;
-    let year: u32 = caps["year"].parse().ok()?;
-    let month: u32 = caps["month"].parse().ok()?;
-    let day: u32 = caps["day"].parse().ok()?;
-    if !(1..=9999).contains(&year) || !(1..=12).contains(&month) || day < 1 {
-        return None;
+    let Some(caps) = RE.captures(text) else {
+        return Ok(None);
+    };
+    let bad = |what: &str| {
+        Err(ParseError::new(
+            1,
+            1,
+            format!("invalid YAML: {text:?} is timestamp-shaped but names an invalid {what}"),
+        ))
+    };
+    let year: u32 = caps["year"].parse().unwrap_or(u32::MAX);
+    let month: u32 = caps["month"].parse().unwrap_or(u32::MAX);
+    let day: u32 = caps["day"].parse().unwrap_or(u32::MAX);
+    if !crate::schema::valid_ymd(year, month, day) {
+        return bad("calendar date");
     }
     let Some(hour_m) = caps.name("hour") else {
-        return Some(format!("{year:04}-{month:02}-{day:02}"));
+        return Ok(Some(format!("{year:04}-{month:02}-{day:02}")));
     };
-    let hour: u32 = hour_m.as_str().parse().ok()?;
-    let minute: u32 = caps["minute"].parse().ok()?;
-    let second: u32 = caps["second"].parse().ok()?;
-    if hour > 23 || minute > 59 || second > 59 {
-        return None;
+    let hour: u32 = hour_m.as_str().parse().unwrap_or(u32::MAX);
+    let minute: u32 = caps["minute"].parse().unwrap_or(u32::MAX);
+    let second: u32 = caps["second"].parse().unwrap_or(u32::MAX);
+    if !crate::schema::valid_hms(hour, minute, second) {
+        return bad("time of day");
     }
     let mut out = format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}");
     if let Some(frac) = caps.name("fraction") {
@@ -597,13 +631,13 @@ fn normalize_timestamp(text: &str) -> Option<String> {
     }
     match caps.name("tz_sign") {
         Some(sign) => {
-            let tz_hour: u32 = caps["tz_hour"].parse().ok()?;
+            let tz_hour: u32 = caps["tz_hour"].parse().unwrap_or(u32::MAX);
             let tz_minute: u32 = caps
                 .name("tz_minute")
-                .map(|m| m.as_str().parse().ok())
-                .unwrap_or(Some(0))?;
+                .map(|m| m.as_str().parse().unwrap_or(u32::MAX))
+                .unwrap_or(0);
             if tz_hour > 23 || tz_minute > 59 {
-                return None;
+                return bad("timezone offset");
             }
             out.push_str(sign.as_str());
             out.push_str(&format!("{tz_hour:02}:{tz_minute:02}"));
@@ -611,7 +645,7 @@ fn normalize_timestamp(text: &str) -> Option<String> {
         None if text.trim_end().ends_with('Z') => out.push_str("+00:00"),
         None => {}
     }
-    Some(out)
+    Ok(Some(out))
 }
 
 // ============================================================== Writer
@@ -1333,8 +1367,44 @@ mod tests {
     }
 
     #[test]
+    fn explicit_bool_tag_accepts_the_full_yaml_1_1_spelling_set_not_just_true_false() {
+        // Live-confirmed against PyYAML (see module doc comment on
+        // `explicit_tag_to_value`'s "bool" arm): `!!bool` uses the exact same
+        // `bool_values` lookup regardless of implicit vs. explicit tagging,
+        // so "yes"/"On"/"OFF" all construct via the explicit tag too.
+        let doc = read_yaml("a: !!bool \"yes\"\nb: !!bool \"On\"\nc: !!bool \"OFF\"\n").unwrap();
+        let root = doc.root();
+        assert_eq!(
+            *root.get_one("a").unwrap().value().unwrap(),
+            Scalar::Bool(true)
+        );
+        assert_eq!(
+            *root.get_one("b").unwrap().value().unwrap(),
+            Scalar::Bool(true)
+        );
+        assert_eq!(
+            *root.get_one("c").unwrap().value().unwrap(),
+            Scalar::Bool(false)
+        );
+    }
+
+    #[test]
     fn invalid_explicit_bool_spelling_is_a_parse_error() {
-        let err = read_yaml("a: !!bool \"yes\"\n").unwrap_err();
+        let err = read_yaml("a: !!bool \"nonsense\"\n").unwrap_err();
+        assert!(
+            matches!(&err, OmnistError::Parse(e) if e.message.contains("!!bool")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn bare_y_or_n_is_not_a_valid_explicit_bool_spelling() {
+        // Live-confirmed: PyYAML's `bool_values` dict has no "y"/"n" keys
+        // even though the plain-scalar implicit resolver never even tags
+        // these as bool in the first place -- a bare "y"/"n" reaches this
+        // arm only via an explicit `!!bool` tag, and PyYAML raises
+        // (`KeyError` -> `ConstructorError`) rather than accepting it.
+        let err = read_yaml("a: !!bool \"y\"\n").unwrap_err();
         assert!(
             matches!(&err, OmnistError::Parse(e) if e.message.contains("!!bool")),
             "got {err:?}"
@@ -1558,43 +1628,86 @@ mod tests {
 
     // ---------------------------------------------------------- coverage: timestamp edge cases
 
+    // Live-confirmed against PyYAML (see `normalize_timestamp`'s doc
+    // comment): a timestamp-*shaped* string naming a calendar/clock value
+    // that doesn't exist is a clean ParseError, not a silent string
+    // fallback -- `yaml.safe_load` calls `datetime.date`/`datetime.datetime`
+    // construction on the captured fields, and that raises `ValueError`
+    // for an out-of-range month/day/hour/minute/timezone, failing the
+    // *entire document*, not just retyping this one scalar as a string.
+
     #[test]
-    fn timestamp_with_invalid_month_or_day_is_not_normalized() {
-        // Shaped like a date, but out of the valid calendar range -- stays a
-        // plain string (mirrors `is_iso_date`'s calendar validation, applied
-        // here at the timestamp-resolver level instead).
-        let doc = read_yaml("a: 2024-13-01\nb: 0000-01-01\n").unwrap();
-        let root = doc.root();
-        assert_eq!(
-            *root.get_one("a").unwrap().value().unwrap(),
-            Scalar::Str("2024-13-01".to_string())
-        );
-        assert_eq!(
-            *root.get_one("b").unwrap().value().unwrap(),
-            Scalar::Str("0000-01-01".to_string())
+    fn timestamp_with_invalid_month_is_a_parse_error() {
+        let err = read_yaml("a: 2024-13-01\n").unwrap_err();
+        assert!(
+            matches!(&err, OmnistError::Parse(e) if e.message.contains("calendar date")),
+            "got {err:?}"
         );
     }
 
     #[test]
-    fn timestamp_with_out_of_range_time_of_day_is_not_normalized() {
-        let doc = read_yaml("a: 2024-01-01T25:00:00\nb: 2024-01-01T00:61:00\n").unwrap();
-        let root = doc.root();
-        assert_eq!(
-            *root.get_one("a").unwrap().value().unwrap(),
-            Scalar::Str("2024-01-01T25:00:00".to_string())
-        );
-        assert_eq!(
-            *root.get_one("b").unwrap().value().unwrap(),
-            Scalar::Str("2024-01-01T00:61:00".to_string())
+    fn timestamp_with_year_zero_is_a_parse_error() {
+        let err = read_yaml("a: 0000-01-01\n").unwrap_err();
+        assert!(
+            matches!(&err, OmnistError::Parse(e) if e.message.contains("calendar date")),
+            "got {err:?}"
         );
     }
 
     #[test]
-    fn timestamp_with_out_of_range_timezone_offset_is_not_normalized() {
-        let doc = read_yaml("a: 2024-01-01T00:00:00+25:00\n").unwrap();
+    fn timestamp_with_a_day_that_doesnt_exist_in_the_month_is_a_parse_error() {
+        // February 30th never exists, regardless of leap year -- exercises
+        // the day-count upper bound (`schema::valid_ymd`'s `days_in_month`),
+        // not just the "day < 1" lower bound.
+        let err = read_yaml("a: 2024-02-30\n").unwrap_err();
+        assert!(
+            matches!(&err, OmnistError::Parse(e) if e.message.contains("calendar date")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn timestamp_february_29_on_a_non_leap_year_is_a_parse_error() {
+        let err = read_yaml("a: 2023-02-29\n").unwrap_err();
+        assert!(
+            matches!(&err, OmnistError::Parse(e) if e.message.contains("calendar date")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn timestamp_february_29_on_a_leap_year_normalizes_fine() {
+        let doc = read_yaml("a: 2024-02-29\n").unwrap();
         assert_eq!(
             *doc.root().get_one("a").unwrap().value().unwrap(),
-            Scalar::Str("2024-01-01T00:00:00+25:00".to_string())
+            Scalar::Str("2024-02-29".to_string())
+        );
+    }
+
+    #[test]
+    fn timestamp_with_out_of_range_hour_is_a_parse_error() {
+        let err = read_yaml("a: 2024-01-01T25:00:00\n").unwrap_err();
+        assert!(
+            matches!(&err, OmnistError::Parse(e) if e.message.contains("time of day")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn timestamp_with_out_of_range_minute_is_a_parse_error() {
+        let err = read_yaml("a: 2024-01-01T00:61:00\n").unwrap_err();
+        assert!(
+            matches!(&err, OmnistError::Parse(e) if e.message.contains("time of day")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn timestamp_with_out_of_range_timezone_offset_is_a_parse_error() {
+        let err = read_yaml("a: 2024-01-01T00:00:00+25:00\n").unwrap_err();
+        assert!(
+            matches!(&err, OmnistError::Parse(e) if e.message.contains("timezone offset")),
+            "got {err:?}"
         );
     }
 
