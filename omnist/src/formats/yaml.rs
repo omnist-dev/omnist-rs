@@ -521,9 +521,40 @@ fn parse_int_literal(text: &str) -> Result<Value, ParseError> {
             ),
         ));
     }
-    match i64::from_str_radix(digits, radix) {
-        Ok(v) => Ok(Value::Int(if neg { -v } else { v })),
-        Err(_) => Err(ParseError::new(
+    // Parse the unsigned magnitude first, then apply the sign -- issue #26's
+    // fuzz harness caught the previous version parsing `-9223372036854775808`
+    // (`i64::MIN`) by stripping the sign and calling
+    // `i64::from_str_radix("9223372036854775808", 10)`, which itself
+    // overflows (the positive magnitude `9223372036854775808` is one past
+    // `i64::MAX`) even though the signed value is perfectly representable.
+    // `u64` holds the full magnitude range for both `i64::MIN` and
+    // `i64::MAX`, so parse there and negate via `checked_neg` on the signed
+    // conversion instead of negating a possibly-unrepresentable positive
+    // `i64`.
+    let magnitude = match u64::from_str_radix(digits, radix) {
+        Ok(m) => m,
+        Err(_) => {
+            return Err(ParseError::new(
+                1,
+                1,
+                format!(
+                    "invalid YAML: integer literal {text:?} is out of range for a 64-bit integer"
+                ),
+            ));
+        }
+    };
+    let value = if neg {
+        if magnitude == i64::MIN.unsigned_abs() {
+            Some(i64::MIN)
+        } else {
+            i64::try_from(magnitude).ok().and_then(i64::checked_neg)
+        }
+    } else {
+        i64::try_from(magnitude).ok()
+    };
+    match value {
+        Some(v) => Ok(Value::Int(v)),
+        None => Err(ParseError::new(
             1,
             1,
             format!("invalid YAML: integer literal {text:?} is out of range for a 64-bit integer"),
@@ -1228,6 +1259,46 @@ mod tests {
         let err = read_yaml(&text).unwrap_err();
         assert!(
             matches!(&err, OmnistError::Parse(e) if e.message.contains("4300-digit")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn i64_min_round_trips_through_yaml() {
+        // Regression test for issue #26's fuzz harness finding: the
+        // previous `parse_int_literal` stripped the sign, then parsed the
+        // *positive* magnitude as `i64`, which overflows for `i64::MIN`
+        // (whose magnitude, 9223372036854775808, is one past `i64::MAX`)
+        // even though the signed value itself is representable.
+        let doc = read_yaml("a: -9223372036854775808\n").unwrap();
+        assert_eq!(
+            *doc.root().get_one("a").unwrap().value().unwrap(),
+            Scalar::Int(i64::MIN)
+        );
+    }
+
+    #[test]
+    fn positive_integer_one_past_i64_max_is_out_of_range_error() {
+        // Fits in u64 (so passes the magnitude parse) but not in i64 --
+        // exercises the final `None` arm of `parse_int_literal`'s match,
+        // distinct from `integer_literal_over_i64_range_is_out_of_range_error`
+        // below (whose 20-nines literal overflows even `u64`).
+        let err = read_yaml("a: 9223372036854775808\n").unwrap_err();
+        assert!(
+            matches!(&err, OmnistError::Parse(e) if e.message.contains("out of range")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn negative_integer_one_past_i64_min_is_out_of_range_error() {
+        // Magnitude 9223372036854775809 fits in u64 and isn't
+        // `i64::MIN.unsigned_abs()`, so it falls through to the
+        // `checked_neg` arm, which correctly reports out-of-range instead
+        // of silently wrapping.
+        let err = read_yaml("a: -9223372036854775809\n").unwrap_err();
+        assert!(
+            matches!(&err, OmnistError::Parse(e) if e.message.contains("out of range")),
             "got {err:?}"
         );
     }
