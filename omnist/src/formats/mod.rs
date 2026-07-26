@@ -9,7 +9,9 @@
 //! [`crate::error::WriteError`] (carrying the report) instead. See
 //! [`crate::report`].
 //!
-//! This issue (#16) adds the first of the four: [`json`].
+//! This issue (#16) added the first of the four: [`json`]. Issue #18 added
+//! [`yaml`]; issue #20 adds [`toml`].
 
 pub mod json;
+pub mod toml;
 pub mod yaml;
