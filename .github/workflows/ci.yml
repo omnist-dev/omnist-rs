@@ -25,3 +25,18 @@ jobs:
         run: cargo test --workspace
       - name: coverage
         run: cargo llvm-cov --workspace --fail-under-lines 100
+
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: proptest fuzz + semantic-oracle properties (issue #26)
+        # Bounded budget, not unbounded -- 250 cases per property, a bit
+        # above the in-code default of 150 (itself matching Python's
+        # `~/dev/omnist/tests/test_fuzz.py` `_SUPPRESS` settings) so CI
+        # gets slightly more coverage than a local `cargo test` run
+        # without becoming an open-ended fuzzing job.
+        run: cargo test --workspace --test fuzz
+        env:
+          PROPTEST_CASES: "250"
