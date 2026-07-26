@@ -297,6 +297,7 @@ dependencies = [
  "proptest",
  "quick-xml",
  "regex",
+ "serde_json",
  "thiserror",
  "toml_edit",
  "yaml-rust2",
