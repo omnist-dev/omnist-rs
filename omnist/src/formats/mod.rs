@@ -10,8 +10,10 @@
 //! [`crate::report`].
 //!
 //! This issue (#16) added the first of the four: [`json`]. Issue #18 added
-//! [`yaml`]; issue #20 adds [`toml`].
+//! [`yaml`]; issue #20 added [`toml`]; issue #22 adds [`xml`], the last and
+//! structurally different one -- see `xml.rs`'s own doc comment.
 
 pub mod json;
 pub mod toml;
+pub mod xml;
 pub mod yaml;

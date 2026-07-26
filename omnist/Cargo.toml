@@ -13,3 +13,4 @@ thiserror = "2"
 regex = "1"
 yaml-rust2 = { version = "0.11.0", default-features = false }
 toml_edit = { version = "0.25.13", default-features = false, features = ["parse", "display"] }
+quick-xml = "0.41.0"
