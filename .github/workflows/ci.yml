@@ -43,12 +43,40 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: proptest fuzz + semantic-oracle properties (issue #26)
+      - name: proptest fuzz + semantic-oracle properties (issue #26, #32)
         # Bounded budget, not unbounded -- 250 cases per property, a bit
         # above the in-code default of 150 (itself matching Python's
         # `~/dev/omnist/tests/test_fuzz.py` `_SUPPRESS` settings) so CI
         # gets slightly more coverage than a local `cargo test` run
-        # without becoming an open-ended fuzzing job.
-        run: cargo test --workspace --test fuzz
+        # without becoming an open-ended fuzzing job. This step does NOT
+        # set OMNIST_ORACLE_PYTHON, so it excludes the live-Python oracle
+        # test below (`--skip cross_implementation_oracle_bounded_sample`)
+        # -- that one has its own step, since it needs the sibling Python
+        # checkout + venv set up first and pays a much higher per-case
+        # cost (subprocess + interpreter startup vs. pure Rust).
+        run: cargo test --workspace --test fuzz -- --skip cross_implementation_oracle_bounded_sample
         env:
           PROPTEST_CASES: "250"
+      - name: checkout sibling Python implementation (issue #32 oracle)
+        uses: actions/checkout@v4
+        with:
+          repository: omnist-dev/omnist
+          path: omnist-py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: cross-implementation oracle harness (issue #32)
+        # Bounded, budgeted, and separate from the pure-Rust properties
+        # above precisely because each case here pays for a fresh
+        # `python3` process start + `omnist` import (tens of ms) rather
+        # than microseconds -- see fuzz.rs's module doc comment for the
+        # measured per-case cost. 40 cases here (vs. 150-250 for the
+        # pure-Rust properties) keeps this step's wall time comparable
+        # to the rest of the job rather than dominating it.
+        run: |
+          python3 -m venv /tmp/omnist-oracle-venv
+          /tmp/omnist-oracle-venv/bin/pip install -q -e omnist-py
+          cargo test --workspace --test fuzz cross_implementation_oracle_bounded_sample
+        env:
+          OMNIST_ORACLE_PYTHON: /tmp/omnist-oracle-venv/bin/python3
+          OMNIST_ORACLE_CASES: "40"
