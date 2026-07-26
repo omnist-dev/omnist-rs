@@ -384,6 +384,76 @@ pub fn parse_schema(text: &str) -> Result<Schema, SchemaError> {
     Parser::new(toks).parse_schema()
 }
 
+// ---------------------------------------------------------------------------
+// Serialize a Schema back to OSD text
+// ---------------------------------------------------------------------------
+
+/// Serialize a [`Schema`] back to OSD text. Ported from Python's
+/// `osd.to_osd`/`_record`/`_field`/`_card`/`_type`.
+///
+/// `indent: None` renders a single-line, machine-oriented form (record
+/// definitions and the trailing `root` statement joined by spaces, fields
+/// joined by `, `, no trailing comma) instead of the default
+/// pretty-printed, indented form -- mirroring `write_oml`/`write_json`'s
+/// own `indent: None` convention. A `Some(n)` sets the pretty-mode indent
+/// width in spaces. Both forms round-trip through [`parse_schema`].
+pub fn to_osd(schema: &Schema, indent: Option<usize>) -> String {
+    let mut parts: Vec<String> = schema
+        .env()
+        .iter()
+        .map(|(name, rec)| osd_record(name, rec, indent))
+        .collect();
+    parts.push(format!("root {}", schema.root().name));
+    if indent.is_none() {
+        return format!("{}\n", parts.join(" "));
+    }
+    format!("{}\n", parts.join("\n"))
+}
+
+fn osd_record(name: &str, rec: &Record, indent: Option<usize>) -> String {
+    if indent.is_none() {
+        let fields: Vec<String> = rec.fields().iter().map(osd_field).collect();
+        return format!("record {name} {{ {} }}", fields.join(", "));
+    }
+    let pad = " ".repeat(indent.unwrap_or(4));
+    let mut out = vec![format!("record {name} {{")];
+    for f in rec.fields() {
+        out.push(format!("{pad}{},", osd_field(f)));
+    }
+    out.push("}".to_string());
+    out.join("\n")
+}
+
+fn osd_field(f: &Field) -> String {
+    let card = if (f.min, f.max) == (1, Some(1)) {
+        String::new()
+    } else {
+        format!(" {}", osd_cardinality(f.min, f.max))
+    };
+    format!("\"{}\"{card}: {}", f.label, osd_type(&f.ty))
+}
+
+fn osd_cardinality(lo: usize, hi: Option<usize>) -> String {
+    match hi {
+        Some(hi) if hi == lo => format!("[{lo}]"),
+        Some(hi) => format!("[{lo},{hi}]"),
+        None => format!("[{lo},]"),
+    }
+}
+
+fn osd_type(t: &crate::schema::FieldType) -> String {
+    match t {
+        crate::schema::FieldType::Ref(r) => r.name.clone(),
+        crate::schema::FieldType::Scalar(s) => {
+            format!(
+                "{}{}",
+                s.kind().as_str(),
+                if s.is_nullable() { "?" } else { "" }
+            )
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -659,5 +729,70 @@ mod tests {
         )
         .unwrap();
         assert_eq!(schema.root().name, "X");
+    }
+
+    // -- to_osd ----------------------------------------------------------------
+
+    #[test]
+    fn to_osd_pretty_round_trips_through_parse_schema() {
+        let src = r#"
+            record X {
+                "a": string,
+                "b" [0,1]: integer?,
+                "c" [2,]: X,
+            }
+            root X
+        "#;
+        let schema = parse_schema(src).unwrap();
+        let rendered = to_osd(&schema, Some(4));
+        assert_eq!(
+            rendered,
+            "record X {\n    \"a\": string,\n    \"b\" [0,1]: integer?,\n    \
+             \"c\" [2,]: X,\n}\nroot X\n"
+        );
+        let reparsed = parse_schema(&rendered).unwrap();
+        assert_eq!(reparsed, schema);
+    }
+
+    #[test]
+    fn to_osd_compact_round_trips_through_parse_schema() {
+        let src = r#"record X { "a": string, "b" [0,1]: integer? } root X"#;
+        let schema = parse_schema(src).unwrap();
+        let rendered = to_osd(&schema, None);
+        assert_eq!(
+            rendered,
+            "record X { \"a\": string, \"b\" [0,1]: integer? } root X\n"
+        );
+        let reparsed = parse_schema(&rendered).unwrap();
+        assert_eq!(reparsed, schema);
+    }
+
+    #[test]
+    fn to_osd_renders_exact_cardinality_without_brackets_comma() {
+        let src = r#"record X { "a" [2]: string } root X"#;
+        let schema = parse_schema(src).unwrap();
+        assert_eq!(
+            to_osd(&schema, None),
+            "record X { \"a\" [2]: string } root X\n"
+        );
+    }
+
+    #[test]
+    fn to_osd_renders_ref_type_bare() {
+        let src = r#"record Leaf { "v": string } record X { "child": Leaf } root X"#;
+        let schema = parse_schema(src).unwrap();
+        let rendered = to_osd(&schema, None);
+        assert!(rendered.contains("\"child\": Leaf"));
+    }
+
+    #[test]
+    fn to_osd_empty_record_field_list_renders_braces() {
+        let schema = Schema::new(
+            Ref::new("X"),
+            IndexMap::from([("X".to_string(), Record::new(vec![]).unwrap())]),
+        )
+        .unwrap();
+        assert_eq!(to_osd(&schema, None), "record X {  } root X\n");
+        assert_eq!(to_osd(&schema, Some(2)), "record X {\n}\nroot X\n");
     }
 }

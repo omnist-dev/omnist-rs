@@ -1,3 +1,7 @@
+use clap::Parser;
+use omnist_cli::{Cli, run};
+
 fn main() {
-    println!("{}", omnist_cli::version_line());
+    let cli = Cli::parse();
+    std::process::exit(run(cli));
 }
