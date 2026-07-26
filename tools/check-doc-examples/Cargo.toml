@@ -1,0 +1,16 @@
+[package]
+name = "check-doc-examples"
+version = "0.0.1-alpha"
+edition = "2024"
+description = "CI gate: every new/changed fenced code block in docs/*.md needs a verified-by or doc-illustrative marker."
+license = "Apache-2.0"
+publish = false
+
+[[bin]]
+name = "check-doc-examples"
+path = "src/main.rs"
+
+[dependencies]
+
+[dev-dependencies]
+tempfile = "3"

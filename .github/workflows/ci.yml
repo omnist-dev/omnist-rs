@@ -26,6 +26,18 @@ jobs:
       - name: coverage
         run: cargo llvm-cov --workspace --fail-under-lines 100
 
+  doc-examples:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: doc-example CI gate (issue #28)
+        run: |
+          cargo run -q -p check-doc-examples -- --base-ref "origin/${{ github.base_ref }}"
+
   fuzz:
     runs-on: ubuntu-latest
     steps:
