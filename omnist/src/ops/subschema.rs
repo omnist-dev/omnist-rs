@@ -54,6 +54,14 @@ fn sub(
 ) -> bool {
     match (ta, tb) {
         (FieldType::Ref(ra), _) if !sat_a.contains(&ra.name) => true,
+        // `any` on the B (super-schema) side absorbs every A-side value --
+        // always sound, regardless of what `ta` is. Checked before the
+        // `ta == Any` arm below, mirroring Python's `if isinstance(db,
+        // AnyType): True` running before its `elif isinstance(da, AnyType)`.
+        (_, FieldType::Any) => true,
+        // Only `any` holds `any`; `ta` is `any` and `tb` isn't -> never a
+        // subschema relation.
+        (FieldType::Any, _) => false,
         (FieldType::Scalar(a), FieldType::Scalar(b)) => scalar_sub(*a, *b),
         (FieldType::Ref(ra), FieldType::Ref(rb)) => {
             let key = (ra.name.clone(), rb.name.clone());

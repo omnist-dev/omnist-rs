@@ -1130,11 +1130,38 @@ fn validate_missing_schema_file_exits_2() {
 }
 
 #[test]
-fn infer_allow_any_is_a_clear_not_supported_error() {
+fn infer_allow_any_succeeds_and_emits_no_warning_when_nothing_is_ambiguous() {
     let input = fixture("infer_allow_any_in", DOC_JSON);
     let r = run(&["infer", &input, "--from", "json", "--allow-any"]);
+    assert_eq!(r.code, 0);
+    assert!(!r.stdout.contains("any"));
+    assert!(r.stderr.is_empty());
+}
+
+#[test]
+fn infer_allow_any_opens_an_ambiguous_label_as_any_and_warns() {
+    // "x" mixes a string and a boolean across the two samples -- without
+    // `--allow-any` this is a hard error; with it, `x` opens as `any` and a
+    // warning is emitted on stderr naming the field and the reason.
+    let a = fixture("infer_allow_any_ambiguous_a", r#"{"x": "s"}"#);
+    let b = fixture("infer_allow_any_ambiguous_b", r#"{"x": true}"#);
+    let r = run(&["infer", &a, &b, "--from", "json", "--allow-any"]);
+    assert_eq!(r.code, 0);
+    assert!(
+        r.stdout.contains("any"),
+        "expected an `any` field: {}",
+        r.stdout
+    );
+    assert!(r.stderr.contains("Root.x"));
+    assert!(r.stderr.contains("any"));
+}
+
+#[test]
+fn infer_without_allow_any_still_errors_on_an_ambiguous_label() {
+    let a = fixture("infer_no_allow_any_ambiguous_a", r#"{"x": "s"}"#);
+    let b = fixture("infer_no_allow_any_ambiguous_b", r#"{"x": true}"#);
+    let r = run(&["infer", &a, &b, "--from", "json"]);
     assert_eq!(r.code, 2);
-    assert!(r.stderr.contains("--allow-any"));
 }
 
 // --------------------------------------------------------------------- the

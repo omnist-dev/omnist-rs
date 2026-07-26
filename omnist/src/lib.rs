@@ -12,7 +12,7 @@ pub mod schema;
 pub use error::{
     DocumentError, MaterializeError, OmnistError, ParseError, SchemaError, WriteError,
 };
-pub use infer::infer;
+pub use infer::{AnyFallback, infer, infer_with_report};
 pub use materialize::materialize;
 pub use report::{Adjustment, Severity, WriteReport};
 

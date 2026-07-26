@@ -12,13 +12,14 @@
 
 use crate::schema::{FieldType, Record, ScalarKind};
 
-/// A field's target-blind shape: `Scalar(kind, nullable)` or `Ref` (the
+/// A field's target-blind shape: `Scalar(kind, nullable)`, `Ref` (the
 /// target record's name is deliberately excluded -- see the module doc
-/// comment).
+/// comment), or `Any`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ShapeKey {
     Scalar(ScalarKind, bool),
     Ref,
+    Any,
 }
 
 /// One field's signature entry: `(label, min, max, shape)`.
@@ -44,6 +45,7 @@ pub fn local_signature(rec: &Record) -> LocalSignature {
             let shape = match &f.ty {
                 FieldType::Scalar(s) => ShapeKey::Scalar(s.kind(), s.is_nullable()),
                 FieldType::Ref(_) => ShapeKey::Ref,
+                FieldType::Any => ShapeKey::Any,
             };
             (f.label.clone(), f.min, f.max, shape)
         })

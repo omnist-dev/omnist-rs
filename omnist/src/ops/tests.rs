@@ -61,6 +61,21 @@ fn local_signature_distinguishes_scalar_kind_and_nullability() {
     );
 }
 
+#[test]
+fn local_signature_gives_any_its_own_shape_key_distinct_from_scalar_and_ref() {
+    let any_rec = rec(vec![req("x", FieldType::Any)]);
+    let scalar_rec = rec(vec![req("x", STRING)]);
+    let ref_rec = rec(vec![req("x", Ref::new("Other"))]);
+    assert_ne!(
+        signature::local_signature(&any_rec),
+        signature::local_signature(&scalar_rec)
+    );
+    assert_ne!(
+        signature::local_signature(&any_rec),
+        signature::local_signature(&ref_rec)
+    );
+}
+
 // ---------------------------------------------------------------------------
 // prune
 // ---------------------------------------------------------------------------
@@ -262,6 +277,30 @@ fn minimize_merges_structurally_identical_records() {
 }
 
 #[test]
+fn minimize_merges_records_that_only_differ_by_any_field_naming() {
+    let e = env(vec![
+        (
+            "Root",
+            rec(vec![req("a", Ref::new("A")), req("b", Ref::new("B"))]),
+        ),
+        ("A", rec(vec![req("x", FieldType::Any)])),
+        ("B", rec(vec![req("x", FieldType::Any)])),
+    ]);
+    let s = Schema::new(Ref::new("Root"), e).unwrap();
+    let m = minimize::normalize(&s);
+    assert_eq!(m.env().len(), 2);
+    // A and B collapse to one record; its field is still `any` (remap is a
+    // passthrough for non-ref types).
+    let root_rec = &m.env()[&m.root().name];
+    let FieldType::Ref(target) = &root_rec.field("a").unwrap().ty else {
+        panic!("expected a ref field");
+    };
+    let merged = &m.env()[&target.name];
+    assert_eq!(merged.field("x").unwrap().ty, FieldType::Any);
+    assert_minimize_preserves_semantics_and_reaches_a_fixpoint(&s);
+}
+
+#[test]
 fn minimize_is_a_no_op_on_an_already_minimal_schema() {
     let e = env(vec![("Root", rec(vec![req("x", STRING)]))]);
     let s = Schema::new(Ref::new("Root"), e).unwrap();
@@ -365,6 +404,39 @@ fn compatible_with_widening_cardinality_and_integer_to_number() {
     let b = Schema::new(Ref::new("B"), e_b).unwrap();
     assert!(subschema::compatible_with(&a, &b));
     assert!(!subschema::compatible_with(&b, &a));
+}
+
+#[test]
+fn compatible_with_any_on_the_b_side_absorbs_any_a_side_field() {
+    // `any` on B always absorbs A's field, whatever A's field is (scalar,
+    // ref, or any itself).
+    let e_a = env(vec![
+        ("A", rec(vec![req("x", Ref::new("X"))])),
+        ("X", rec(vec![req("v", STRING)])),
+    ]);
+    let e_b = env(vec![("B", rec(vec![req("x", FieldType::Any)]))]);
+    let a = Schema::new(Ref::new("A"), e_a).unwrap();
+    let b = Schema::new(Ref::new("B"), e_b).unwrap();
+    assert!(subschema::compatible_with(&a, &b));
+}
+
+#[test]
+fn compatible_with_any_on_the_a_side_is_never_compatible_with_a_non_any_b() {
+    let e_a = env(vec![("A", rec(vec![req("x", FieldType::Any)]))]);
+    let e_b = env(vec![("B", rec(vec![req("x", STRING)]))]);
+    let a = Schema::new(Ref::new("A"), e_a).unwrap();
+    let b = Schema::new(Ref::new("B"), e_b).unwrap();
+    assert!(!subschema::compatible_with(&a, &b));
+}
+
+#[test]
+fn compatible_with_any_on_both_sides_is_compatible() {
+    let e_a = env(vec![("A", rec(vec![req("x", FieldType::Any)]))]);
+    let e_b = env(vec![("B", rec(vec![req("x", FieldType::Any)]))]);
+    let a = Schema::new(Ref::new("A"), e_a).unwrap();
+    let b = Schema::new(Ref::new("B"), e_b).unwrap();
+    assert!(subschema::compatible_with(&a, &b));
+    assert!(subschema::equivalent(&a, &b));
 }
 
 #[test]
@@ -655,6 +727,28 @@ fn lint_flags_unreachable_and_unsatisfiable_and_duplicate_records() {
     assert!(codes.contains(&"duplicate-record"));
     assert!(findings.iter().any(|f| f.location == "Bad"));
     assert!(findings.iter().any(|f| f.location == "Orphan"));
+}
+
+#[test]
+fn lint_inventories_any_typed_fields_as_info_findings() {
+    let e = env(vec![("Root", rec(vec![req("x", FieldType::Any)]))]);
+    let s = Schema::new(Ref::new("Root"), e).unwrap();
+    let findings = lint::lint(&s);
+    let f = findings
+        .iter()
+        .find(|f| f.code == "any-field")
+        .expect("expected an any-field finding");
+    assert_eq!(f.severity, "info");
+    assert_eq!(f.location, "Root.x");
+    assert!(f.message.contains("typed `any`"));
+}
+
+#[test]
+fn lint_reports_no_any_field_findings_when_none_exist() {
+    let e = env(vec![("Root", rec(vec![req("x", STRING)]))]);
+    let s = Schema::new(Ref::new("Root"), e).unwrap();
+    let findings = lint::lint(&s);
+    assert!(!findings.iter().any(|f| f.code == "any-field"));
 }
 
 #[test]

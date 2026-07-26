@@ -7,9 +7,7 @@
 //! mutates** -- `prune`/`normalize` are the transforms that fix these
 //! issues; `lint` only diagnoses them.
 //!
-//! Three checks (the Python reference's fourth, `any-field`, has no
-//! counterpart here -- see `super`'s module doc comment on why `AnyType`
-//! is out of scope for this port):
+//! Four checks:
 //!
 //! * `unsatisfiable-record` (`warning`) -- a reachable record no finite
 //!   document can match (e.g. a mandatory ref cycle). Reuses
@@ -23,6 +21,9 @@
 //!   records under different names. Reuses
 //!   [`super::minimize::equivalence_classes`] on the *raw* schema, so
 //!   duplicates are reported as authored.
+//! * `any-field` (`info`) -- an inventory of every `any`-typed field, so a
+//!   human can audit the schema's deliberate openings. Advisory only; never
+//!   affects a caller's exit code on its own.
 
 use indexmap::IndexSet;
 
@@ -33,8 +34,9 @@ use super::prune::satisfiable_set;
 
 /// One structural diagnostic. `code` is a stable machine-readable
 /// identifier (`unsatisfiable-record`, `unreachable-record`,
-/// `duplicate-record`); `severity` is `warning` or `info`; `location` is a
-/// record name; `message` is a human-readable, actionable description.
+/// `duplicate-record`, `any-field`); `severity` is `warning` or `info`;
+/// `location` is a record name (or `Record.label` for `any-field`);
+/// `message` is a human-readable, actionable description.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LintFinding {
     pub code: &'static str,
@@ -136,6 +138,27 @@ pub fn lint(s: &Schema) -> Vec<LintFinding> {
                     others.join(", ")
                 ),
             });
+        }
+    }
+
+    // any-field: inventory of every any-typed field, sorted by record name
+    // to match the input's declared env order deterministically before the
+    // final canonical sort below.
+    for name in s.env().keys() {
+        let rec = s.env().get(name).expect("name comes from s.env's own keys");
+        for f in rec.fields() {
+            if matches!(f.ty, FieldType::Any) {
+                findings.push(LintFinding {
+                    code: "any-field",
+                    severity: "info",
+                    location: format!("{name}.{}", f.label),
+                    message: format!(
+                        "field {:?} of record {name:?} is typed `any` (accepts any value \
+                         unchecked)",
+                        f.label
+                    ),
+                });
+            }
         }
     }
 

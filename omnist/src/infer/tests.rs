@@ -89,6 +89,7 @@ fn integer_and_number_samples_collapse_to_number() {
     match &f.ty {
         FieldType::Scalar(s) => assert_eq!(s.kind(), ScalarKind::Number),
         FieldType::Ref(_) => panic!("expected a scalar"),
+        FieldType::Any => panic!("expected a scalar"),
     }
 }
 
@@ -103,6 +104,7 @@ fn all_integer_samples_stay_integer() {
     match &f.ty {
         FieldType::Scalar(s) => assert_eq!(s.kind(), ScalarKind::Integer),
         FieldType::Ref(_) => panic!("expected a scalar"),
+        FieldType::Any => panic!("expected a scalar"),
     }
 }
 
@@ -120,6 +122,7 @@ fn null_sample_makes_the_scalar_nullable() {
             assert!(s.is_nullable());
         }
         FieldType::Ref(_) => panic!("expected a scalar"),
+        FieldType::Any => panic!("expected a scalar"),
     }
 }
 
@@ -134,6 +137,7 @@ fn only_null_samples_default_to_nullable_string() {
             assert!(s.is_nullable());
         }
         FieldType::Ref(_) => panic!("expected a scalar"),
+        FieldType::Any => panic!("expected a scalar"),
     }
 }
 
@@ -155,6 +159,7 @@ fn object_child_becomes_a_nested_named_record() {
             assert_eq!(r.name, "Address");
         }
         FieldType::Scalar(_) => panic!("expected a ref"),
+        FieldType::Any => panic!("expected a ref"),
     }
 }
 
@@ -187,7 +192,8 @@ fn disagreeing_scalar_shapes_raise_a_schema_error() {
 }
 
 // ---------------------------------------------------------------------------
-// `allow_any` scoping (not implemented -- clear SchemaError instead)
+// `allow_any: false` (via `infer`/`infer_with_report`): a hard error, no
+// mention of `any` in the message (there's no fallback in this mode).
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -198,17 +204,66 @@ fn mixing_objects_and_scalars_under_one_label_is_a_schema_error() {
     ];
     let err = infer(&samples, "Root").unwrap_err();
     assert!(err.to_string().contains("mixes objects and values"));
-    assert!(err.to_string().contains("any"));
 }
 
 #[test]
-fn disagreeing_scalar_shapes_error_mentions_the_any_fallback_gap() {
+fn disagreeing_scalar_shapes_error_does_not_mention_any_when_allow_any_is_false() {
     let samples = vec![
         doc(obj(&[("x", Value::Str("a".into()))])),
         doc(obj(&[("x", Value::Bool(true))])),
     ];
     let err = infer(&samples, "Root").unwrap_err();
-    assert!(err.to_string().contains("any"));
+    assert!(err.to_string().contains("more than one scalar"));
+    assert!(!err.to_string().contains("any"));
+}
+
+// ---------------------------------------------------------------------------
+// `allow_any: true` (via `infer_with_report`): real `any` fallback support.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn allow_any_opens_a_mixed_object_and_scalar_label_as_any() {
+    let samples = vec![
+        doc(obj(&[("x", obj(&[("a", Value::Int(1))]))])),
+        doc(obj(&[("x", Value::Int(1))])),
+    ];
+    let (schema, fallbacks) = infer_with_report(&samples, "Root", true).unwrap();
+    let f = field(schema.env(), "Root", "x");
+    assert_eq!(f.ty, FieldType::Any);
+    assert_eq!(fallbacks.len(), 1);
+    assert_eq!(fallbacks[0].location, "Root.x");
+    assert!(fallbacks[0].reason.contains("mixes objects and values"));
+}
+
+#[test]
+fn allow_any_opens_a_disagreeing_scalar_label_as_any() {
+    let samples = vec![
+        doc(obj(&[("x", Value::Str("a".into()))])),
+        doc(obj(&[("x", Value::Bool(true))])),
+    ];
+    let (schema, fallbacks) = infer_with_report(&samples, "Root", true).unwrap();
+    let f = field(schema.env(), "Root", "x");
+    assert_eq!(f.ty, FieldType::Any);
+    assert_eq!(fallbacks.len(), 1);
+    assert_eq!(fallbacks[0].location, "Root.x");
+    assert!(fallbacks[0].reason.contains("more than one scalar kind"));
+    assert!(fallbacks[0].reason.contains("boolean"));
+    assert!(fallbacks[0].reason.contains("string"));
+}
+
+#[test]
+fn allow_any_true_reports_no_fallbacks_when_nothing_is_ambiguous() {
+    let samples = vec![doc(obj(&[("name", Value::Str("a".into()))]))];
+    let (_, fallbacks) = infer_with_report(&samples, "Root", true).unwrap();
+    assert!(fallbacks.is_empty());
+}
+
+#[test]
+fn infer_with_report_allow_any_false_matches_infer_and_has_no_fallbacks() {
+    let samples = vec![doc(obj(&[("name", Value::Str("a".into()))]))];
+    let (schema, fallbacks) = infer_with_report(&samples, "Root", false).unwrap();
+    assert_eq!(schema, infer(&samples, "Root").unwrap());
+    assert!(fallbacks.is_empty());
 }
 
 // ---------------------------------------------------------------------------

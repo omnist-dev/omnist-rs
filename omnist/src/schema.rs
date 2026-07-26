@@ -12,9 +12,17 @@
 //!   principled way to choose).
 //! * **Ref** -- a pointer into the schema's named environment (records
 //!   only); enables reuse and recursion.
+//! * **Any** (`FieldType::Any`) -- accepts every legal document value
+//!   unchecked. Ported from Python's `AnyType`/`ANY` singleton, which has
+//!   been fully implemented and shipped there since v0.5.0 -- not a
+//!   speculative or deferred feature (the *separate*, still-unresolved
+//!   question is whether `any` should be a *permanent* part of the spec
+//!   long-term; that governance question is untouched by this port simply
+//!   catching up to Python's existing behavior, see omnist-rs issue #29).
 //!
-//! A field's type is a `Ref` or a `Scalar`. There are no inline records and
-//! no separate array type -- "array" is a field with cardinality `max > 1`.
+//! A field's type is a `Ref`, a `Scalar`, or `Any`. There are no inline
+//! records and no separate array type -- "array" is a field with
+//! cardinality `max > 1`.
 //! Validation ignores order (per `docs/design/model.md` §7).
 //!
 //! ## Temporal shape-check
@@ -305,11 +313,17 @@ impl std::fmt::Display for Ref {
     }
 }
 
-/// A field's type: a `Ref` to a named record, or a `Scalar`.
+/// A field's type: a `Ref` to a named record, a `Scalar`, or `Any` (accepts
+/// every legal document value -- ported from Python's `AnyType`/`ANY`
+/// singleton, shipped there since v0.5.0). `Any` is not a `Scalar` (it has
+/// no kind and no nullable flag -- null is already included) and not a
+/// `Ref` (it names nothing), so it gets its own unit variant rather than
+/// being folded into either.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum FieldType {
     Scalar(Scalar),
     Ref(Ref),
+    Any,
 }
 
 impl From<Scalar> for FieldType {
@@ -543,10 +557,11 @@ pub(crate) fn value_kind_name(v: &DocScalar) -> &'static str {
 // Schema
 // ---------------------------------------------------------------------------
 
-/// A resolved field type: either a record (via a `Ref`) or a bare `Scalar`.
+/// A resolved field type: a record (via a `Ref`), a bare `Scalar`, or `Any`.
 pub enum Resolved<'a> {
     Record(&'a Record),
     Scalar(Scalar),
+    Any,
 }
 
 /// A schema: a root reference plus an environment of named records.
@@ -598,6 +613,7 @@ impl Schema {
     pub fn resolve(&self, ty: &FieldType) -> Resolved<'_> {
         match ty {
             FieldType::Scalar(s) => Resolved::Scalar(*s),
+            FieldType::Any => Resolved::Any,
             FieldType::Ref(r) => Resolved::Record(
                 self.env
                     .get(&r.name)
@@ -621,6 +637,10 @@ impl Schema {
 
     fn conform(&self, cursor: &document::Cursor<'_>, ty: &FieldType, res: &mut ValidationResult) {
         match self.resolve(ty) {
+            // `any` accepts every legal Document value unchecked -- there is
+            // nothing to conform against, mirroring Python's
+            // `_conform`: `if isinstance(d, AnyType): return`.
+            Resolved::Any => {}
             Resolved::Scalar(s) => self.conform_scalar(cursor, s, res),
             Resolved::Record(r) => self.conform_record(cursor, r, res),
         }
@@ -1212,6 +1232,63 @@ mod tests {
     }
 
     // -- FieldType From conversions / Ref, Display --------------------------
+
+    // -- `any` field type: accepts every legal value unchecked ------------
+
+    #[test]
+    fn any_field_accepts_scalars_and_objects_unchecked() {
+        let mut env = Map::new();
+        env.insert(
+            "Root".to_string(),
+            Record::new(vec![Field::required("x", FieldType::Any).unwrap()]).unwrap(),
+        );
+        let schema = Schema::new(Ref::new("Root"), env).unwrap();
+
+        // Not an array here: cardinality (how many times a label occurs) is
+        // checked independently of the field's type, `any` included -- an
+        // array under a `[1,1]` field is still a cardinality violation, not
+        // an `any`-typed acceptance question. See the array/cardinality
+        // case in a separate `[0,]`-cardinality field below.
+        for v in [
+            Value::Str("hi".into()),
+            Value::Int(1),
+            Value::Float(1.5),
+            Value::Bool(true),
+            Value::Null,
+            obj(&[("nested", Value::Int(1))]),
+        ] {
+            let doc = Doc::of(&obj(&[("x", v.clone())])).unwrap();
+            assert!(schema.accepts(&doc.root()), "any field rejected {v:?}");
+        }
+    }
+
+    #[test]
+    fn any_field_with_array_cardinality_accepts_repeated_values_unchecked() {
+        let mut env = Map::new();
+        env.insert(
+            "Root".to_string(),
+            Record::new(vec![Field::new("x", FieldType::Any, 0, None).unwrap()]).unwrap(),
+        );
+        let schema = Schema::new(Ref::new("Root"), env).unwrap();
+        let doc = Doc::of(&obj(&[(
+            "x",
+            Value::Array(vec![Value::Int(1), Value::Str("mixed".into())]),
+        )]))
+        .unwrap();
+        assert!(schema.accepts(&doc.root()));
+    }
+
+    #[test]
+    fn any_resolves_without_touching_env() {
+        let env: Map<String, Record> = Map::new();
+        let schema = Schema::new(Ref::new("Root"), {
+            let mut e = env;
+            e.insert("Root".to_string(), Record::new(vec![]).unwrap());
+            e
+        })
+        .unwrap();
+        assert!(matches!(schema.resolve(&FieldType::Any), Resolved::Any));
+    }
 
     #[test]
     fn field_type_from_conversions() {

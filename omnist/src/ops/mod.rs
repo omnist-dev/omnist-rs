@@ -3,17 +3,17 @@
 //! (issue #12), one module per op (matching the Python layout, which is
 //! already a reasonable structure per "architecture freedom").
 //!
-//! ## The `any` type is out of scope here
+//! ## The `any` type
 //!
-//! The Python reference's `schema.py` has a fourth type kind, `AnyType`
-//! (accepts any value unchecked), threaded through every op in this family.
-//! `omnist-rs`'s [`crate::schema`] (issue #6) does not have an `AnyType`
-//! equivalent -- whether to add one is an explicitly deferred open design
-//! question upstream (not yet decided for this port), so every op below is
-//! written against the two-kind [`crate::schema::FieldType`] (`Scalar` /
-//! `Ref`) that issue #6 actually shipped. `lint`'s Python `any-field` check
-//! has no Rust counterpart for the same reason -- there is nothing to
-//! inventory yet.
+//! [`crate::schema::FieldType`] has three kinds: `Scalar`, `Ref`, and `Any`
+//! (issue #29). Every op in this family treats `Any` the same way the
+//! Python reference's `AnyType` is treated in the corresponding op:
+//! satisfiability treats it like a `Scalar` (always satisfiable, never
+//! blocks a mandatory field); `local_signature`/minimize give it its own
+//! target-blind shape key (`("any",)`); `subschema` treats `any` on the
+//! superschema side as absorbing everything, and `any` only on the
+//! subschema side as never compatible with a non-`any` target; `lint`'s
+//! `any-field` check inventories every `Any`-typed field in the schema.
 //!
 //! ## Determinism
 //!
