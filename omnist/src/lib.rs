@@ -1,5 +1,6 @@
 pub mod document;
 pub mod error;
+pub mod osd;
 pub mod schema;
 
 pub use error::{DocumentError, OmnistError, SchemaError};
