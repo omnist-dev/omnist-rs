@@ -138,13 +138,17 @@ every recorded `AnyFallback` alongside the schema, mirroring Python's
 `infer_with_report`/`AnyFallback` pair rather than its single
 `infer(..., allow_any=...)` surface.
 
-Origin: PR #29 (scoped `any` out of the schema model entirely; see
-[`limitations.md`](limitations.md#the-any-type-scoping-gap-deferred-not-forgotten))
-established `infer` with no `allow_any` parameter at all. PR #33 (this
-port's `any`) closed that gap by porting `allow_any` as a second
-function rather than adding an optional parameter to `infer` itself --
-an intentional API-shape split from Python's single-function-with-kwarg
-design, flagged during PR #33's review as a deliberate divergence worth
+Origin: PR #15 (`infer.rs`) scoped `any` out of inference entirely,
+leaving `infer` with no `allow_any` parameter at all -- an unforced
+scoping choice, not something the deferred `any` governance question
+required (see
+[`limitations.md`](limitations.md#the-any-type-scoping-gap-deferred-not-forgotten)).
+Issue #29 later flagged that scoping-out as a mistake and tracked
+porting `any` for real. PR #33 (closing #29) fixed it by porting
+`allow_any` as a second function, `infer_with_report`, rather than
+adding an optional parameter to `infer` itself -- an intentional
+API-shape split from Python's single-function-with-kwarg design,
+flagged during PR #33's review as a deliberate divergence worth
 recording rather than silently carrying forward.
 
 Revisitable: yes, in principle -- collapsing back to a single function
@@ -207,7 +211,7 @@ Two structural gaps referenced above are covered in full in
 [`limitations.md`](limitations.md) rather than repeated here:
 
 - The `any`-type scoping gap (deferred pending the sibling `omnist`
-  project's openness decision, per PR #29/#33) --
+  project's openness decision, per issue #29 and PR #33) --
   [`limitations.md`](limitations.md#the-any-type-scoping-gap-deferred-not-forgotten).
 - The `i64` representational ceiling, per format --
   [`limitations.md`](limitations.md#representational-limits-from-scalarint-being-i64).
@@ -222,7 +226,7 @@ Two structural gaps referenced above are covered in full in
 | TOML hex/octal/binary uncapped in Python, capped here | Permanent | #21 |
 | Date-shaped string becomes native literal on write (TOML/YAML) | Permanent (pending a temporal `Scalar` variant) | #19, #21 |
 | Bare time literal round-trips exactly instead of normalizing | Permanent (stronger guarantee, not a gap) | #11 |
-| `infer()`/`infer_with_report()` split vs single `allow_any` kwarg | Revisitable | #29, #33 |
+| `infer()`/`infer_with_report()` split vs single `allow_any` kwarg | Revisitable | #15, #33 |
 | XML coercion: over-`i64` numeral falls to float | Permanent | #23 |
 | XML coercion: ASCII-only digit recognition | Permanent | #23 |
 | XML XXE-safety by construction (`quick-xml`) vs `defusedxml` | Permanent (crate choice) | #23 |
