@@ -81,3 +81,9 @@ fn schema_algebra() {
     let out = run_example("schema_algebra");
     assert_eq!(out, "record Root {\n  \"name\": string,\n}\nroot Root\n\n");
 }
+
+#[test]
+fn format_registry() {
+    let out = run_example("format_registry");
+    assert_eq!(out, "json, kv, oml, toml, xml, yaml\n");
+}
