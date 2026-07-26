@@ -45,6 +45,49 @@ impl SchemaError {
     }
 }
 
+/// An OML source string could not be parsed -- raised by
+/// [`crate::oml::read_oml`], mirroring Python's `ParseError` in
+/// `~/dev/omnist/omnist/errors.py`. Carries the same "line N, col N: msg"
+/// convention the Python reference's scanner/parser produce.
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+#[error("line {line}, col {col}: {message}")]
+pub struct ParseError {
+    pub line: usize,
+    pub col: usize,
+    pub message: String,
+}
+
+impl ParseError {
+    pub fn new(line: usize, col: usize, message: impl Into<String>) -> Self {
+        Self {
+            line,
+            col,
+            message: message.into(),
+        }
+    }
+}
+
+/// An in-memory Document could not be written as OML -- raised by
+/// [`crate::oml::write_oml`], mirroring Python's `WriteError`. In practice
+/// the only way this fires is the shared depth guard (OML is otherwise
+/// lossless for every Document -- see the module doc comment on
+/// `crate::oml`).
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+#[error("{0}")]
+pub struct WriteError(pub String);
+
+impl WriteError {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self(message.into())
+    }
+}
+
+impl From<DocumentError> for WriteError {
+    fn from(e: DocumentError) -> Self {
+        WriteError(e.message)
+    }
+}
+
 /// Crate-wide top-level error, mirroring Python's `OmnistError` base class.
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum OmnistError {
@@ -52,6 +95,10 @@ pub enum OmnistError {
     Document(#[from] DocumentError),
     #[error(transparent)]
     Schema(#[from] SchemaError),
+    #[error(transparent)]
+    Parse(#[from] ParseError),
+    #[error(transparent)]
+    Write(#[from] WriteError),
 }
 
 #[cfg(test)]
@@ -92,5 +139,36 @@ mod tests {
         let wrapped: OmnistError = schema_err.clone().into();
         assert_eq!(wrapped.to_string(), schema_err.to_string());
         assert!(matches!(wrapped, OmnistError::Schema(ref inner) if *inner == schema_err));
+    }
+
+    #[test]
+    fn parse_error_display_includes_line_col_and_message() {
+        let e = ParseError::new(3, 7, "stray character '@'");
+        assert_eq!(e.to_string(), "line 3, col 7: stray character '@'");
+    }
+
+    #[test]
+    fn omnist_error_wraps_parse_error_transparently() {
+        let e = ParseError::new(1, 1, "boom");
+        let wrapped: OmnistError = e.clone().into();
+        assert_eq!(wrapped.to_string(), e.to_string());
+        assert!(matches!(wrapped, OmnistError::Parse(ref inner) if *inner == e));
+    }
+
+    #[test]
+    fn write_error_display_and_from_document_error() {
+        let e = WriteError::new("nesting exceeds the maximum depth (200)");
+        assert_eq!(e.to_string(), "nesting exceeds the maximum depth (200)");
+        let doc_err = DocumentError::new("$", "nesting exceeds the maximum depth (200)");
+        let from_doc: WriteError = doc_err.into();
+        assert_eq!(from_doc, e);
+    }
+
+    #[test]
+    fn omnist_error_wraps_write_error_transparently() {
+        let e = WriteError::new("boom");
+        let wrapped: OmnistError = e.clone().into();
+        assert_eq!(wrapped.to_string(), e.to_string());
+        assert!(matches!(wrapped, OmnistError::Write(ref inner) if *inner == e));
     }
 }
