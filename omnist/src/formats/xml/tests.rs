@@ -51,6 +51,19 @@ fn empty_document_is_a_parse_error() {
     assert!(matches!(err, OmnistError::Parse(ref e) if e.message.contains("no root element")));
 }
 
+#[test]
+fn malformed_syntax_before_any_root_element_is_a_parse_error() {
+    // A stray closing tag with no matching opening tag fails on the very
+    // first `read_event_into` call in `read_xml`'s top-level loop, before
+    // any `Start`/`Empty`/`Eof` event has been returned -- this exercises
+    // that loop's own `map_err(..)` mapping, distinct from the identical
+    // mapping inside `parse_content` (exercised by
+    // `invalid_xml_is_a_parse_error` and friends, whose malformed syntax
+    // occurs only after a valid root `Start` event has already opened).
+    let err = read_xml("</root>").unwrap_err();
+    assert!(matches!(err, OmnistError::Parse(_)));
+}
+
 // -------------------------------------------------- interleaving / repetition
 
 #[test]
