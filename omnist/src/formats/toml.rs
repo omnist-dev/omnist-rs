@@ -73,15 +73,31 @@
 //! Exceeds the limit (4300 digits) for integer string conversion`, the
 //! *identical* CPython `int(str)`-conversion guard `read_json`'s comment
 //! documents (`sys.set_int_max_str_digits`), not a TOML-spec-mandated
-//! 64-bit bounds check at all. The same 4300-digit cap applies to hex/octal/
-//! binary literals too (live-confirmed: `0x` + 5000 `f`s also raises the
-//! identical digit-limit `ValueError`), even though CPython's own digit-cap
-//! documentation describes power-of-two bases as exempt -- `tomllib`
-//! reconstructs the numeral through a decimal-digit-limited path regardless
-//! of the source radix. So Python's TOML integer handling is exactly
-//! `json.rs`'s/`yaml.rs`'s existing 4300-digit-cap pattern, not a
-//! TOML-native 64-bit check -- confirming the issue's speculation was
-//! *wrong* and the existing precedent applies unchanged.
+//! 64-bit bounds check at all -- **for decimal literals only**. Hex/octal/
+//! binary literals are a genuine exception, not a false one: live-confirmed
+//! `tomllib.loads("x = 0x" + "f" * 5000)` (and even 10000 `f`s) parses
+//! successfully with **no error at all**, matching CPython's own documented
+//! carve-out (`sys.set_int_max_str_digits` explicitly exempts power-of-two
+//! bases) -- an earlier draft of this comment claimed hex/octal/binary hit
+//! the identical digit-limit `ValueError`, which was wrong and has been
+//! corrected. So Python's TOML integer handling is `json.rs`'s/`yaml.rs`'s
+//! existing 4300-digit-cap pattern for decimal literals, and *uncapped* for
+//! hex/octal/binary.
+//!
+//! This port does **not** replicate that decimal/non-decimal split: every
+//! radix goes through the same [`toml_overflow_error`] recovery and the same
+//! 4300-digit cap, because `toml_edit` itself enforces a strict `i64` range
+//! at parse time regardless of radix (see below) -- there is no path in this
+//! implementation for an oversized hex/octal/binary literal to reach
+//! `Scalar::Int` uncapped the way Python's arbitrary-precision `int` does.
+//! This is a **disclosed divergence from Python**, not parity: kept
+//! deliberately rather than special-cased away, because (a) `Scalar::Int`
+//! is `i64`-backed regardless of the literal's original radix, so an
+//! "uncapped hex" path would still have to fail *somewhere* for anything
+//! over `i64::MAX`, and (b) capping the digit run uniformly preserves the
+//! same superlinear-conversion DoS protection `json.rs`/`yaml.rs` apply,
+//! without carving out a radix-specific exemption this port has no
+//! representational way to honor past 64 bits anyway.
 //!
 //! Where this module's implementation had to diverge from `json.rs`'s
 //! straight-line reuse: **`toml_edit` itself enforces a strict 64-bit
@@ -245,7 +261,10 @@ fn toml_parse_error(text: &str, e: &toml_edit::TomlError) -> ParseError {
 /// gets the security-motivated cap message; under the cap (but still not
 /// representable in `i64`, `toml_edit`'s actual failure condition) gets the
 /// "out of range for a 64-bit integer" message -- see this module's doc
-/// comment for why this recovery is needed at all.
+/// comment for why this recovery is needed at all, and for why this
+/// applies uniformly across radixes even though Python's own tomllib
+/// leaves hex/octal/binary literals uncapped (a disclosed divergence,
+/// not a parity claim).
 fn toml_overflow_error(text: &str, span: std::ops::Range<usize>) -> ParseError {
     let (line, col) = line_col(text, span.start);
     let raw = &text[span];
@@ -1004,6 +1023,24 @@ mod tests {
     }
 
     #[test]
+    fn huge_hex_literal_is_capped_unlike_pythons_uncapped_tomllib() {
+        // Live-confirmed divergence: tomllib.loads("x = 0x" + "f"*5000)
+        // parses successfully in Python with no error at all (CPython's
+        // digit cap explicitly exempts power-of-two bases). This port does
+        // not replicate that exemption -- toml_edit enforces a strict i64
+        // range at parse time regardless of radix, so this hits the same
+        // digit-cap recovery path as a decimal literal and is rejected. See
+        // this module's doc comment for why that's a disclosed, deliberate
+        // divergence rather than a parity claim.
+        let text = format!("x = 0x{}\n", "f".repeat(5000));
+        let err = read_toml(&text).unwrap_err();
+        assert!(matches!(
+            err,
+            OmnistError::Parse(ref e) if e.message.contains("exceeding the 4300-digit limit")
+        ));
+    }
+
+    #[test]
     fn integer_over_4300_digits_is_the_digit_cap_error() {
         let text = format!("x = {}\n", "9".repeat(4301));
         let err = read_toml(&text).unwrap_err();
@@ -1014,7 +1051,14 @@ mod tests {
     }
 
     #[test]
-    fn integer_one_digit_over_i64_max_is_out_of_range_not_digit_cap() {
+    fn integer_literal_under_digit_cap_but_over_i64_range_is_out_of_range_error() {
+        // Live-confirmed: tomllib.loads("x = 9223372036854775808") parses
+        // fine in Python (arbitrary-precision int, no error at all -- this
+        // is well under the 4300-digit cap). This port's Scalar::Int is
+        // i64-only, so the same literal is rejected here as out of range --
+        // a disclosed representational limit of this Rust port, not parity
+        // with Python's real behavior, matching json.rs's own precedent for
+        // the same representational gap.
         let text = "x = 9223372036854775808\n"; // i64::MAX + 1, 19 digits
         let err = read_toml(text).unwrap_err();
         assert!(matches!(
