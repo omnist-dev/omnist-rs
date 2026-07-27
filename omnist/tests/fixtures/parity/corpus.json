@@ -582,6 +582,1410 @@
           ]
         ]
       }
+    },
+    {
+      "module": "test_lint.test_unsatisfiable_record",
+      "note": "lint: a mandatory ref cycle (A<->B) reports both records unsatisfiable",
+      "kind": "lint_case",
+      "schema": "record A { \"b\": B }\nrecord B { \"a\": A }\nroot A",
+      "expected": [
+        [
+          "unsatisfiable-record",
+          "warning",
+          "A"
+        ],
+        [
+          "unsatisfiable-record",
+          "warning",
+          "B"
+        ]
+      ]
+    },
+    {
+      "module": "test_lint.test_unreachable_record",
+      "note": "lint: a record defined but never referenced from root is unreachable-record",
+      "kind": "lint_case",
+      "schema": "record R { \"x\": integer }\nrecord Orphan { \"y\": string }\nroot R",
+      "expected": [
+        [
+          "unreachable-record",
+          "warning",
+          "Orphan"
+        ]
+      ]
+    },
+    {
+      "module": "test_lint.test_duplicate_record",
+      "note": "lint: two structurally identical records (Addr, Location) report duplicate-record",
+      "kind": "lint_case",
+      "schema": "record Addr { \"c\": string }\nrecord Location { \"c\": string }\nrecord R { \"a\": Addr, \"l\": Location }\nroot R",
+      "expected": [
+        [
+          "duplicate-record",
+          "warning",
+          "Addr, Location"
+        ]
+      ]
+    },
+    {
+      "module": "test_lint.test_any_field_inventory",
+      "note": "lint: a schema with one any-typed field reports exactly one any-field finding",
+      "kind": "lint_case",
+      "schema": "record R { \"id\": string, \"data\": any }\nroot R",
+      "expected": [
+        [
+          "any-field",
+          "info",
+          "R.data"
+        ]
+      ]
+    },
+    {
+      "module": "test_lint.test_clean_schema_has_no_findings",
+      "note": "lint: a schema with no structural problems produces zero findings",
+      "kind": "lint_case",
+      "schema": "record R { \"x\": integer, \"y\" [0,1]: string }\nroot R",
+      "expected": []
+    },
+    {
+      "module": "test_lint.test_findings_sorted_by_code_then_location",
+      "note": "lint: findings across all four check kinds come back sorted by (code, location)",
+      "kind": "lint_case",
+      "schema": "record A { \"b\": B }\nrecord B { \"a\": A }\nrecord Orphan { \"z\": any }\nroot A",
+      "expected": [
+        [
+          "any-field",
+          "info",
+          "Orphan.z"
+        ],
+        [
+          "unreachable-record",
+          "warning",
+          "Orphan"
+        ],
+        [
+          "unsatisfiable-record",
+          "warning",
+          "A"
+        ],
+        [
+          "unsatisfiable-record",
+          "warning",
+          "B"
+        ]
+      ]
+    },
+    {
+      "module": "test_lint.test_any_only_schema_has_no_warning",
+      "note": "lint: an info-only schema (just an any-field inventory) has no warning-severity findings",
+      "kind": "lint_case",
+      "schema": "record R { \"data\": any }\nroot R",
+      "expected": [
+        [
+          "any-field",
+          "info",
+          "R.data"
+        ]
+      ]
+    },
+    {
+      "module": "test_lint.test_lint_finding_is_frozen",
+      "note": "lint: LintFinding's four fields round-trip through construction (Python enforces immutability via a frozen dataclass; Rust's by-value struct has no setter to guard)",
+      "kind": "lint_finding_shape",
+      "code": "any-field",
+      "severity": "info",
+      "location": "R.x",
+      "message": "msg"
+    },
+    {
+      "module": "test_lint.test_lint_does_not_mutate",
+      "note": "lint: calling lint(s) does not change s's env (record set, order) -- diagnose, never mutate",
+      "kind": "lint_no_mutation",
+      "schema": "record R { \"x\": integer }\nrecord Orphan { \"y\": string }\nroot R"
+    },
+    {
+      "module": "test_canonical.TestDocument.test_build_and_navigate",
+      "note": "Document: labels()/get_one() navigate a flat two-field document",
+      "kind": "doc_query",
+      "initial": {
+        "$edges": [
+          [
+            "name",
+            {
+              "$str": "Ann"
+            }
+          ],
+          [
+            "age",
+            {
+              "$int": 30
+            }
+          ]
+        ]
+      },
+      "expected_labels": [
+        "name",
+        "age"
+      ],
+      "expected_counts": {
+        "name": 1,
+        "age": 1
+      }
+    },
+    {
+      "module": "test_canonical.TestDocument.test_repeated_label_is_an_array",
+      "note": "Document: a repeated label ('member' x2) is 'many members', not an array field",
+      "kind": "doc_query",
+      "initial": {
+        "$edges": [
+          [
+            "member",
+            {
+              "$edges": [
+                [
+                  "n",
+                  {
+                    "$int": 1
+                  }
+                ]
+              ]
+            }
+          ],
+          [
+            "member",
+            {
+              "$edges": [
+                [
+                  "n",
+                  {
+                    "$int": 2
+                  }
+                ]
+              ]
+            }
+          ]
+        ]
+      },
+      "expected_labels": [
+        "member"
+      ],
+      "expected_counts": {
+        "member": 2
+      }
+    },
+    {
+      "module": "test_canonical.TestDocument.test_to_data_is_edge_list",
+      "note": "Document: to_data() on a repeated label is the flat edge list, not a grouped array",
+      "kind": "doc_to_data",
+      "initial": {
+        "$edges": [
+          [
+            "a",
+            {
+              "$int": 1
+            }
+          ],
+          [
+            "xs",
+            {
+              "$int": 1
+            }
+          ],
+          [
+            "xs",
+            {
+              "$int": 2
+            }
+          ]
+        ]
+      },
+      "expected": {
+        "$edges": [
+          [
+            "a",
+            {
+              "$int": 1
+            }
+          ],
+          [
+            "xs",
+            {
+              "$int": 1
+            }
+          ],
+          [
+            "xs",
+            {
+              "$int": 2
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "module": "test_canonical.TestDocument.test_editing",
+      "note": "Document: add()x2 (repeated 'tag'), set() on existing/absent labels, then remove('tag')",
+      "kind": "doc_ops",
+      "initial": {
+        "$edges": [
+          [
+            "name",
+            {
+              "$str": "Ann"
+            }
+          ]
+        ]
+      },
+      "ops": [
+        {
+          "op": "add",
+          "label": "tag",
+          "value": {
+            "$str": "x"
+          }
+        },
+        {
+          "op": "add",
+          "label": "tag",
+          "value": {
+            "$str": "y"
+          }
+        },
+        {
+          "op": "set",
+          "label": "name",
+          "value": {
+            "$str": "Bob"
+          }
+        },
+        {
+          "op": "set",
+          "label": "age",
+          "value": {
+            "$int": 30
+          }
+        },
+        {
+          "op": "remove",
+          "label": "tag",
+          "value": null
+        }
+      ],
+      "expected": {
+        "$edges": [
+          [
+            "name",
+            {
+              "$str": "Bob"
+            }
+          ],
+          [
+            "age",
+            {
+              "$int": 30
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "module": "test_canonical.TestDocument.test_set_on_absent_label_appends",
+      "note": "Document: set() on a label absent from the document appends a new edge",
+      "kind": "doc_ops",
+      "initial": {
+        "$edges": [
+          [
+            "a",
+            {
+              "$int": 1
+            }
+          ]
+        ]
+      },
+      "ops": [
+        {
+          "op": "set",
+          "label": "b",
+          "value": {
+            "$int": 2
+          }
+        }
+      ],
+      "expected": {
+        "$edges": [
+          [
+            "a",
+            {
+              "$int": 1
+            }
+          ],
+          [
+            "b",
+            {
+              "$int": 2
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "module": "test_canonical.TestDocument.test_set_on_single_label_unchanged_behavior",
+      "note": "Document: set() on a label with exactly one existing edge replaces it in place",
+      "kind": "doc_ops",
+      "initial": {
+        "$edges": [
+          [
+            "a",
+            {
+              "$int": 1
+            }
+          ],
+          [
+            "b",
+            {
+              "$int": 2
+            }
+          ]
+        ]
+      },
+      "ops": [
+        {
+          "op": "set",
+          "label": "a",
+          "value": {
+            "$int": 99
+          }
+        }
+      ],
+      "expected": {
+        "$edges": [
+          [
+            "a",
+            {
+              "$int": 99
+            }
+          ],
+          [
+            "b",
+            {
+              "$int": 2
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "module": "test_canonical.TestDocument.test_set_on_repeated_label_collapses_to_one_at_first_position",
+      "note": "Document: set() on a repeated label collapses all occurrences to one, at the first position",
+      "kind": "doc_ops",
+      "initial": {
+        "$edges": [
+          [
+            "a",
+            {
+              "$int": 1
+            }
+          ]
+        ]
+      },
+      "ops": [
+        {
+          "op": "add",
+          "label": "a",
+          "value": {
+            "$int": 2
+          }
+        },
+        {
+          "op": "add",
+          "label": "b",
+          "value": {
+            "$int": 9
+          }
+        },
+        {
+          "op": "set",
+          "label": "a",
+          "value": {
+            "$int": 99
+          }
+        }
+      ],
+      "expected": {
+        "$edges": [
+          [
+            "a",
+            {
+              "$int": 99
+            }
+          ],
+          [
+            "b",
+            {
+              "$int": 9
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "module": "test_canonical.TestDocument.test_set_preserves_first_occurrence_position_among_other_labels",
+      "note": "Document: set() keeps the surviving edge at the label's first-occurrence slot",
+      "kind": "doc_ops",
+      "initial": {
+        "$edges": [
+          [
+            "a",
+            {
+              "$int": 1
+            }
+          ],
+          [
+            "b",
+            {
+              "$int": 2
+            }
+          ]
+        ]
+      },
+      "ops": [
+        {
+          "op": "add",
+          "label": "a",
+          "value": {
+            "$int": 3
+          }
+        },
+        {
+          "op": "set",
+          "label": "a",
+          "value": {
+            "$int": 99
+          }
+        }
+      ],
+      "expected": {
+        "$edges": [
+          [
+            "a",
+            {
+              "$int": 99
+            }
+          ],
+          [
+            "b",
+            {
+              "$int": 2
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "module": "test_canonical.TestDocument.test_set_after_remove_appends",
+      "note": "Document: set() after remove() appends at the end, same as a fresh label",
+      "kind": "doc_ops",
+      "initial": {
+        "$edges": [
+          [
+            "a",
+            {
+              "$int": 1
+            }
+          ]
+        ]
+      },
+      "ops": [
+        {
+          "op": "add",
+          "label": "a",
+          "value": {
+            "$int": 2
+          }
+        },
+        {
+          "op": "remove",
+          "label": "a",
+          "value": null
+        },
+        {
+          "op": "set",
+          "label": "a",
+          "value": {
+            "$int": 7
+          }
+        }
+      ],
+      "expected": {
+        "$edges": [
+          [
+            "a",
+            {
+              "$int": 7
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "module": "test_canonical.TestDocument.test_set_replace_all_matches_remove_then_add_docstring_contract",
+      "note": "Document: set() keeps first-occurrence position; remove()+add() appends at the end -- same starting document, two different resulting edge lists",
+      "kind": "doc_ops_pair",
+      "initial": {
+        "$edges": [
+          [
+            "a",
+            {
+              "$int": 1
+            }
+          ]
+        ]
+      },
+      "ops_a": [
+        {
+          "op": "add",
+          "label": "a",
+          "value": {
+            "$int": 2
+          }
+        },
+        {
+          "op": "add",
+          "label": "b",
+          "value": {
+            "$int": 9
+          }
+        },
+        {
+          "op": "set",
+          "label": "a",
+          "value": {
+            "$int": 99
+          }
+        }
+      ],
+      "ops_b": [
+        {
+          "op": "add",
+          "label": "a",
+          "value": {
+            "$int": 2
+          }
+        },
+        {
+          "op": "add",
+          "label": "b",
+          "value": {
+            "$int": 9
+          }
+        },
+        {
+          "op": "remove",
+          "label": "a",
+          "value": null
+        },
+        {
+          "op": "add",
+          "label": "a",
+          "value": {
+            "$int": 99
+          }
+        }
+      ],
+      "expected_a": {
+        "$edges": [
+          [
+            "a",
+            {
+              "$int": 99
+            }
+          ],
+          [
+            "b",
+            {
+              "$int": 9
+            }
+          ]
+        ]
+      },
+      "expected_b": {
+        "$edges": [
+          [
+            "b",
+            {
+              "$int": 9
+            }
+          ],
+          [
+            "a",
+            {
+              "$int": 99
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "module": "test_canonical.TestInfer.test_flat",
+      "note": "infer: age (present in one sample, absent in another) infers optional; name required",
+      "kind": "infer_case",
+      "samples": [
+        {
+          "name": "Ann",
+          "age": 30
+        },
+        {
+          "name": "Bob"
+        }
+      ],
+      "checks": [
+        [
+          {
+            "name": "Cy"
+          },
+          true
+        ],
+        [
+          {
+            "age": 1
+          },
+          false
+        ]
+      ]
+    },
+    {
+      "module": "test_canonical.TestInfer.test_array_and_nested",
+      "note": "infer: array-of-string and nested-record shape both infer correctly",
+      "kind": "infer_case",
+      "samples": [
+        {
+          "id": 1,
+          "tags": [
+            "a",
+            "b"
+          ],
+          "addr": {
+            "city": "X"
+          }
+        }
+      ],
+      "checks": [
+        [
+          {
+            "id": 9,
+            "tags": [
+              "c"
+            ],
+            "addr": {
+              "city": "Y"
+            }
+          },
+          true
+        ],
+        [
+          {
+            "id": 9,
+            "tags": [
+              1
+            ],
+            "addr": {
+              "city": "Y"
+            }
+          },
+          false
+        ]
+      ]
+    },
+    {
+      "module": "test_canonical.TestInfer.test_accepts_its_own_samples",
+      "note": "infer: a schema inferred from int+float samples (widened to number) accepts both samples back",
+      "kind": "infer_case",
+      "samples": [
+        {
+          "v": 1
+        },
+        {
+          "v": 2.5
+        }
+      ],
+      "checks": [
+        [
+          {
+            "v": 1
+          },
+          true
+        ],
+        [
+          {
+            "v": 2.5
+          },
+          true
+        ]
+      ]
+    },
+    {
+      "module": "test_canonical.TestInfer.test_conflicting_scalars_raise",
+      "note": "infer: conflicting scalar kinds for the same field (int vs string) across samples raises SchemaError",
+      "kind": "infer_error",
+      "samples": [
+        {
+          "v": 1
+        },
+        {
+          "v": "x"
+        }
+      ]
+    },
+    {
+      "module": "test_canonical.TestInfer.test_null_only_field_infers_nullable_string",
+      "note": "infer: a field that is null in every sample infers as nullable string (accepts any value)",
+      "kind": "infer_case",
+      "samples": [
+        {
+          "v": null
+        },
+        {
+          "v": null
+        }
+      ],
+      "checks": [
+        [
+          {
+            "v": null
+          },
+          true
+        ],
+        [
+          {
+            "v": "anything"
+          },
+          true
+        ]
+      ]
+    },
+    {
+      "module": "test_canonical.TestInfer.test_null_alongside_a_kind_is_orthogonal",
+      "note": "infer: null alongside a concrete kind (int) infers nullable-of-that-kind, not any",
+      "kind": "infer_case",
+      "samples": [
+        {
+          "v": 1
+        },
+        {
+          "v": null
+        }
+      ],
+      "checks": [
+        [
+          {
+            "v": 7
+          },
+          true
+        ],
+        [
+          {
+            "v": null
+          },
+          true
+        ],
+        [
+          {
+            "v": "x"
+          },
+          false
+        ]
+      ]
+    },
+    {
+      "module": "test_canonical.TestInfer.test_optional_field_detection_is_order_independent",
+      "note": "infer: a field absent in an earlier sample but present later infers optional, regardless of sample order (port: min=0, max=1)",
+      "kind": "infer_order_independent",
+      "samples_a": [
+        {
+          "host": "a"
+        },
+        {
+          "host": "b",
+          "port": 80
+        }
+      ],
+      "samples_b": [
+        {
+          "host": "b",
+          "port": 80
+        },
+        {
+          "host": "a"
+        }
+      ],
+      "expected_port_min": 0,
+      "expected_port_max": 1,
+      "checks": [
+        [
+          {
+            "host": "x"
+          },
+          true
+        ],
+        [
+          {
+            "host": "x",
+            "port": 1
+          },
+          true
+        ]
+      ]
+    },
+    {
+      "module": "test_canonical.TestValidation.test_scalar_kinds",
+      "note": "validate: matching scalar kinds pass",
+      "kind": "schema_validate",
+      "schema": "record R { \"n\": integer, \"s\": string }\nroot R",
+      "doc_json_input": {
+        "n": 1,
+        "s": "x"
+      },
+      "expected_ok": true
+    },
+    {
+      "module": "test_canonical.TestValidation.test_scalar_kinds",
+      "note": "validate: an integer field given a string value fails",
+      "kind": "schema_validate",
+      "schema": "record R { \"n\": integer, \"s\": string }\nroot R",
+      "doc_json_input": {
+        "n": "x",
+        "s": "x"
+      },
+      "expected_ok": false
+    },
+    {
+      "module": "test_canonical.TestValidation.test_required_and_optional",
+      "note": "validate: required field alone (optional absent) passes",
+      "kind": "schema_validate",
+      "schema": "record R { \"name\": string, \"age\" [0,1]: integer }\nroot R",
+      "doc_json_input": {
+        "name": "a"
+      },
+      "expected_ok": true
+    },
+    {
+      "module": "test_canonical.TestValidation.test_required_and_optional",
+      "note": "validate: required + optional both present passes",
+      "kind": "schema_validate",
+      "schema": "record R { \"name\": string, \"age\" [0,1]: integer }\nroot R",
+      "doc_json_input": {
+        "name": "a",
+        "age": 3
+      },
+      "expected_ok": true
+    },
+    {
+      "module": "test_canonical.TestValidation.test_required_and_optional",
+      "note": "validate: required field missing fails",
+      "kind": "schema_validate",
+      "schema": "record R { \"name\": string, \"age\" [0,1]: integer }\nroot R",
+      "doc_json_input": {
+        "age": 3
+      },
+      "expected_ok": false
+    },
+    {
+      "module": "test_canonical.TestValidation.test_closed_rejects_unexpected",
+      "note": "validate: a closed record rejects an unexpected field with an unexpected-field error code",
+      "kind": "schema_validate_error_code",
+      "schema": "record R { \"a\": integer }\nroot R",
+      "doc_json_input": {
+        "a": 1,
+        "b": 2
+      },
+      "expected_code": "unexpected-field"
+    },
+    {
+      "module": "test_canonical.TestValidation.test_array_cardinality",
+      "note": "validate: unbounded array with 3 elements passes",
+      "kind": "schema_validate",
+      "schema": "record R { \"xs\" [0,]: integer }\nroot R",
+      "doc_json_input": {
+        "xs": [
+          1,
+          2,
+          3
+        ]
+      },
+      "expected_ok": true
+    },
+    {
+      "module": "test_canonical.TestValidation.test_array_cardinality",
+      "note": "validate: [0,] cardinality allows zero occurrences",
+      "kind": "schema_validate",
+      "schema": "record R { \"xs\" [0,]: integer }\nroot R",
+      "doc_json_input": {},
+      "expected_ok": true
+    },
+    {
+      "module": "test_canonical.TestValidation.test_array_cardinality",
+      "note": "validate: [1,] cardinality rejects zero occurrences",
+      "kind": "schema_validate",
+      "schema": "record R { \"xs\" [1,]: integer }\nroot R",
+      "doc_json_input": {},
+      "expected_ok": false
+    },
+    {
+      "module": "test_canonical.TestValidation.test_array_cardinality",
+      "note": "validate: [1,] cardinality accepts one occurrence",
+      "kind": "schema_validate",
+      "schema": "record R { \"xs\" [1,]: integer }\nroot R",
+      "doc_json_input": {
+        "xs": [
+          1
+        ]
+      },
+      "expected_ok": true
+    },
+    {
+      "module": "test_canonical.TestValidation.test_array_cardinality",
+      "note": "validate: exact cardinality [2] accepts exactly two",
+      "kind": "schema_validate",
+      "schema": "record R { \"xs\" [2]: integer }\nroot R",
+      "doc_json_input": {
+        "xs": [
+          1,
+          2
+        ]
+      },
+      "expected_ok": true
+    },
+    {
+      "module": "test_canonical.TestValidation.test_array_cardinality",
+      "note": "validate: exact cardinality [2] rejects one",
+      "kind": "schema_validate",
+      "schema": "record R { \"xs\" [2]: integer }\nroot R",
+      "doc_json_input": {
+        "xs": [
+          1
+        ]
+      },
+      "expected_ok": false
+    },
+    {
+      "module": "test_canonical.TestValidation.test_nullable",
+      "note": "validate: nullable field accepts null",
+      "kind": "schema_validate",
+      "schema": "record R { \"note\": string? }\nroot R",
+      "doc_json_input": {
+        "note": null
+      },
+      "expected_ok": true
+    },
+    {
+      "module": "test_canonical.TestValidation.test_nullable",
+      "note": "validate: nullable field accepts its underlying kind",
+      "kind": "schema_validate",
+      "schema": "record R { \"note\": string? }\nroot R",
+      "doc_json_input": {
+        "note": "hi"
+      },
+      "expected_ok": true
+    },
+    {
+      "module": "test_canonical.TestValidation.test_nullable",
+      "note": "validate: nullable string still rejects a wrong-kind value",
+      "kind": "schema_validate",
+      "schema": "record R { \"note\": string? }\nroot R",
+      "doc_json_input": {
+        "note": 1
+      },
+      "expected_ok": false
+    },
+    {
+      "module": "test_canonical.TestValidation.test_integer_satisfies_number",
+      "note": "validate: an integer value satisfies a number field",
+      "kind": "schema_validate",
+      "schema": "record R { \"v\": number }\nroot R",
+      "doc_json_input": {
+        "v": 7
+      },
+      "expected_ok": true
+    },
+    {
+      "module": "test_canonical.TestValidation.test_integer_satisfies_number",
+      "note": "validate: a float value satisfies a number field",
+      "kind": "schema_validate",
+      "schema": "record R { \"v\": number }\nroot R",
+      "doc_json_input": {
+        "v": 7.5
+      },
+      "expected_ok": true
+    },
+    {
+      "module": "test_canonical.TestValidation.test_integer_satisfies_number",
+      "note": "validate: a string value does not satisfy a number field",
+      "kind": "schema_validate",
+      "schema": "record R { \"v\": number }\nroot R",
+      "doc_json_input": {
+        "v": "x"
+      },
+      "expected_ok": false
+    },
+    {
+      "module": "test_canonical.TestValidation.test_ref_and_recursion",
+      "note": "validate: a self-referential record (Node) validates a nested valid child",
+      "kind": "schema_validate",
+      "schema": "record Node { \"value\": integer, \"kids\" [0,]: Node }\nroot Node",
+      "doc_json_input": {
+        "value": 1,
+        "kids": [
+          {
+            "value": 2,
+            "kids": []
+          }
+        ]
+      },
+      "expected_ok": true
+    },
+    {
+      "module": "test_canonical.TestValidation.test_ref_and_recursion",
+      "note": "validate: a self-referential record rejects a type mismatch nested inside a child",
+      "kind": "schema_validate",
+      "schema": "record Node { \"value\": integer, \"kids\" [0,]: Node }\nroot Node",
+      "doc_json_input": {
+        "value": 1,
+        "kids": [
+          {
+            "value": "x",
+            "kids": []
+          }
+        ]
+      },
+      "expected_ok": false
+    },
+    {
+      "module": "test_canonical.TestValidation.test_question_mark_on_ref_is_error",
+      "note": "OSD: a '?' nullable marker on a Ref-typed field is rejected at parse time",
+      "kind": "osd_parse_error",
+      "input": "record A { \"x\": integer }\nrecord R { \"a\": A? }\nroot R"
+    },
+    {
+      "module": "test_canonical.TestValidation.test_enum_syntax_is_rejected",
+      "note": "OSD: enum-literal-union syntax ('a' | 'b') is rejected -- '|' isn't in the grammar at all",
+      "kind": "osd_parse_error",
+      "input": "record R { \"status\": \"open\" | \"closed\" }\nroot R"
+    },
+    {
+      "module": "test_canonical.TestValidation.test_literal_valued_field_is_rejected",
+      "note": "OSD: a single literal value in type position (no '|') is rejected",
+      "kind": "osd_parse_error",
+      "input": "record R { \"status\": \"open\" }\nroot R"
+    },
+    {
+      "module": "test_canonical.TestValidation.test_literal_valued_field_is_rejected",
+      "note": "OSD: a single literal value in type position (no '|') is rejected",
+      "kind": "osd_parse_error",
+      "input": "record R { \"n\": 5 }\nroot R"
+    },
+    {
+      "module": "test_canonical.TestValidation.test_union_keyword_is_rejected",
+      "note": "OSD: the 'union' keyword (never part of the shipped grammar) is rejected",
+      "kind": "osd_parse_error",
+      "input": "union License { \"auto\", \"manual\" }\nrecord R { \"a\": integer }\nroot R"
+    },
+    {
+      "module": "test_canonical.TestOsdRobustness.test_float_cardinality_raises_cleanly",
+      "note": "OSD: a float cardinality bound ([1.5,3]) is rejected cleanly as a SchemaError",
+      "kind": "osd_parse_error",
+      "input": "record R { \"a\" [1.5,3]: integer }\nroot R"
+    },
+    {
+      "module": "test_canonical.TestOsdRobustness.test_many_flat_definitions_are_not_rejected",
+      "note": "OSD: 150 unrelated non-nested record definitions parse fine (depth guard counts nesting, not total records)",
+      "kind": "osd_parse_ok",
+      "input": "record R0 { \"a\": integer }\nrecord R1 { \"a\": integer }\nrecord R2 { \"a\": integer }\nrecord R3 { \"a\": integer }\nrecord R4 { \"a\": integer }\nrecord R5 { \"a\": integer }\nrecord R6 { \"a\": integer }\nrecord R7 { \"a\": integer }\nrecord R8 { \"a\": integer }\nrecord R9 { \"a\": integer }\nrecord R10 { \"a\": integer }\nrecord R11 { \"a\": integer }\nrecord R12 { \"a\": integer }\nrecord R13 { \"a\": integer }\nrecord R14 { \"a\": integer }\nrecord R15 { \"a\": integer }\nrecord R16 { \"a\": integer }\nrecord R17 { \"a\": integer }\nrecord R18 { \"a\": integer }\nrecord R19 { \"a\": integer }\nrecord R20 { \"a\": integer }\nrecord R21 { \"a\": integer }\nrecord R22 { \"a\": integer }\nrecord R23 { \"a\": integer }\nrecord R24 { \"a\": integer }\nrecord R25 { \"a\": integer }\nrecord R26 { \"a\": integer }\nrecord R27 { \"a\": integer }\nrecord R28 { \"a\": integer }\nrecord R29 { \"a\": integer }\nrecord R30 { \"a\": integer }\nrecord R31 { \"a\": integer }\nrecord R32 { \"a\": integer }\nrecord R33 { \"a\": integer }\nrecord R34 { \"a\": integer }\nrecord R35 { \"a\": integer }\nrecord R36 { \"a\": integer }\nrecord R37 { \"a\": integer }\nrecord R38 { \"a\": integer }\nrecord R39 { \"a\": integer }\nrecord R40 { \"a\": integer }\nrecord R41 { \"a\": integer }\nrecord R42 { \"a\": integer }\nrecord R43 { \"a\": integer }\nrecord R44 { \"a\": integer }\nrecord R45 { \"a\": integer }\nrecord R46 { \"a\": integer }\nrecord R47 { \"a\": integer }\nrecord R48 { \"a\": integer }\nrecord R49 { \"a\": integer }\nrecord R50 { \"a\": integer }\nrecord R51 { \"a\": integer }\nrecord R52 { \"a\": integer }\nrecord R53 { \"a\": integer }\nrecord R54 { \"a\": integer }\nrecord R55 { \"a\": integer }\nrecord R56 { \"a\": integer }\nrecord R57 { \"a\": integer }\nrecord R58 { \"a\": integer }\nrecord R59 { \"a\": integer }\nrecord R60 { \"a\": integer }\nrecord R61 { \"a\": integer }\nrecord R62 { \"a\": integer }\nrecord R63 { \"a\": integer }\nrecord R64 { \"a\": integer }\nrecord R65 { \"a\": integer }\nrecord R66 { \"a\": integer }\nrecord R67 { \"a\": integer }\nrecord R68 { \"a\": integer }\nrecord R69 { \"a\": integer }\nrecord R70 { \"a\": integer }\nrecord R71 { \"a\": integer }\nrecord R72 { \"a\": integer }\nrecord R73 { \"a\": integer }\nrecord R74 { \"a\": integer }\nrecord R75 { \"a\": integer }\nrecord R76 { \"a\": integer }\nrecord R77 { \"a\": integer }\nrecord R78 { \"a\": integer }\nrecord R79 { \"a\": integer }\nrecord R80 { \"a\": integer }\nrecord R81 { \"a\": integer }\nrecord R82 { \"a\": integer }\nrecord R83 { \"a\": integer }\nrecord R84 { \"a\": integer }\nrecord R85 { \"a\": integer }\nrecord R86 { \"a\": integer }\nrecord R87 { \"a\": integer }\nrecord R88 { \"a\": integer }\nrecord R89 { \"a\": integer }\nrecord R90 { \"a\": integer }\nrecord R91 { \"a\": integer }\nrecord R92 { \"a\": integer }\nrecord R93 { \"a\": integer }\nrecord R94 { \"a\": integer }\nrecord R95 { \"a\": integer }\nrecord R96 { \"a\": integer }\nrecord R97 { \"a\": integer }\nrecord R98 { \"a\": integer }\nrecord R99 { \"a\": integer }\nrecord R100 { \"a\": integer }\nrecord R101 { \"a\": integer }\nrecord R102 { \"a\": integer }\nrecord R103 { \"a\": integer }\nrecord R104 { \"a\": integer }\nrecord R105 { \"a\": integer }\nrecord R106 { \"a\": integer }\nrecord R107 { \"a\": integer }\nrecord R108 { \"a\": integer }\nrecord R109 { \"a\": integer }\nrecord R110 { \"a\": integer }\nrecord R111 { \"a\": integer }\nrecord R112 { \"a\": integer }\nrecord R113 { \"a\": integer }\nrecord R114 { \"a\": integer }\nrecord R115 { \"a\": integer }\nrecord R116 { \"a\": integer }\nrecord R117 { \"a\": integer }\nrecord R118 { \"a\": integer }\nrecord R119 { \"a\": integer }\nrecord R120 { \"a\": integer }\nrecord R121 { \"a\": integer }\nrecord R122 { \"a\": integer }\nrecord R123 { \"a\": integer }\nrecord R124 { \"a\": integer }\nrecord R125 { \"a\": integer }\nrecord R126 { \"a\": integer }\nrecord R127 { \"a\": integer }\nrecord R128 { \"a\": integer }\nrecord R129 { \"a\": integer }\nrecord R130 { \"a\": integer }\nrecord R131 { \"a\": integer }\nrecord R132 { \"a\": integer }\nrecord R133 { \"a\": integer }\nrecord R134 { \"a\": integer }\nrecord R135 { \"a\": integer }\nrecord R136 { \"a\": integer }\nrecord R137 { \"a\": integer }\nrecord R138 { \"a\": integer }\nrecord R139 { \"a\": integer }\nrecord R140 { \"a\": integer }\nrecord R141 { \"a\": integer }\nrecord R142 { \"a\": integer }\nrecord R143 { \"a\": integer }\nrecord R144 { \"a\": integer }\nrecord R145 { \"a\": integer }\nrecord R146 { \"a\": integer }\nrecord R147 { \"a\": integer }\nrecord R148 { \"a\": integer }\nrecord R149 { \"a\": integer }\nroot R0",
+      "expected_root": "R0"
+    },
+    {
+      "module": "test_canonical.TestOsdRobustness.test_record_named_a_scalar_keyword_is_rejected",
+      "note": "OSD: naming a record after a reserved scalar keyword ('string') is rejected",
+      "kind": "osd_parse_error",
+      "input": "record string { \"x\": integer }\nrecord R { \"a\": string }\nroot R"
+    },
+    {
+      "module": "test_canonical.TestOsdRobustness.test_record_named_a_non_scalar_word_is_fine",
+      "note": "OSD: a record named after a non-reserved word ('Address') parses and validates fine",
+      "kind": "schema_validate",
+      "schema": "record Address { \"city\": string }\nrecord R { \"a\": Address }\nroot R",
+      "doc_json_input": {
+        "a": {
+          "city": "X"
+        }
+      },
+      "expected_ok": true
+    },
+    {
+      "module": "test_canonical.TestTemporalBoundary.test_bare_date_string_satisfies_only_date",
+      "note": "temporal: a bare ISO date string satisfies date",
+      "kind": "schema_validate",
+      "schema": "record R { \"v\": date }\nroot R",
+      "doc_json_input": {
+        "v": "2024-01-01"
+      },
+      "expected_ok": true
+    },
+    {
+      "module": "test_canonical.TestTemporalBoundary.test_bare_date_string_satisfies_only_date",
+      "note": "temporal: a bare ISO date string does NOT satisfy datetime",
+      "kind": "schema_validate",
+      "schema": "record R { \"v\": datetime }\nroot R",
+      "doc_json_input": {
+        "v": "2024-01-01"
+      },
+      "expected_ok": false
+    },
+    {
+      "module": "test_canonical.TestTemporalBoundary.test_bare_date_string_satisfies_only_date",
+      "note": "temporal: a bare ISO date string does NOT satisfy time",
+      "kind": "schema_validate",
+      "schema": "record R { \"v\": time }\nroot R",
+      "doc_json_input": {
+        "v": "2024-01-01"
+      },
+      "expected_ok": false
+    },
+    {
+      "module": "test_canonical.TestTemporalBoundary.test_bare_time_string_satisfies_only_time",
+      "note": "temporal: a bare ISO time string satisfies time",
+      "kind": "schema_validate",
+      "schema": "record R { \"v\": time }\nroot R",
+      "doc_json_input": {
+        "v": "12:00:00"
+      },
+      "expected_ok": true
+    },
+    {
+      "module": "test_canonical.TestTemporalBoundary.test_bare_time_string_satisfies_only_time",
+      "note": "temporal: a bare ISO time string does NOT satisfy date",
+      "kind": "schema_validate",
+      "schema": "record R { \"v\": date }\nroot R",
+      "doc_json_input": {
+        "v": "12:00:00"
+      },
+      "expected_ok": false
+    },
+    {
+      "module": "test_canonical.TestTemporalBoundary.test_bare_time_string_satisfies_only_time",
+      "note": "temporal: a bare ISO time string does NOT satisfy datetime",
+      "kind": "schema_validate",
+      "schema": "record R { \"v\": datetime }\nroot R",
+      "doc_json_input": {
+        "v": "12:00:00"
+      },
+      "expected_ok": false
+    },
+    {
+      "module": "test_canonical.TestTemporalBoundary.test_full_timestamp_string_satisfies_only_datetime",
+      "note": "temporal: a full ISO timestamp (2024-01-01T12:00:00) satisfies datetime",
+      "kind": "schema_validate",
+      "schema": "record R { \"v\": datetime }\nroot R",
+      "doc_json_input": {
+        "v": "2024-01-01T12:00:00"
+      },
+      "expected_ok": true
+    },
+    {
+      "module": "test_canonical.TestTemporalBoundary.test_full_timestamp_string_satisfies_only_datetime",
+      "note": "temporal: a full ISO timestamp (2024-01-01T12:00:00) does NOT satisfy date",
+      "kind": "schema_validate",
+      "schema": "record R { \"v\": date }\nroot R",
+      "doc_json_input": {
+        "v": "2024-01-01T12:00:00"
+      },
+      "expected_ok": false
+    },
+    {
+      "module": "test_canonical.TestTemporalBoundary.test_full_timestamp_string_satisfies_only_datetime",
+      "note": "temporal: a full ISO timestamp (2024-01-01T12:00:00) does NOT satisfy time",
+      "kind": "schema_validate",
+      "schema": "record R { \"v\": time }\nroot R",
+      "doc_json_input": {
+        "v": "2024-01-01T12:00:00"
+      },
+      "expected_ok": false
+    },
+    {
+      "module": "test_canonical.TestTemporalBoundary.test_full_timestamp_string_satisfies_only_datetime",
+      "note": "temporal: a full ISO timestamp (2024-01-01T00:00:00) satisfies datetime",
+      "kind": "schema_validate",
+      "schema": "record R { \"v\": datetime }\nroot R",
+      "doc_json_input": {
+        "v": "2024-01-01T00:00:00"
+      },
+      "expected_ok": true
+    },
+    {
+      "module": "test_canonical.TestTemporalBoundary.test_full_timestamp_string_satisfies_only_datetime",
+      "note": "temporal: a full ISO timestamp (2024-01-01T00:00:00) does NOT satisfy date",
+      "kind": "schema_validate",
+      "schema": "record R { \"v\": date }\nroot R",
+      "doc_json_input": {
+        "v": "2024-01-01T00:00:00"
+      },
+      "expected_ok": false
+    },
+    {
+      "module": "test_canonical.TestTemporalBoundary.test_full_timestamp_string_satisfies_only_datetime",
+      "note": "temporal: a full ISO timestamp (2024-01-01T00:00:00) does NOT satisfy time",
+      "kind": "schema_validate",
+      "schema": "record R { \"v\": time }\nroot R",
+      "doc_json_input": {
+        "v": "2024-01-01T00:00:00"
+      },
+      "expected_ok": false
+    },
+    {
+      "module": "test_canonical.TestTemporalBoundary.test_unparseable_string_satisfies_none",
+      "note": "temporal: an unparseable string satisfies none of date/time/datetime (date)",
+      "kind": "schema_validate",
+      "schema": "record R { \"v\": date }\nroot R",
+      "doc_json_input": {
+        "v": "not-a-date"
+      },
+      "expected_ok": false
+    },
+    {
+      "module": "test_canonical.TestTemporalBoundary.test_unparseable_string_satisfies_none",
+      "note": "temporal: an unparseable string satisfies none of date/time/datetime (time)",
+      "kind": "schema_validate",
+      "schema": "record R { \"v\": time }\nroot R",
+      "doc_json_input": {
+        "v": "not-a-date"
+      },
+      "expected_ok": false
+    },
+    {
+      "module": "test_canonical.TestTemporalBoundary.test_unparseable_string_satisfies_none",
+      "note": "temporal: an unparseable string satisfies none of date/time/datetime (datetime)",
+      "kind": "schema_validate",
+      "schema": "record R { \"v\": datetime }\nroot R",
+      "doc_json_input": {
+        "v": "not-a-date"
+      },
+      "expected_ok": false
+    },
+    {
+      "module": "test_canonical.TestOperations.test_added_optional_field_is_compatible",
+      "note": "compatible_with: adding an optional field widens the schema (old data still compatible)",
+      "kind": "schema_compatible_with",
+      "schema_a": "record R { \"a\": integer }\nroot R",
+      "schema_b": "record R { \"a\": integer, \"b\" [0,1]: integer }\nroot R",
+      "expected": true
+    },
+    {
+      "module": "test_canonical.TestOperations.test_added_optional_field_is_compatible",
+      "note": "compatible_with: the reverse direction (removing a field) is not compatible",
+      "kind": "schema_compatible_with",
+      "schema_a": "record R { \"a\": integer, \"b\" [0,1]: integer }\nroot R",
+      "schema_b": "record R { \"a\": integer }\nroot R",
+      "expected": false
+    },
+    {
+      "module": "test_canonical.TestOperations.test_required_to_optional_is_compatible",
+      "note": "compatible_with: loosening a required field to optional is a compatible widening",
+      "kind": "schema_compatible_with",
+      "schema_a": "record R { \"a\": integer, \"b\": integer }\nroot R",
+      "schema_b": "record R { \"a\": integer, \"b\" [0,1]: integer }\nroot R",
+      "expected": true
+    },
+    {
+      "module": "test_canonical.TestOperations.test_required_to_optional_is_compatible",
+      "note": "compatible_with: the reverse (optional -> required) is not compatible",
+      "kind": "schema_compatible_with",
+      "schema_a": "record R { \"a\": integer, \"b\" [0,1]: integer }\nroot R",
+      "schema_b": "record R { \"a\": integer, \"b\": integer }\nroot R",
+      "expected": false
+    },
+    {
+      "module": "test_canonical.TestOperations.test_integer_is_compatible_with_number",
+      "note": "compatible_with: integer field widened to number is compatible",
+      "kind": "schema_compatible_with",
+      "schema_a": "record R { \"v\": integer }\nroot R",
+      "schema_b": "record R { \"v\": number }\nroot R",
+      "expected": true
+    },
+    {
+      "module": "test_canonical.TestOperations.test_integer_is_compatible_with_number",
+      "note": "compatible_with: number narrowed to integer is not compatible",
+      "kind": "schema_compatible_with",
+      "schema_a": "record R { \"v\": number }\nroot R",
+      "schema_b": "record R { \"v\": integer }\nroot R",
+      "expected": false
+    },
+    {
+      "module": "test_canonical.TestOperations.test_nullable_is_one_directional",
+      "note": "compatible_with: a non-nullable field widened to nullable is compatible",
+      "kind": "schema_compatible_with",
+      "schema_a": "record R { \"v\": string }\nroot R",
+      "schema_b": "record R { \"v\": string? }\nroot R",
+      "expected": true
+    },
+    {
+      "module": "test_canonical.TestOperations.test_nullable_is_one_directional",
+      "note": "compatible_with: a nullable field narrowed to non-nullable is not compatible",
+      "kind": "schema_compatible_with",
+      "schema_a": "record R { \"v\": string? }\nroot R",
+      "schema_b": "record R { \"v\": string }\nroot R",
+      "expected": false
+    },
+    {
+      "module": "test_canonical.TestOperations.test_array_bounds",
+      "note": "compatible_with: a narrower array bound [2,3] is compatible with a wider [1,5]",
+      "kind": "schema_compatible_with",
+      "schema_a": "record R { \"xs\" [2,3]: integer }\nroot R",
+      "schema_b": "record R { \"xs\" [1,5]: integer }\nroot R",
+      "expected": true
+    },
+    {
+      "module": "test_canonical.TestOperations.test_array_bounds",
+      "note": "compatible_with: the wider bound is not compatible with the narrower one",
+      "kind": "schema_compatible_with",
+      "schema_a": "record R { \"xs\" [1,5]: integer }\nroot R",
+      "schema_b": "record R { \"xs\" [2,3]: integer }\nroot R",
+      "expected": false
+    },
+    {
+      "module": "test_canonical.TestOperations.test_temporal_date_not_compatible_with_string",
+      "note": "compatible_with: a date-typed field is never compatible with a string-typed one",
+      "kind": "schema_compatible_with",
+      "schema_a": "record R {\n    \"d\": date,\n}\nroot R\n",
+      "schema_b": "record R {\n    \"d\": string,\n}\nroot R\n",
+      "expected": false
+    },
+    {
+      "module": "test_canonical.TestOperations.test_equivalent_reordered",
+      "note": "equivalent: field declaration order does not affect schema equivalence",
+      "kind": "schema_equivalent",
+      "schema_a": "record R { \"a\": integer, \"b\": string }\nroot R",
+      "schema_b": "record R { \"b\": string, \"a\": integer }\nroot R",
+      "expected": true
+    },
+    {
+      "module": "test_canonical.TestOperations.test_normalize_merges_identical",
+      "note": "normalize: two structurally-identical records (A, B) merge into one, shrinking env, staying equivalent",
+      "kind": "schema_normalize_merges",
+      "schema": "record A { \"x\": integer }\nrecord B { \"x\": integer }\nrecord R { \"a\": A, \"b\": B }\nroot R",
+      "expected_env_before": 3,
+      "expected_env_after": 2
+    },
+    {
+      "module": "test_depth_guards.TestDocExport.test_to_data_too_deep_raises_document_error",
+      "note": "depth guard: a raw Doc node 5000 levels deep raises DocumentError naming the 200 limit (Rust centralizes this at Doc::from_raw construction time)",
+      "kind": "doc_construct_depth_error",
+      "depth": 5000,
+      "error_contains": "nesting exceeds the maximum depth (200)"
+    },
+    {
+      "module": "test_depth_guards.TestDocExport.test_to_data_just_under_limit_succeeds",
+      "note": "depth guard: a raw Doc node 190 levels deep (just under the limit) constructs and exports fine",
+      "kind": "doc_construct_depth_ok",
+      "depth": 190
     }
   ]
 }
