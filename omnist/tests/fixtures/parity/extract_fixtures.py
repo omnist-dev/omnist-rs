@@ -6,14 +6,11 @@ corpus consumed by omnist-rs's `omnist/tests/parity.rs`.
 
 Scope note: covers the modules that have a shipped Rust counterpart today
 (oml codec, depth guards, schema/OSD + ops algebra, doc<->format codecs,
-materialize, ops.lint). Explicitly OUT of scope, documented in the PR:
-  - test_any_core.py / test_any_grammar.py: exercise the `any` type's OSD
-    *grammar* edge cases -- basic `any` field parsing already has a Rust
-    counterpart (`omnist/src/osd.rs`'s `any` keyword support) and is
-    exercised indirectly by the lint fixtures below (`any-field`), but the
-    dedicated grammar-edge-case corpus in these two files is still a later
-    PR per the v1.0 `any` decision (see docs/design/any-type-spec.md
-    upstream).
+materialize, ops.lint). `test_any_core.py` / `test_any_grammar.py` were
+extracted in issue #73 (PR #33 fully ported the `any` type across schema.rs,
+osd.rs, infer.rs, materialize.rs and the ops/*.rs algebra; see the
+"test_any_core.py / test_any_grammar.py" section below). Explicitly OUT of
+scope, documented in the PR:
   - test_public_api.py: freezes the *Python* import surface
     (omnist.__all__, signatures) - not a cross-language concept.
   - test_cli.py / test_cli_examples.py / test_cli_fuzz.py: Python CLI
@@ -74,6 +71,8 @@ from omnist import (
     read_yaml,
 )
 from omnist.ops import compatible_with, equivalent, is_empty, normalize, prune
+from omnist.ops.signature import local_signature
+from omnist.schema import AnyType
 
 fixtures = []
 
@@ -821,6 +820,372 @@ Doc(deep_node(JUST_UNDER)).to_data()
 add("test_depth_guards.TestDocExport.test_to_data_just_under_limit_succeeds",
     "depth guard: a raw Doc node 190 levels deep (just under the limit) constructs and exports fine",
     "doc_construct_depth_ok", depth=JUST_UNDER)
+
+
+# --------------------------------------------------------------------
+# test_any_grammar.py: OSD grammar exposure + round-trip (issue #73)
+# --------------------------------------------------------------------
+ANY_BASIC = 'record Root { "data": any }\nroot Root'
+add("test_any_grammar.test_parse_any_field",
+    "any: OSD parses a bare 'any'-typed field",
+    "osd_parse_ok", input=ANY_BASIC)
+
+for card in ["[0,]", "[2,5]"]:
+    text = f'record Root {{ "data" {card}: any }}\nroot Root'
+    add("test_any_grammar.test_parse_any_field_with_cardinality",
+        f"any: OSD parses an 'any'-typed field with cardinality {card}",
+        "osd_parse_ok", input=text)
+
+ANY_QMARK = 'record Root { "data": any? }\nroot Root'
+try:
+    parse_schema(ANY_QMARK)
+    raise SystemExit("expected SchemaError")
+except SchemaError:
+    add("test_any_grammar.test_any_question_mark_is_rejected",
+        "any: 'any?' is rejected -- any already includes null, so '?' is redundant",
+        "osd_parse_error", input=ANY_QMARK)
+
+ANY_CAPITALIZED = 'record Root { "data": Any }\nroot Root'
+try:
+    parse_schema(ANY_CAPITALIZED)
+    raise SystemExit("expected SchemaError")
+except SchemaError:
+    add("test_any_grammar.test_capitalized_any_is_unknown_ref_not_any_type",
+        "any: capitalized 'Any' is a Ref('Any') -> unknown-type error, not special-cased",
+        "osd_parse_error", input=ANY_CAPITALIZED)
+
+RECORD_NAMED_ANY = 'record any { "x": string }\nroot any'
+try:
+    parse_schema(RECORD_NAMED_ANY)
+    raise SystemExit("expected SchemaError")
+except SchemaError:
+    add("test_any_grammar.test_record_named_any_is_rejected",
+        "any: 'any' is a reserved type name and cannot be used as a record name",
+        "osd_parse_error", input=RECORD_NAMED_ANY)
+
+ANY_RT_BUILDER = to_osd(schema(
+    "Root",
+    Root=record(field("id", t.string), field("data", t.any), field("many", t.any, min=0, max=None)),
+))
+add("test_any_grammar.test_any_round_trip",
+    "any: a builder-constructed schema with any-typed fields (required + unbounded array) "
+    "round-trips through to_osd()+parse_schema() to an equivalent schema",
+    "schema_osd_roundtrip_equivalent", schema=ANY_RT_BUILDER)
+
+ANY_RT_PARSED = (
+    'record Root {\n'
+    '    "id": string,\n'
+    '    "data": any,\n'
+    '    "many" [0,]: any,\n'
+    '}\n'
+    'root Root\n'
+)
+assert equivalent(parse_schema(ANY_RT_PARSED), parse_schema(ANY_RT_BUILDER))
+add("test_any_grammar.test_any_round_trip",
+    "any: a parsed-from-OSD-text schema with any-typed fields round-trips through "
+    "to_osd()+parse_schema() to an equivalent schema",
+    "schema_osd_roundtrip_equivalent", schema=ANY_RT_PARSED)
+
+# I-10/T-10: writer emits the 'any' keyword, in both pretty and compact mode.
+writer_schema = schema("Root", Root=record(field("data", t.any)))
+add("test_any_grammar.test_writer_emits_any_keyword",
+    "any: to_osd() (pretty mode) emits the 'any' keyword for an any-typed field",
+    "osd_contains", schema=to_osd(writer_schema), contains="any")
+add("test_any_grammar.test_writer_emits_any_for_compact_mode_too",
+    "any: to_osd(indent=None) (compact mode) also emits the 'any' keyword",
+    "osd_contains", schema=to_osd(writer_schema, indent=None), contains="any")
+
+# I-23/T-23 (test_anytype_is_publicly_exported / test_anytype_in_dunder_all):
+# freezes Python's *own* import surface (`omnist.AnyType`, `omnist.__all__`)
+# -- a Python-package-metadata concept with no Rust call site to replay
+# (matches test_public_api.py's existing exclusion above).
+# test_t_any_isinstance_anytype / test_t_any_is_singleton: `t.any`/`ANY`
+# singleton identity is a Python object-identity concern; Rust's
+# `FieldType::Any` is a unit enum variant compared structurally
+# (`PartialEq`), so "is the same object" has no meaningful Rust analogue.
+
+# --------------------------------------------------------------------
+# test_any_core.py: model, algebra, materialize, infer (issue #73)
+# --------------------------------------------------------------------
+# I-1/T-1, I-4/T-4 (field construction accepts t.any; check_refs passes):
+# covered by ANY_BASIC's osd_parse_ok fixture above -- parsing succeeds
+# only if Field/Record construction and check_refs both accept the any
+# field, so a dedicated fixture would be redundant.
+# I-6/T-6 (nullable(t.any) raises "any already includes null"): Python's
+# `nullable()` is a free function accepting either a Scalar or AnyType;
+# Rust's `nullable()` is typed `fn(Scalar) -> Scalar` -- nullable(FieldType::
+# Any) is a type error at compile time in Rust, not a runtime SchemaError,
+# so this Python-only builder-level check has no Rust call site to replay
+# (the underlying message is exercised anyway, via ANY_QMARK's parser-level
+# rejection above, which is the grammar path Rust actually implements).
+# I-3/T-3 (Schema.resolve(t.any) is ANY): Rust's `Resolved::Any` is an
+# internal implementation-detail enum with no JSON-portable shape; already
+# has direct Rust unit coverage (schema.rs's `resolve` tests).
+
+ANY_FIELD_SCHEMA = 'record Root { "data" [1,1]: any }\nroot Root'
+ANY_VALUES = ["a string", 123, 1.5, True, None,
+              {"nested": {"deep": [1, 2, 3]}}, {"a": None, "b": [{"c": 1}, {"c": 2}]}]
+for val in ANY_VALUES:
+    add_validate("test_any_core.test_validate_accepts_anything_at_any_field",
+                 f"any: an any-typed field accepts {val!r}",
+                 ANY_FIELD_SCHEMA, {"data": val}, True)
+
+add_validate("test_any_core.test_validate_still_enforces_cardinality_on_any_label",
+             "any: cardinality is still enforced on an any-typed label -- missing entirely fails",
+             ANY_FIELD_SCHEMA, {}, False)
+
+ANY_RANGE_SCHEMA = 'record Root { "data" [2,5]: any }\nroot Root'
+add_validate("test_any_core.test_validate_any_field_cardinality_range_respected",
+             "any: [2,5] cardinality on an any label accepts 3 occurrences",
+             ANY_RANGE_SCHEMA, {"data": [1, 2, 3]}, True)
+add_validate("test_any_core.test_validate_any_field_cardinality_range_respected",
+             "any: [2,5] cardinality on an any label rejects 1 occurrence (below min)",
+             ANY_RANGE_SCHEMA, {"data": [1]}, False)
+
+# I-11/T-11: materialize is an identity pass-through inside an any field --
+# no upgrade/degrade of the ISO date string nested inside `data`, even
+# though the sibling `created` datetime field does upgrade.
+MAT_ANY_SCHEMA = to_osd(schema(
+    "Root", Root=record(field("data", t.any), field("created", t.datetime)),
+))
+mat_any_doc = {"data": {"when": "2024-01-01"}, "created": "2024-01-01T00:00:00"}
+mat_any_out = materialize(doc(mat_any_doc).to_data(), parse_schema(MAT_ANY_SCHEMA))
+add("test_any_core.test_materialize_any_field_is_identity_pass_through",
+    "any: materialize() leaves a value nested inside an any field untouched (ISO date string "
+    "stays a string) while a sibling datetime field still upgrades",
+    "materialize_case", schema=MAT_ANY_SCHEMA, doc_json=mat_any_doc, expected=enc(mat_any_out))
+
+MAT_ANY_NEVER_RAISES_SCHEMA = to_osd(schema("Root", Root=record(field("data", t.any))))
+mat_never_raises_doc = {"data": {"x": 1, "y": None, "z": {"deep": "ok"}}}
+mat_never_raises_out = materialize(doc(mat_never_raises_doc).to_data(), parse_schema(MAT_ANY_NEVER_RAISES_SCHEMA))
+add("test_any_core.test_materialize_any_field_never_raises",
+    "any: materialize() never raises on an arbitrarily-shaped value nested inside an any field",
+    "materialize_case", schema=MAT_ANY_NEVER_RAISES_SCHEMA, doc_json=mat_never_raises_doc,
+    expected=enc(mat_never_raises_out))
+
+# test_materialize_any_field_keeps_native_date_object_as_is: Python
+# distinguishes a real `datetime.date` object from a string at the value-kind
+# level; Rust's `Scalar` has only `Str` for all temporal kinds (see
+# document.rs's module doc, and TestTemporalBoundary's own
+# test_real_objects_unaffected exclusion note above) -- no Rust-side "real
+# object vs string" distinction exists to replay this against.
+
+# I-12/T-12: containment (_sub) -- any absorbs; only any holds any.
+add_compat("test_any_core.test_scalar_sub_any",
+           "any: a string field is compatible_with (sub) an any field",
+           'record Root { "x": string }\nroot Root',
+           'record Root { "x": any }\nroot Root', True)
+add_compat("test_any_core.test_scalar_sub_any",
+           "any: the reverse (any sub string) is not compatible_with",
+           'record Root { "x": any }\nroot Root',
+           'record Root { "x": string }\nroot Root', False)
+add_compat("test_any_core.test_nullable_scalar_sub_any",
+           "any: a nullable string field is compatible_with an any field",
+           'record Root { "x": string? }\nroot Root',
+           'record Root { "x": any }\nroot Root', True)
+add_compat("test_any_core.test_record_sub_any",
+           "any: a ref-typed field (record child) is compatible_with an any field",
+           'record Child { "y": integer }\nrecord Root { "child": Child }\nroot Root',
+           'record Root { "child": any }\nroot Root', True)
+add_compat("test_any_core.test_record_sub_any",
+           "any: the reverse (any sub record) is not compatible_with",
+           'record Root { "child": any }\nroot Root',
+           'record Child { "y": integer }\nrecord Root { "child": Child }\nroot Root', False)
+add_compat("test_any_core.test_any_sub_any",
+           "any: an any field is compatible_with another any field (both directions)",
+           'record Root { "x": any }\nroot Root',
+           'record Root { "x": any }\nroot Root', True)
+ANY_SUB_ANY_A = 'record Root { "x": any }\nroot Root'
+ANY_SUB_ANY_B = 'record Root { "x": any }\nroot Root'
+assert equivalent(parse_schema(ANY_SUB_ANY_A), parse_schema(ANY_SUB_ANY_B))
+add("test_any_core.test_any_sub_any",
+    "any: two schemas differing only by two independently-built any fields are equivalent()",
+    "schema_equivalent", schema_a=ANY_SUB_ANY_A, schema_b=ANY_SUB_ANY_B, expected=True)
+
+# I-13 (any_is_never_vacuous_a_side): covered by matrix_any_sub_t_false's
+# scalar row below (a=any, b=string -> not compatible_with) -- same schemas,
+# no separate fixture needed.
+
+# I-14/T-14: local_signature gives any its own distinct tag (a Rust-internal,
+# non-JSON-portable structural key -- checked here purely as a distinctness
+# fact, same as Python's `len(sigs) == N` assertion, not by transcribing the
+# signature's internal shape).
+add("test_any_core.test_local_signature_any_is_distinct_from_scalars_and_ref",
+    "any: local_signature of any/string/nullable-string/ref-typed single-field records "
+    "are all four pairwise distinct",
+    "local_signature_distinct",
+    schemas=[
+        'record R { "x": any }\nroot R',
+        'record R { "x": string }\nroot R',
+        'record R { "x": string? }\nroot R',
+        'record Other { "y": integer }\nrecord R { "x": Other }\nroot R',
+    ], expected_distinct=True)
+add("test_any_core.test_two_records_differing_only_string_vs_any_have_different_signatures",
+    "any: local_signature differs between a string-typed field and an any-typed field",
+    "local_signature_distinct",
+    schemas=['record R { "x": string }\nroot R', 'record R { "x": any }\nroot R'],
+    expected_distinct=True)
+
+# I-15/T-15: normalize never merges an any-record with a scalar-record;
+# identical any-records DO merge.
+NORM_NO_MERGE = ('record A { "x": any }\nrecord B { "x": string }\n'
+                  'record Root { "a": A, "b": B }\nroot Root')
+norm_no_merge_src = parse_schema(NORM_NO_MERGE)
+norm_no_merge_dst = normalize(norm_no_merge_src)
+assert len(norm_no_merge_dst.env) >= 2
+add("test_any_core.test_normalize_never_merges_any_field_record_with_scalar_field_record",
+    "any: normalize() never merges a record with an any-typed field into a record with a "
+    "same-labeled scalar-typed field -- both A and B survive distinctly",
+    "schema_normalize_env_len", schema=NORM_NO_MERGE,
+    expected_env_before=len(norm_no_merge_src.env), expected_env_after=len(norm_no_merge_dst.env))
+
+NORM_MERGE_ANY = ('record A { "x": any }\nrecord B { "x": any }\n'
+                   'record Root { "a": A, "b": B }\nroot Root')
+norm_merge_src = parse_schema(NORM_MERGE_ANY)
+norm_merge_dst = normalize(norm_merge_src)
+assert len(norm_merge_dst.env) == 2
+merge_root = norm_merge_dst.env[norm_merge_dst.root.name]
+merge_a_target = merge_root.field("a").type.name
+merge_b_target = merge_root.field("b").type.name
+assert merge_a_target == merge_b_target
+add("test_any_core.test_normalize_merges_identical_any_records",
+    "any: normalize() merges two structurally-identical any-field records (A, B) into one -- "
+    "env shrinks from 3 to 2, and root's two fields end up pointing at the same target",
+    "schema_normalize_env_len", schema=NORM_MERGE_ANY,
+    expected_env_before=len(norm_merge_src.env), expected_env_after=len(norm_merge_dst.env),
+    expect_same_target=True)
+
+# I-16 (normalize_round_trip_preserves_any_field_semantics): equivalence
+# already asserted by schema_normalize_env_len above (it checks
+# equivalent(s, n) too); the doc-level double-check below replays the same
+# document against both the original and normalized OSD text.
+NORM_RT_DOC = {"a": {"x": [1, 2, 3]}, "b": {"x": None}}
+norm_rt_src_ok = parse_schema(NORM_MERGE_ANY).validate(doc(NORM_RT_DOC)).ok
+norm_rt_dst_ok = normalize(parse_schema(NORM_MERGE_ANY)).validate(doc(NORM_RT_DOC)).ok
+assert norm_rt_src_ok == norm_rt_dst_ok
+add("test_any_core.test_normalize_round_trip_preserves_any_field_semantics",
+    "any: a document accepted (or not) by the pre-normalize schema is accepted (or not) "
+    "identically by the post-normalize schema",
+    "schema_validate", schema=NORM_MERGE_ANY, doc_json_input=NORM_RT_DOC,
+    expected_ok=norm_rt_src_ok)
+add("test_any_core.test_normalize_round_trip_preserves_any_field_semantics",
+    "any: same document/normalized-schema pair, checked against the normalize() output directly",
+    "schema_validate", schema=to_osd(normalize(parse_schema(NORM_MERGE_ANY))),
+    doc_json_input=NORM_RT_DOC, expected_ok=norm_rt_dst_ok)
+
+# I-17/T-17: prune satisfiability seed includes AnyType.
+ANY_ONLY_SCHEMA = 'record Root { "x": any }\nroot Root'
+assert not is_empty(parse_schema(ANY_ONLY_SCHEMA))
+add("test_any_core.test_any_field_record_is_satisfiable",
+    "any: a record whose only field is any is never is_empty()",
+    "schema_is_empty", schema=ANY_ONLY_SCHEMA, expected=False)
+pruned_any = prune(parse_schema(ANY_ONLY_SCHEMA))
+assert not is_empty(pruned_any) and equivalent(parse_schema(ANY_ONLY_SCHEMA), pruned_any)
+add("test_any_core.test_prune_keeps_any_only_record",
+    "any: prune() keeps an any-only record satisfiable and equivalent to the original",
+    "schema_prune_equivalent", schema=ANY_ONLY_SCHEMA)
+
+ANY_LOOP_SCHEMA = 'record Root { "loop": Root, "x": any }\nroot Root'
+assert is_empty(parse_schema(ANY_LOOP_SCHEMA))
+add("test_any_core.test_any_never_rescues_unsatisfiable_sibling",
+    "any: an any field never rescues a record whose mandatory sibling (a self-only ref "
+    "cycle) is itself unsatisfiable",
+    "schema_is_empty", schema=ANY_LOOP_SCHEMA, expected=True)
+
+# I-18/T-18: extract keeps/drops an any field by its own label.
+EXTRACT_ANY_SCHEMA = 'record Root { "id": string, "data": any }\nroot Root'
+kept = parse_schema(EXTRACT_ANY_SCHEMA).extract("id", "data")
+assert kept.env[kept.root.name].field("data") is not None
+add("test_any_core.test_extract_keeps_any_field_when_requested",
+    "any: extract() keeps a requested any-typed field",
+    "schema_extract_field_type", schema=EXTRACT_ANY_SCHEMA, keep=["id", "data"],
+    label="data", outcome="present_any")
+
+EXTRACT_OPT_ANY_SCHEMA = 'record Root { "id": string, "data" [0,1]: any }\nroot Root'
+dropped = parse_schema(EXTRACT_OPT_ANY_SCHEMA).extract("id")
+assert dropped.env[dropped.root.name].field("data") is None
+add("test_any_core.test_extract_drops_optional_any_field_when_not_requested",
+    "any: extract() drops an unrequested *optional* any-typed field",
+    "schema_extract_field_type", schema=EXTRACT_OPT_ANY_SCHEMA, keep=["id"],
+    label="data", outcome="absent")
+
+EXTRACT_MANDATORY_ANY_SCHEMA = 'record Root { "id": string, "data" [1,1]: any }\nroot Root'
+try:
+    parse_schema(EXTRACT_MANDATORY_ANY_SCHEMA).extract("id")
+    raise SystemExit("expected SchemaError")
+except SchemaError:
+    add("test_any_core.test_extract_raises_when_mandatory_any_field_dropped",
+        "any: extract() raises when dropping a *mandatory* any-typed field",
+        "schema_extract_field_type", schema=EXTRACT_MANDATORY_ANY_SCHEMA, keep=["id"],
+        label="data", outcome="error")
+
+# I-19/T-19: infer never produces AnyType. Concrete illustrative cases
+# (the Python side also property-tests this with hypothesis over ~100
+# generated document shapes; a handful of concrete cases carry the same
+# cross-language claim into the mechanical, repeatable corpus).
+INFER_NO_ANY_CASES = [
+    [{"a": 1, "b": "x"}, {"a": 2}],
+    [{"v": None}, {"v": None}],
+    [{"id": 1, "tags": ["a", "b"], "addr": {"city": "X"}}],
+    [{"a": {"deep": {"nested": 1}}}, {"a": {"deep": {"nested": 2}}}],
+]
+for samples in INFER_NO_ANY_CASES:
+    s_no_any = _infer(infer_docs(samples))
+    has_any = any(isinstance(f.type, AnyType) for rec in s_no_any.env.values() for f in rec.fields)
+    assert not has_any
+    add("test_any_core.test_infer_never_produces_any_type",
+        f"any: infer() over samples={samples!r} never produces an AnyType-typed field",
+        "infer_no_any", samples=samples)
+
+# I-20/T-20 (isomorphic_agrees_with_equivalent_on_any_*): `_isomorphic` is a
+# brute-force cross-check oracle in the Python test suite itself (imported
+# from `omnist.ops.isomorphic`, a dev/test-only helper analogous to
+# tools/semantic_oracle.py, already excluded above) -- there is no Rust
+# call site to replay a second, independent equivalence algorithm against.
+# I-21/T-21 (minimal_value_any_is_none): exercises
+# `tools/semantic_oracle.py`'s `_minimal_value` helper, the same Python-only
+# dev tool already excluded via test_semantic_oracle.py above.
+
+# Section 4.4 interaction matrix -- direct regression coverage.
+add_validate("test_any_core.test_matrix_null_accepted_at_any",
+             "any: null is accepted at an any-typed field",
+             ANY_ONLY_SCHEMA, {"x": None}, True)
+
+MATRIX_CARD_CASES = [
+    (0, None, 0, True), (1, None, 0, False), (1, None, 1, True),
+    (2, 5, 1, False), (2, 5, 3, True),
+]
+for cmin, cmax, count, expect_ok in MATRIX_CARD_CASES:
+    card = f"[{cmin},{'' if cmax is None else cmax}]"
+    text = f'record Root {{ "x" {card}: any }}\nroot Root'
+    doc_json = {"x": list(range(count))} if count else {}
+    add_validate("test_any_core.test_matrix_cardinality_enforced_on_any_label",
+                 f"any: cardinality {card} on an any label with {count} occurrence(s) "
+                 f"-> {'accepted' if expect_ok else 'rejected'}",
+                 text, doc_json, expect_ok)
+
+MATRIX_SATISFIABLE_SCHEMA = 'record Root { "x" [1,1]: any }\nroot Root'
+assert not is_empty(parse_schema(MATRIX_SATISFIABLE_SCHEMA))
+add("test_any_core.test_matrix_any_always_satisfiable",
+    "any: a mandatory any-typed field is always satisfiable",
+    "schema_is_empty", schema=MATRIX_SATISFIABLE_SCHEMA, expected=False)
+
+MATRIX_T_SIDES = {
+    "scalar": 'record Root { "x": string }\nroot Root',
+    "nullable_scalar": 'record Root { "x": string? }\nroot Root',
+    "record": 'record Child { "y": integer }\nrecord Root { "x": Child }\nroot Root',
+}
+for side_name, side_schema in MATRIX_T_SIDES.items():
+    add_compat("test_any_core.test_matrix_t_sub_any_true",
+               f"any: matrix -- {side_name} field is compatible_with an any field",
+               side_schema, 'record Root { "x": any }\nroot Root', True)
+    add_compat("test_any_core.test_matrix_any_sub_t_false",
+               f"any: matrix -- an any field is NOT compatible_with a {side_name} field",
+               'record Root { "x": any }\nroot Root', side_schema, False)
+
+add_compat("test_any_core.test_matrix_any_sub_any_true",
+           "any: matrix -- an any field is compatible_with another any field",
+           'record Root { "x": any }\nroot Root', 'record Root { "x": any }\nroot Root', True)
 
 
 print(json.dumps({"fixtures": fixtures}, indent=2, sort_keys=False))
