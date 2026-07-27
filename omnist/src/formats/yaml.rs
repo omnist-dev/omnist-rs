@@ -1028,6 +1028,9 @@ fn needs_quoting(s: &str) -> bool {
     } else {
         return true; // would be re-read as null/bool/int/float/timestamp
     }
+    // `s` is guaranteed non-empty here: the early return at line 1021-1023
+    // already handles `s.is_empty()`, so `.chars().next()` always yields a
+    // char.
     let first = s.chars().next().unwrap();
     if matches!(
         first,

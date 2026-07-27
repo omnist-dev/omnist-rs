@@ -80,6 +80,12 @@ fn tokenize(text: &str) -> Result<Vec<Tok>, SchemaError> {
     let mut i = 0usize;
     while i < text.len() {
         let Some(m) = TOKEN_RE.captures(&text[i..]) else {
+            // `i` is always either `0` or a previous iteration's
+            // `whole.len()` -- a match length reported by the `regex`
+            // crate against `&str` input -- so it always lands on a char
+            // boundary. `text[i..]` can't panic here, and `.chars().next()`
+            // always yields a char (the loop guard `i < text.len()` rules
+            // out an empty remainder).
             let ch = text[i..].chars().next().unwrap();
             return Err(SchemaError::new(format!(
                 "unexpected character {ch:?} at {i}"
@@ -89,6 +95,9 @@ fn tokenize(text: &str) -> Result<Vec<Tok>, SchemaError> {
         // characters at `i` didn't match any alternative.
         let whole = m.get(0).unwrap();
         if whole.start() != 0 {
+            // Same char-boundary invariant as above: `i` hasn't changed
+            // since the last successful match (or loop start), so it's
+            // still a valid boundary and the slice/next() can't fail.
             let ch = text[i..].chars().next().unwrap();
             return Err(SchemaError::new(format!(
                 "unexpected character {ch:?} at {i}"
