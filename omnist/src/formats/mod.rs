@@ -16,6 +16,7 @@
 pub(crate) mod float_fmt;
 pub(crate) mod int_cap;
 pub mod json;
+pub(crate) mod string_escape;
 pub(crate) mod textpos;
 pub mod toml;
 pub mod xml;

@@ -48,6 +48,7 @@ use crate::document::{Doc, Value};
 use crate::error::{OmnistError, ParseError};
 use crate::formats::float_fmt;
 use crate::formats::int_cap::{MAX_INT_DIGITS, out_of_range_message, over_cap_message};
+use crate::formats::string_escape::{JSON_ESCAPES, write_quoted};
 use crate::formats::textpos::line_col_bytes;
 use crate::report::{Severity, WriteReport};
 use indexmap::IndexMap;
@@ -224,21 +225,7 @@ fn write_float(x: f64, out: &mut String) {
 }
 
 fn write_json_string(s: &str, out: &mut String) {
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\u{08}' => out.push_str("\\b"),
-            '\u{0c}' => out.push_str("\\f"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
+    write_quoted(s, &JSON_ESCAPES, out);
 }
 
 // ---------------------------------------------------------------- Reader
