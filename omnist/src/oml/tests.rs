@@ -603,6 +603,61 @@ fn utf8_bom_is_stripped() {
 }
 
 #[test]
+fn bare_label_starting_with_a_multibyte_unicode_letter_scans_correctly() {
+    // Regression for issue #43's byte-offset scanner rewrite: `scan_word`
+    // used to assume its first char was exactly 1 byte when computing the
+    // rest-of-word scan start -- a bare word beginning with a multi-byte
+    // Unicode letter (`é`, 2 bytes in UTF-8) would misalign that offset if
+    // the fix regressed. Confirm it reads as a bare-word error (not
+    // `null`/`true`/`false`), not silently truncated or panicking.
+    let err = read_oml("éxyz").unwrap_err();
+    assert!(
+        err.message.contains("bare word") && err.message.contains("éxyz"),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn multibyte_content_inside_a_comment_does_not_corrupt_subsequent_scanning() {
+    // Regression for issue #43: comment-skipping used to advance by a flat
+    // `+= 1` per char, which would land mid-character on multi-byte
+    // comment content if the byte-offset rewrite regressed. Confirm a
+    // comment containing multi-byte UTF-8 content is skipped cleanly and
+    // the following edge still reads correctly.
+    let doc = read_oml("# café ☕ comment\na: 1").unwrap();
+    match doc {
+        RawNode::Edges(edges) => {
+            assert_eq!(
+                edges,
+                vec![("a".to_string(), RawNode::Leaf(Scalar::Int(1)))]
+            );
+        }
+        other => panic!("expected edges, got {other:?}"),
+    }
+}
+
+#[test]
+fn multibyte_string_content_round_trips_and_error_after_it_reports_correct_line() {
+    // Regression for issue #43: string-body scanning used to advance by a
+    // flat `+= 1` per char; multi-byte string content (emoji, accented
+    // letters) would misalign the byte offset if that fix regressed.
+    // Also confirms `line_col`'s byte-offset line counting still reports
+    // the correct line number for an error *after* a line containing
+    // multi-byte content.
+    let doc = read_oml("a: \"café \u{1F600}\"").unwrap();
+    assert_eq!(
+        doc,
+        RawNode::Edges(vec![(
+            "a".to_string(),
+            RawNode::Leaf(Scalar::Str("café \u{1F600}".to_string()))
+        )])
+    );
+
+    let err = read_oml("a: \"café \u{1F600}\"\nb @\n").unwrap_err();
+    assert_eq!(err.line, 2, "got {err:?}");
+}
+
+#[test]
 fn top_level_brace_document_is_equivalent_to_the_bare_edge_list() {
     let a = read_oml("a: 1").unwrap();
     let b = read_oml("{ a: 1 }").unwrap();
