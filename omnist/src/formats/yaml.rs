@@ -844,6 +844,27 @@ pub fn check_yaml(doc: &Doc) -> WriteReport {
     rep
 }
 
+/// Marker type implementing [`crate::formats::Codec`] for YAML -- adapts
+/// [`read_yaml`]/[`write_yaml`]/[`check_yaml`] to the registry's uniform
+/// shape with the documented defaults (`strict: false`, no report).
+pub(crate) struct Yaml;
+
+impl crate::formats::Codec for Yaml {
+    const NAME: &'static str = "yaml";
+
+    fn read(text: &str) -> Result<Doc, OmnistError> {
+        read_yaml(text)
+    }
+
+    fn write(doc: &Doc) -> Result<String, OmnistError> {
+        write_yaml(doc, false, None).map_err(Into::into)
+    }
+
+    fn check(doc: &Doc) -> WriteReport {
+        check_yaml(doc)
+    }
+}
+
 fn indent(out: &mut String, level: usize) {
     for _ in 0..level {
         out.push_str("  ");
