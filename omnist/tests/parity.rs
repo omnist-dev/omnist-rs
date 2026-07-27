@@ -18,13 +18,14 @@
 //! `test_canonical.py`'s `TestDocument`/`TestInfer`/`TestValidation`/
 //! `TestOsdRobustness`/`TestTemporalBoundary`/`TestOperations` expanded from
 //! ~1 fixture/class toward ~1 fixture/method, plus a lighter pass over
-//! `test_depth_guards.py`. Deliberately *not* covered by this corpus (see
-//! `extract_fixtures.py`'s module docstring for the full rationale on each):
+//! `test_depth_guards.py`. Issue #73 added `test_any_core.py` /
+//! `test_any_grammar.py`'s coverage of the `any` type (PR #33) — OSD
+//! grammar, schema algebra (`compatible_with`/`equivalent`/`normalize`/
+//! `prune`/`extract`/`local_signature`), `validate`, `materialize`, and
+//! `infer`'s "never produces `any`" guarantee. Deliberately *not* covered by
+//! this corpus (see `extract_fixtures.py`'s module docstring for the full
+//! rationale on each):
 //!
-//! - `test_any_core.py` / `test_any_grammar.py` — the `any` type's OSD
-//!   *grammar edge cases* (basic `any`-field parsing already has Rust
-//!   support and is exercised indirectly via the lint fixtures' any-field
-//!   check) are still a later PR per the v1.0 `any` decision.
 //! - `test_public_api.py` — freezes *Python's* `omnist.__all__` import
 //!   surface; not a cross-language concept.
 //! - `test_cli.py` / `test_cli_examples.py` / `test_cli_fuzz.py` — Python
@@ -47,13 +48,14 @@
 //! `expected`/`error_contains` value is asserted as-is against Rust with
 //! no divergence needed. (Running tally per the port's cross-
 //! implementation bug policy: issue #4 -> omnist-dev/omnist#255, issue #42
-//! -> omnist-dev/omnist#256; this pass adds no new entries.)
+//! -> omnist-dev/omnist#256; issue #73 adds no new entries either.)
 
 use omnist::document::{Doc, RawNode, Scalar, Value};
 use omnist::materialize;
 use omnist::oml::{read_oml, write_oml};
-use omnist::ops::{compatible_with, is_empty, lint};
+use omnist::ops::{compatible_with, extract, is_empty, lint, local_signature, prune};
 use omnist::osd::{parse_schema, to_osd};
+use omnist::schema::FieldType;
 use serde_json::Value as J;
 use std::fs;
 
@@ -612,6 +614,156 @@ fn parity_corpus_replays_every_fixture_against_rust() {
                 let depth = fx["depth"].as_u64().unwrap() as usize;
                 Doc::from_raw(deep_node(depth))
                     .unwrap_or_else(|e| panic!("fixture {note:?}: Doc::from_raw failed: {e}"));
+            }
+
+            // --- issue #73 additions (any type) ----------------------------
+
+            // test_any_grammar.py's writer tests: to_osd() output contains a
+            // given substring (e.g. the 'any' keyword).
+            "osd_contains" => {
+                let text = fx["schema"].as_str().unwrap();
+                let contains = fx["contains"].as_str().unwrap();
+                assert!(
+                    text.contains(contains),
+                    "fixture {note:?}: to_osd() output {text:?} does not contain {contains:?}"
+                );
+            }
+            // test_any_core.py's local_signature tests: N schema texts, each
+            // a single-record schema whose root has one field -- their
+            // local_signature()s must (or must not) be pairwise distinct.
+            // The signature's internal shape is not JSON-portable (see the
+            // extractor's comment), so only the distinctness fact travels.
+            "local_signature_distinct" => {
+                let schemas: Vec<&str> = fx["schemas"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|v| v.as_str().unwrap())
+                    .collect();
+                let expected_distinct = fx["expected_distinct"].as_bool().unwrap();
+                let sigs: Vec<_> = schemas
+                    .iter()
+                    .map(|text| {
+                        let s = parse_schema(text).unwrap();
+                        let root = s.env().get(&s.root().name).unwrap();
+                        local_signature(root)
+                    })
+                    .collect();
+                let all_distinct = (0..sigs.len())
+                    .all(|i| (i + 1..sigs.len()).all(|j| sigs[i] != sigs[j]));
+                assert_eq!(
+                    all_distinct, expected_distinct,
+                    "fixture {note:?}: local_signature distinctness diverged"
+                );
+            }
+            // test_any_core.py's normalize-with-any tests: env length before
+            // and after normalize(), without assuming a strict shrink (an
+            // any-vs-scalar record pair must NOT merge, so before == after
+            // there; an identical-any-record pair DOES merge, before > after).
+            "schema_normalize_env_len" => {
+                let s = parse_schema(fx["schema"].as_str().unwrap()).unwrap();
+                let n = omnist::ops::normalize(&s);
+                let before = fx["expected_env_before"].as_u64().unwrap() as usize;
+                let after = fx["expected_env_after"].as_u64().unwrap() as usize;
+                assert_eq!(s.env().len(), before, "fixture {note:?}: env-before diverged");
+                assert_eq!(n.env().len(), after, "fixture {note:?}: env-after diverged");
+                assert!(
+                    omnist::ops::equivalent(&s, &n),
+                    "fixture {note:?}: normalize output not equivalent"
+                );
+                if fx["expect_same_target"].as_bool() == Some(true) {
+                    let root = n.env().get(&n.root().name).unwrap();
+                    let a_target = match &root.field("a").unwrap().ty {
+                        FieldType::Ref(r) => r.name.clone(),
+                        other => panic!("fixture {note:?}: field 'a' is not a Ref: {other:?}"),
+                    };
+                    let b_target = match &root.field("b").unwrap().ty {
+                        FieldType::Ref(r) => r.name.clone(),
+                        other => panic!("fixture {note:?}: field 'b' is not a Ref: {other:?}"),
+                    };
+                    assert_eq!(
+                        a_target, b_target,
+                        "fixture {note:?}: merged records' fields should point at the same target"
+                    );
+                }
+            }
+            // test_prune_keeps_any_only_record: prune() keeps an any-only
+            // record satisfiable and equivalent() to the original.
+            "schema_prune_equivalent" => {
+                let text = fx["schema"].as_str().unwrap();
+                let s = parse_schema(text).unwrap();
+                let p = prune(&s);
+                assert!(!is_empty(&p), "fixture {note:?}: prune() output is_empty()");
+                assert!(
+                    omnist::ops::equivalent(&s, &p),
+                    "fixture {note:?}: prune() output not equivalent() to the original"
+                );
+            }
+            // test_extract_*_any_field*: extract() keeps/drops an any-typed
+            // field by its own label, or raises when a mandatory one would
+            // be dropped.
+            "schema_extract_field_type" => {
+                let s = parse_schema(fx["schema"].as_str().unwrap()).unwrap();
+                let keep: Vec<&str> = fx["keep"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|v| v.as_str().unwrap())
+                    .collect();
+                let label = fx["label"].as_str().unwrap();
+                let outcome = fx["outcome"].as_str().unwrap();
+                match outcome {
+                    "present_any" => {
+                        let e = extract(&s, &keep)
+                            .unwrap_or_else(|err| panic!("fixture {note:?}: extract failed: {err}"));
+                        let root = e.env().get(&e.root().name).unwrap();
+                        let f = root
+                            .field(label)
+                            .unwrap_or_else(|| panic!("fixture {note:?}: field {label:?} missing"));
+                        assert!(
+                            matches!(f.ty, FieldType::Any),
+                            "fixture {note:?}: field {label:?} is not FieldType::Any"
+                        );
+                    }
+                    "absent" => {
+                        let e = extract(&s, &keep)
+                            .unwrap_or_else(|err| panic!("fixture {note:?}: extract failed: {err}"));
+                        let root = e.env().get(&e.root().name).unwrap();
+                        assert!(
+                            root.field(label).is_none(),
+                            "fixture {note:?}: field {label:?} should have been dropped"
+                        );
+                    }
+                    "error" => {
+                        assert!(
+                            extract(&s, &keep).is_err(),
+                            "fixture {note:?}: expected extract() to fail"
+                        );
+                    }
+                    other => panic!("fixture {note:?}: unrecognized extract outcome {other:?}"),
+                }
+            }
+            // test_infer_never_produces_any_type: concrete illustrative
+            // cases (Python's own test property-tests this with hypothesis;
+            // see the extractor's comment) -- infer()'s resulting schema
+            // must never contain a FieldType::Any field.
+            "infer_no_any" => {
+                let samples: Vec<Doc> = fx["samples"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|s| Doc::from_raw(json_object_to_raw(s)).unwrap())
+                    .collect();
+                let s = omnist::infer(&samples, "Root")
+                    .unwrap_or_else(|e| panic!("fixture {note:?}: infer failed: {e}"));
+                let has_any = s
+                    .env()
+                    .values()
+                    .any(|rec| rec.fields().iter().any(|f| matches!(f.ty, FieldType::Any)));
+                assert!(
+                    !has_any,
+                    "fixture {note:?}: infer() produced a FieldType::Any field"
+                );
             }
 
             other => panic!("fixture {note:?}: unrecognized fixture kind {other:?}"),
