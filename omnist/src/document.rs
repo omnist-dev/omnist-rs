@@ -480,11 +480,7 @@ impl<'a> Cursor<'a> {
                 for (label, child) in edges {
                     let i = *counts.entry(label.as_str()).or_insert(0);
                     counts.insert(label.as_str(), i + 1);
-                    let cp = if i == 0 {
-                        format!("{}.{}", self.path, label)
-                    } else {
-                        format!("{}.{}[{}]", self.path, label, i)
-                    };
+                    let cp = crate::report::child_path(&self.path, label, i);
                     out.push((
                         label.clone(),
                         Cursor {
@@ -497,6 +493,41 @@ impl<'a> Cursor<'a> {
                 Ok(out)
             }
             NodeData::Leaf(_) => Err(DocumentError::new(&self.path, "a leaf has no edges")),
+        }
+    }
+
+    /// Like [`Cursor::edges`], but doesn't build a path `String` for every
+    /// child up front (issue #44) -- returns each edge's label, its
+    /// same-label occurrence index, and its `NodeId`, leaving path
+    /// construction to the caller. Paired with [`Cursor::seek`], used by
+    /// `schema.rs`'s `conform_record` (the validate hot path), which reuses
+    /// one path buffer for the whole tree walk instead of allocating one
+    /// `String` per edge regardless of whether that edge ever needs one.
+    pub(crate) fn raw_edges(&self) -> Result<Vec<(&'a str, usize, NodeId)>, DocumentError> {
+        match &self.doc.entry(self.id).data {
+            NodeData::Internal(edges) => {
+                let mut counts: IndexMap<&str, usize> = IndexMap::new();
+                let mut out = Vec::with_capacity(edges.len());
+                for (label, child) in edges {
+                    let i = *counts.entry(label.as_str()).or_insert(0);
+                    counts.insert(label.as_str(), i + 1);
+                    out.push((label.as_str(), i, *child));
+                }
+                Ok(out)
+            }
+            NodeData::Leaf(_) => Err(DocumentError::new(&self.path, "a leaf has no edges")),
+        }
+    }
+
+    /// Build a cursor for `id` without a meaningful `path` -- only valid for
+    /// callers (like `schema.rs`'s buffer-threaded `conform`) that never
+    /// read the returned cursor's `path` field directly, tracking the real
+    /// path in their own reused buffer instead. Paired with [`Cursor::raw_edges`].
+    pub(crate) fn seek(&self, id: NodeId) -> Cursor<'a> {
+        Cursor {
+            doc: self.doc,
+            id,
+            path: String::new(),
         }
     }
 
@@ -973,6 +1004,14 @@ mod tests {
     fn edges_on_a_leaf_is_rejected() {
         let doc = Doc::of(&Value::Int(1)).unwrap();
         assert!(doc.root().edges().is_err());
+    }
+
+    #[test]
+    fn raw_edges_on_a_leaf_is_rejected() {
+        // Mirrors `edges_on_a_leaf_is_rejected` for the lazy-path variant
+        // `edges()` piggybacks its own path-numbering on -- see issue #44.
+        let doc = Doc::of(&Value::Int(1)).unwrap();
+        assert!(doc.root().raw_edges().is_err());
     }
 
     // -- export / equality ------------------------------------------------

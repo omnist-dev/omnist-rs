@@ -22,6 +22,36 @@
 
 use crate::error::WriteError;
 
+/// The path-numbering rule every codec scanner applies to a same-label
+/// array's entries: the first occurrence gets the bare path
+/// (`"{path}.{label}"`), later ones are indexed (`"{path}.{label}[{i}]"`).
+/// Lives next to [`Adjustment`], whose `path` field this format feeds.
+///
+/// Used by scanners that build the full path eagerly (`toml.rs::strip_nulls`,
+/// `xml.rs::scan_xml_into`, whose own recursion doesn't fit the shared
+/// `formats::visit_grouped` walker -- see that function's doc comment). The
+/// grouped-`Value` walkers (`json`/`yaml`) instead reuse a single path buffer
+/// via [`push_child_path`], never allocating a `String` per edge.
+pub(crate) fn child_path(path: &str, label: &str, index: usize) -> String {
+    let mut s = String::with_capacity(path.len() + label.len() + 8);
+    s.push_str(path);
+    push_child_path(&mut s, label, index);
+    s
+}
+
+/// Same rule as [`child_path`], but writes into a caller-owned buffer instead
+/// of allocating a new `String`. Callers that walk a whole tree can push a
+/// segment, recurse, then `buf.truncate` back -- one buffer, reused for
+/// every edge, instead of one allocation per edge.
+pub(crate) fn push_child_path(buf: &mut String, label: &str, index: usize) {
+    use std::fmt::Write;
+    buf.push('.');
+    buf.push_str(label);
+    if index != 0 {
+        write!(buf, "[{index}]").expect("writing to a String never fails");
+    }
+}
+
 /// How surprising/lossy a single [`Adjustment`] is. `strict` mode raises on
 /// either severity; only [`WriteReport::is_ok`] (Python's `__bool__`)
 /// distinguishes them.
