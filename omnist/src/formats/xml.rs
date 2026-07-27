@@ -153,6 +153,7 @@
 use crate::WriteError;
 use crate::document::{Doc, MAX_DEPTH, RawNode, Scalar};
 use crate::error::{DocumentError, OmnistError, ParseError};
+use crate::formats::float_fmt;
 use crate::formats::textpos::line_col_bytes;
 use crate::report::{Severity, WriteReport};
 use quick_xml::Reader;
@@ -638,22 +639,7 @@ fn xml_text(scalar: &Scalar) -> String {
 /// integral values >= 1e17 it doesn't even include a decimal point -- see
 /// issue #46).
 fn write_float_text(x: f64) -> String {
-    if x.is_nan() {
-        "nan".to_string()
-    } else if x.is_infinite() {
-        if x > 0.0 { "inf" } else { "-inf" }.to_string()
-    } else {
-        // See `json.rs::write_float` for why this checks the rendered
-        // string for `.`/`e`/`E` rather than comparing `x` against a fixed
-        // magnitude cutoff (issue #46: Rust's `f64::to_string()` drops the
-        // decimal point for integral values >= 1e17).
-        let s = x.to_string();
-        if s.contains('.') || s.contains('e') || s.contains('E') {
-            s
-        } else {
-            format!("{s}.0")
-        }
-    }
+    float_fmt::float_to_string(x, "nan", "inf", "-inf")
 }
 
 /// Replaces every character XML 1.0 cannot represent with U+FFFD --

@@ -207,6 +207,7 @@
 use crate::WriteError;
 use crate::document::{Doc, Value};
 use crate::error::{OmnistError, ParseError};
+use crate::formats::float_fmt;
 use crate::formats::int_cap::{MAX_INT_DIGITS, out_of_range_message, over_cap_message};
 use crate::formats::textpos::line_col_bytes;
 use crate::report::{Severity, WriteReport};
@@ -514,24 +515,10 @@ fn write_scalar(v: &Value, out: &mut String) {
     }
 }
 
+/// See `formats::float_fmt` (issue #47) for the shared render-then-inspect
+/// core (issue #46's fix); this is just TOML's spelling table.
 fn write_float(x: f64, out: &mut String) {
-    if x.is_nan() {
-        out.push_str("nan");
-    } else if x.is_infinite() {
-        out.push_str(if x > 0.0 { "inf" } else { "-inf" });
-    } else {
-        // See `json.rs::write_float` for why this checks the rendered
-        // string for `.`/`e`/`E` rather than comparing `x` against a fixed
-        // magnitude cutoff (issue #46: Rust's `f64::to_string()` drops the
-        // decimal point for integral values >= 1e17).
-        let s = x.to_string();
-        if s.contains('.') || s.contains('e') || s.contains('E') {
-            out.push_str(&s);
-        } else {
-            out.push_str(&s);
-            out.push_str(".0");
-        }
-    }
+    float_fmt::write_float(x, "nan", "inf", "-inf", out);
 }
 
 /// Writes a string scalar: as a *native* TOML temporal literal (unquoted)
