@@ -46,6 +46,7 @@
 use crate::WriteError;
 use crate::document::{Doc, Value};
 use crate::error::{OmnistError, ParseError};
+use crate::formats::float_fmt;
 use crate::formats::int_cap::{MAX_INT_DIGITS, out_of_range_message, over_cap_message};
 use crate::formats::textpos::line_col_bytes;
 use crate::report::{Severity, WriteReport};
@@ -240,29 +241,12 @@ fn write_seq<I, T>(
 /// `finish_write` raises, but still produced -- see `write_json`'s call
 /// site): bare `NaN`/`Infinity`/`-Infinity` tokens, not valid JSON on their
 /// own but exactly what Python's own encoder emits by default.
+///
+/// The non-special-value rendering (issue #46's render-then-inspect fix)
+/// and the shared core live in `formats::float_fmt` (issue #47) -- this is
+/// now just JSON's spelling table for the three special values.
 fn write_float(x: f64, out: &mut String) {
-    if x.is_nan() {
-        out.push_str("NaN");
-    } else if x.is_infinite() {
-        out.push_str(if x > 0.0 { "Infinity" } else { "-Infinity" });
-    } else {
-        // Match `json.dumps`'s float rendering of an integral value, e.g.
-        // `1.0` (not `1`) -- `repr(1.0) == "1.0"` in Python. Rust's `f64`
-        // `Display` never adds a decimal point on its own -- and for large
-        // enough integral magnitudes (>= 1e17) it renders a bare digit run
-        // with no `.`/`e`/`E` at all, e.g. `1e17.to_string() ==
-        // "100000000000000000"` -- so the correct, magnitude-independent
-        // test is whether the *rendered string* already contains one of
-        // those markers, not whether `x` is below some fixed cutoff (see
-        // `oml.rs::write_float`, the reference implementation this mirrors).
-        let s = x.to_string();
-        if s.contains('.') || s.contains('e') || s.contains('E') {
-            out.push_str(&s);
-        } else {
-            out.push_str(&s);
-            out.push_str(".0");
-        }
-    }
+    float_fmt::write_float(x, "NaN", "Infinity", "-Infinity", out);
 }
 
 fn write_json_string(s: &str, out: &mut String) {

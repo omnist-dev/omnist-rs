@@ -13,6 +13,7 @@
 //! [`yaml`]; issue #20 added [`toml`]; issue #22 adds [`xml`], the last and
 //! structurally different one -- see `xml.rs`'s own doc comment.
 
+pub(crate) mod float_fmt;
 pub(crate) mod int_cap;
 pub mod json;
 pub(crate) mod textpos;

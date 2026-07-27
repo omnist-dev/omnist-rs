@@ -1141,22 +1141,7 @@ fn write_str_scalar(s: &str) -> String {
 /// trailing `.0`, unlike Python's `repr()`), or the OML round-trip would
 /// silently reclassify it as `Scalar::Int` on read-back.
 fn write_float(v: f64) -> String {
-    if v.is_nan() {
-        return "nan".to_string();
-    }
-    if v.is_infinite() {
-        return if v < 0.0 {
-            "-inf".to_string()
-        } else {
-            "inf".to_string()
-        };
-    }
-    let s = format!("{v}");
-    if s.contains('.') || s.contains('e') || s.contains('E') {
-        s
-    } else {
-        format!("{s}.0")
-    }
+    crate::formats::float_fmt::float_to_string(v, "nan", "inf", "-inf")
 }
 
 /// Escapes every occurrence of a special character -- a per-char loop, not
