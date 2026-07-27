@@ -1,0 +1,587 @@
+{
+  "fixtures": [
+    {
+      "module": "test_oml.test_scalar_round_trip",
+      "note": "OML: string scalar parses and round-trips through write_oml",
+      "kind": "oml_roundtrip",
+      "input": "a: \"hello\"",
+      "expected": {
+        "$edges": [
+          [
+            "a",
+            {
+              "$str": "hello"
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "module": "test_oml.test_scalar_round_trip",
+      "note": "OML: positive integer scalar parses and round-trips through write_oml",
+      "kind": "oml_roundtrip",
+      "input": "a: 42",
+      "expected": {
+        "$edges": [
+          [
+            "a",
+            {
+              "$int": 42
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "module": "test_oml.test_scalar_round_trip",
+      "note": "OML: negative integer scalar parses and round-trips through write_oml",
+      "kind": "oml_roundtrip",
+      "input": "a: -42",
+      "expected": {
+        "$edges": [
+          [
+            "a",
+            {
+              "$int": -42
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "module": "test_oml.test_scalar_round_trip",
+      "note": "OML: positive float scalar parses and round-trips through write_oml",
+      "kind": "oml_roundtrip",
+      "input": "a: 3.14",
+      "expected": {
+        "$edges": [
+          [
+            "a",
+            {
+              "$float": 3.14
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "module": "test_oml.test_scalar_round_trip",
+      "note": "OML: negative float scalar parses and round-trips through write_oml",
+      "kind": "oml_roundtrip",
+      "input": "a: -3.14",
+      "expected": {
+        "$edges": [
+          [
+            "a",
+            {
+              "$float": -3.14
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "module": "test_oml.test_scalar_round_trip",
+      "note": "OML: float exponent notation parses and round-trips through write_oml",
+      "kind": "oml_roundtrip",
+      "input": "a: 1e10",
+      "expected": {
+        "$edges": [
+          [
+            "a",
+            {
+              "$float": 10000000000.0
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "module": "test_oml.test_scalar_round_trip",
+      "note": "OML: float negative exponent parses and round-trips through write_oml",
+      "kind": "oml_roundtrip",
+      "input": "a: 1.5e-3",
+      "expected": {
+        "$edges": [
+          [
+            "a",
+            {
+              "$float": 0.0015
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "module": "test_oml.test_scalar_round_trip",
+      "note": "OML: boolean true scalar parses and round-trips through write_oml",
+      "kind": "oml_roundtrip",
+      "input": "a: true",
+      "expected": {
+        "$edges": [
+          [
+            "a",
+            {
+              "$bool": true
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "module": "test_oml.test_scalar_round_trip",
+      "note": "OML: boolean false scalar parses and round-trips through write_oml",
+      "kind": "oml_roundtrip",
+      "input": "a: false",
+      "expected": {
+        "$edges": [
+          [
+            "a",
+            {
+              "$bool": false
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "module": "test_oml.test_scalar_round_trip",
+      "note": "OML: null scalar parses and round-trips through write_oml",
+      "kind": "oml_roundtrip",
+      "input": "a: null",
+      "expected": {
+        "$edges": [
+          [
+            "a",
+            {
+              "$null": true
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "module": "test_oml.test_scalar_round_trip",
+      "note": "OML: date scalar parses and round-trips through write_oml",
+      "kind": "oml_roundtrip",
+      "input": "a: 2024-01-01",
+      "expected": {
+        "$edges": [
+          [
+            "a",
+            {
+              "$str": "2024-01-01"
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "module": "test_oml.test_scalar_round_trip",
+      "note": "OML: time scalar parses and round-trips through write_oml",
+      "kind": "oml_roundtrip",
+      "input": "a: 12:30:00",
+      "expected": {
+        "$edges": [
+          [
+            "a",
+            {
+              "$str": "12:30:00"
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "module": "test_oml.test_scalar_round_trip",
+      "note": "OML: datetime scalar parses and round-trips through write_oml",
+      "kind": "oml_roundtrip",
+      "input": "a: 2024-01-01T12:30:00",
+      "expected": {
+        "$edges": [
+          [
+            "a",
+            {
+              "$str": "2024-01-01T12:30:00"
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "module": "test_oml.test_scalar_round_trip",
+      "note": "OML: positive infinity float parses and round-trips through write_oml",
+      "kind": "oml_roundtrip",
+      "input": "a: inf",
+      "expected": {
+        "$edges": [
+          [
+            "a",
+            {
+              "$float": "inf"
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "module": "test_oml.test_scalar_round_trip",
+      "note": "OML: negative infinity float parses and round-trips through write_oml",
+      "kind": "oml_roundtrip",
+      "input": "a: -inf",
+      "expected": {
+        "$edges": [
+          [
+            "a",
+            {
+              "$float": "-inf"
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "module": "test_oml.test_scalar_round_trip",
+      "note": "OML: 'nan' float scalar parses to a NaN value (property check, not equality)",
+      "kind": "oml_parses_to_nan",
+      "input": "a: nan"
+    },
+    {
+      "module": "test_oml.test_empty_document_is_empty_node",
+      "note": "OML: empty text is the empty node []",
+      "kind": "oml_roundtrip",
+      "input": "",
+      "expected": {
+        "$edges": []
+      }
+    },
+    {
+      "module": "test_oml.test_empty_document_is_empty_node",
+      "note": "OML: whitespace-only text is the empty node []",
+      "kind": "oml_roundtrip",
+      "input": "   \n  \n",
+      "expected": {
+        "$edges": []
+      }
+    },
+    {
+      "module": "test_oml.test_crlf_line_endings_act_as_separators",
+      "note": "OML: CRLF line endings act as separators",
+      "kind": "oml_roundtrip",
+      "input": "a: 1\r\nb: 2\r\n",
+      "expected": {
+        "$edges": [
+          [
+            "a",
+            {
+              "$int": 1
+            }
+          ],
+          [
+            "b",
+            {
+              "$int": 2
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "module": "test_oml.test_bare_leaf_document",
+      "note": "OML: bare integer leaf (no label) is a valid document",
+      "kind": "oml_roundtrip",
+      "input": "42",
+      "expected": {
+        "$int": 42
+      }
+    },
+    {
+      "module": "test_oml.test_bare_leaf_document",
+      "note": "OML: bare string leaf (no label) is a valid document",
+      "kind": "oml_roundtrip",
+      "input": "\"just a string\"",
+      "expected": {
+        "$str": "just a string"
+      }
+    },
+    {
+      "module": "test_oml.test_repeated_labels_and_interleaving",
+      "note": "OML: repeated/interleaved labels preserve order",
+      "kind": "oml_roundtrip",
+      "input": "a: 1\nb: 2\na: 3\nb: 4\na: 5",
+      "expected": {
+        "$edges": [
+          [
+            "a",
+            {
+              "$int": 1
+            }
+          ],
+          [
+            "b",
+            {
+              "$int": 2
+            }
+          ],
+          [
+            "a",
+            {
+              "$int": 3
+            }
+          ],
+          [
+            "b",
+            {
+              "$int": 4
+            }
+          ],
+          [
+            "a",
+            {
+              "$int": 5
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "module": "test_oml.test_nested_braces_arbitrary_depth",
+      "note": "OML: nested braces at arbitrary depth",
+      "kind": "oml_roundtrip",
+      "input": "a: { b: { c: { d: \"leaf\" } } }",
+      "expected": {
+        "$edges": [
+          [
+            "a",
+            {
+              "$edges": [
+                [
+                  "b",
+                  {
+                    "$edges": [
+                      [
+                        "c",
+                        {
+                          "$edges": [
+                            [
+                              "d",
+                              {
+                                "$str": "leaf"
+                              }
+                            ]
+                          ]
+                        }
+                      ]
+                    ]
+                  }
+                ]
+              ]
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "module": "test_oml.test_inline_brace_style_with_semicolons",
+      "note": "OML: inline brace style with semicolon separators",
+      "kind": "oml_roundtrip",
+      "input": "{ a: 1; b: 2 }",
+      "expected": {
+        "$edges": [
+          [
+            "a",
+            {
+              "$int": 1
+            }
+          ],
+          [
+            "b",
+            {
+              "$int": 2
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "module": "test_oml.test_stray_character_is_a_parse_error",
+      "note": "OML: stray character backtick is a ParseError",
+      "kind": "oml_parse_error",
+      "input": "a: `",
+      "error_contains": "line 1, col 4: stray character '`'"
+    },
+    {
+      "module": "test_oml.test_stray_characters_are_rejected",
+      "note": "OML: stray character '@' is rejected",
+      "kind": "oml_parse_error",
+      "input": "a: @",
+      "error_contains": "line 1, col 4: stray character '@'"
+    },
+    {
+      "module": "test_oml.test_stray_characters_are_rejected",
+      "note": "OML: stray character '&' is rejected",
+      "kind": "oml_parse_error",
+      "input": "a: &",
+      "error_contains": "line 1, col 4: stray character '&'"
+    },
+    {
+      "module": "test_oml.test_unmatched_close_bracket_is_a_parse_error",
+      "note": "OML: unmatched close bracket is a ParseError",
+      "kind": "oml_parse_error",
+      "input": "a: ]",
+      "error_contains": "line 1, col 4: expected a value, got RBRACKET ']'"
+    },
+    {
+      "module": "test_oml.test_invalid_temporal_literals_are_parse_errors",
+      "note": "OML: invalid date (month 13) is a ParseError",
+      "kind": "oml_parse_error",
+      "input": "a: 2024-13-01",
+      "error_contains": "line 1, col 14: invalid date '2024-13-01': month must be in 1..12"
+    },
+    {
+      "module": "test_oml.test_invalid_temporal_literals_are_parse_errors",
+      "note": "OML: invalid time (hour 25) is a ParseError",
+      "kind": "oml_parse_error",
+      "input": "a: 25:00:00",
+      "error_contains": "line 1, col 12: invalid time '25:00:00': hour must be in 0..23"
+    },
+    {
+      "module": "test_oml.test_invalid_temporal_literals_are_parse_errors",
+      "note": "OML: invalid datetime (month 13) is a ParseError",
+      "kind": "oml_parse_error",
+      "input": "a: 2024-13-01T00:00:00",
+      "error_contains": "line 1, col 23: invalid datetime '2024-13-01T00:00:00': month must be in 1..12"
+    },
+    {
+      "module": "test_depth_guards.TestWriteOml.test_too_deep_raises_write_error_naming_the_limit",
+      "note": "depth guard: write_oml on a node 5000 levels deep raises WriteError naming the 200 limit",
+      "kind": "oml_write_error",
+      "depth": 5000,
+      "error_contains": "nesting exceeds the maximum depth (200)"
+    },
+    {
+      "module": "test_depth_guards.TestWriteOml.test_just_under_limit_succeeds",
+      "note": "depth guard: write_oml on a node 190 levels deep (just under the 200 limit) succeeds",
+      "kind": "oml_write_ok",
+      "depth": 190
+    },
+    {
+      "module": "test_canonical.TestPublicApi.test_methods_and_t_namespace",
+      "note": "schema: OSD parses record with required integer + optional string field",
+      "kind": "osd_parse_ok",
+      "input": "record R { \"n\": integer, \"s\": string? }\nroot R"
+    },
+    {
+      "module": "test_canonical.TestPublicApi.test_methods_and_t_namespace",
+      "note": "schema: validate() accepts {n:1, s:null} against record R{n:integer, s:string?}",
+      "kind": "schema_validate",
+      "schema": "record R { \"n\": integer, \"s\": string? }\nroot R",
+      "doc_json_input": {
+        "n": 1,
+        "s": null
+      },
+      "expected_ok": true
+    },
+    {
+      "module": "test_canonical.TestPublicApi.test_methods_and_t_namespace",
+      "note": "schema: to_osd()+parse_schema() round-trips to an equivalent schema",
+      "kind": "schema_osd_roundtrip_equivalent",
+      "schema": "record R { \"n\": integer, \"s\": string? }\nroot R"
+    },
+    {
+      "module": "test_canonical.TestPublicApi.test_methods_and_t_namespace",
+      "note": "schema: {n:integer,s:string?} is compatible_with widened {n:number,s:string?} (integer<:number)",
+      "kind": "schema_compatible_with",
+      "schema_a": "record R { \"n\": integer, \"s\": string? }\nroot R",
+      "schema_b": "record R { \"n\": number, \"s\": string? }\nroot R",
+      "expected": true
+    },
+    {
+      "module": "test_canonical.TestPublicApi.test_methods_and_t_namespace",
+      "note": "schema ops: normalize() of a schema stays equivalent() to the original",
+      "kind": "schema_normalize_equivalent",
+      "schema": "record R { \"n\": integer, \"s\": string? }\nroot R"
+    },
+    {
+      "module": "ops.is_empty",
+      "note": "ops: a record with no fields is not is_empty() (it still accepts the empty record itself)",
+      "kind": "schema_is_empty",
+      "schema": "record R { }\nroot R",
+      "expected": false
+    },
+    {
+      "module": "test_canonical.formats.json",
+      "note": "format: Doc({name,age,active,tags:null}) round-trips through Doc.to_json/from_json",
+      "kind": "format_roundtrip",
+      "format": "json",
+      "doc_json": {
+        "name": "Ada",
+        "age": 36,
+        "active": true,
+        "tags": null
+      }
+    },
+    {
+      "module": "test_canonical.formats.yaml",
+      "note": "format: Doc({name,age,active,tags:null}) round-trips through Doc.to_yaml/from_yaml",
+      "kind": "format_roundtrip",
+      "format": "yaml",
+      "doc_json": {
+        "name": "Ada",
+        "age": 36,
+        "active": true,
+        "tags": null
+      }
+    },
+    {
+      "module": "test_canonical.formats.toml",
+      "note": "format: Doc({name,age,active}) (no null field - TOML has no null literal) round-trips through Doc.to_toml/from_toml",
+      "kind": "format_roundtrip",
+      "format": "toml",
+      "doc_json": {
+        "name": "Ada",
+        "age": 36,
+        "active": true
+      }
+    },
+    {
+      "module": "test_canonical.formats.xml",
+      "note": "format: single-rooted Doc({root:{name,age,active}}) round-trips through Doc.to_xml/from_xml",
+      "kind": "format_roundtrip",
+      "format": "xml",
+      "doc_json": {
+        "root": {
+          "name": "Ada",
+          "age": 36,
+          "active": true
+        }
+      }
+    },
+    {
+      "module": "test_canonical.materialize",
+      "note": "materialize: a Doc materialized against its own inferred schema is unchanged (idempotent w.r.t. self-inference)",
+      "kind": "materialize_case",
+      "schema": "record Root {\n    \"n\": integer,\n    \"s\": string,\n}\nroot Root\n",
+      "doc_json": {
+        "n": 7,
+        "s": "x"
+      },
+      "expected": {
+        "$edges": [
+          [
+            "n",
+            {
+              "$int": 7
+            }
+          ],
+          [
+            "s",
+            {
+              "$str": "x"
+            }
+          ]
+        ]
+      }
+    }
+  ]
+}
