@@ -207,14 +207,15 @@
 use crate::WriteError;
 use crate::document::{Doc, Value};
 use crate::error::{OmnistError, ParseError};
+use crate::formats::int_cap::{MAX_INT_DIGITS, out_of_range_message, over_cap_message};
 use crate::report::{Severity, WriteReport};
 use crate::schema::{is_iso_date, is_iso_datetime, is_iso_time};
 use indexmap::IndexMap;
 use toml_edit::{Item, TableLike};
 
-/// Same guard, same constant as `json.rs`'s/`yaml.rs`'s `MAX_INT_DIGITS` --
-/// see this module's doc comment.
-const MAX_INT_DIGITS: usize = 4300;
+// Same guard, same constant as `json.rs`'s/`yaml.rs`'s -- see this
+// module's doc comment. Constant and message constructors now live in
+// [`crate::formats::int_cap`] (issue #49).
 
 // ============================================================== Reader
 
@@ -274,21 +275,9 @@ fn toml_overflow_error(text: &str, span: std::ops::Range<usize>) -> ParseError {
         .trim_start_matches("0X")
         .len();
     if digit_count > MAX_INT_DIGITS {
-        return ParseError::new(
-            line,
-            col,
-            format!(
-                "invalid TOML: integer literal has {digit_count} digits, exceeding the \
-                 {MAX_INT_DIGITS}-digit limit (security: unbounded-digit int-to-str \
-                 conversion is superlinear)",
-            ),
-        );
+        return ParseError::new(line, col, over_cap_message("invalid TOML: ", digit_count));
     }
-    ParseError::new(
-        line,
-        col,
-        format!("invalid TOML: integer literal {raw:?} is out of range for a 64-bit integer"),
-    )
+    ParseError::new(line, col, out_of_range_message("invalid TOML: ", raw))
 }
 
 /// 1-based (line, column) of byte offset `pos` in `text`.
