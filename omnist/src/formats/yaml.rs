@@ -2142,6 +2142,84 @@ mod tests {
         b.on_event_impl(Event::Alias(999), test_marker());
     }
 
+    // -------------------------------------------------- coverage: issue #42 node-count guard
+
+    /// Calling `charge` directly once `self.error` is already `Some(..)`
+    /// exercises the short-circuit at the very top of `charge` (returns
+    /// `false` without touching `node_count` or overwriting `error`) --
+    /// unreachable through `on_event_impl` alone, since its own top-of-
+    /// function `self.error.is_some()` check means `charge` is never
+    /// invoked a second time once tripped in the normal event-driven path.
+    #[test]
+    fn charge_after_already_tripped_is_a_pure_no_op() {
+        let mut b = Builder::new();
+        assert!(!b.charge(MAX_MATERIALIZED_NODES + 1, test_marker()));
+        let first_error = format!("{:?}", b.error);
+        let count_after_first_trip = b.node_count;
+        assert!(!b.charge(1, test_marker()));
+        assert_eq!(
+            format!("{:?}", b.error),
+            first_error,
+            "error must not change"
+        );
+        assert_eq!(
+            b.node_count, count_after_first_trip,
+            "node_count must not change once already tripped"
+        );
+    }
+
+    /// Drives the guard to trip from `Event::SequenceStart`'s `charge` call
+    /// specifically (as opposed to the size-charging `Event::Alias` path
+    /// the top-level `billion_laughs_...` integration test exercises),
+    /// confirming every one of the three plain-node `charge` call sites is
+    /// independently reachable.
+    #[test]
+    fn sequence_start_can_itself_trip_the_node_count_guard() {
+        let mut b = Builder::new();
+        b.node_count = MAX_MATERIALIZED_NODES;
+        b.on_event_impl(Event::SequenceStart(0, None), test_marker());
+        assert!(
+            matches!(&b.error, Some(e) if e.message.contains("materializes more than")),
+            "got {:?}",
+            b.error
+        );
+        // The doc_stack push it guards must not have happened.
+        assert!(b.doc_stack.is_empty());
+    }
+
+    /// Same as above, for `Event::MappingStart`.
+    #[test]
+    fn mapping_start_can_itself_trip_the_node_count_guard() {
+        let mut b = Builder::new();
+        b.node_count = MAX_MATERIALIZED_NODES;
+        b.on_event_impl(Event::MappingStart(0, None), test_marker());
+        assert!(
+            matches!(&b.error, Some(e) if e.message.contains("materializes more than")),
+            "got {:?}",
+            b.error
+        );
+        assert!(b.doc_stack.is_empty());
+        assert!(b.key_stack.is_empty());
+    }
+
+    /// Same as above, for `Event::Scalar`.
+    #[test]
+    fn scalar_can_itself_trip_the_node_count_guard() {
+        let mut b = Builder::new();
+        b.node_count = MAX_MATERIALIZED_NODES;
+        b.on_event_impl(
+            Event::Scalar("x".to_string(), TScalarStyle::Plain, 0, None),
+            test_marker(),
+        );
+        assert!(
+            matches!(&b.error, Some(e) if e.message.contains("materializes more than")),
+            "got {:?}",
+            b.error
+        );
+        // The insert it guards must not have happened.
+        assert!(b.doc_stack.is_empty());
+    }
+
     // ---------------------------------------------------------- coverage: writer edge cases
 
     #[test]
