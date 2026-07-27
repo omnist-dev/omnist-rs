@@ -33,6 +33,8 @@ jobs:
           mdbook-version: "latest"
       - name: mdbook build
         run: mdbook build
+      - name: add custom domain CNAME
+        run: echo "rs.omnist.dev" > book/CNAME
       - name: upload pages artifact
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/upload-pages-artifact@v3
