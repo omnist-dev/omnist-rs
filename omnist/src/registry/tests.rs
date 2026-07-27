@@ -142,43 +142,57 @@ fn lines_write(doc: &Doc) -> Result<String, OmnistError> {
 
 #[test]
 fn register_a_plugin_and_use_it_via_doc() {
-    register_format(Format::new("lines", lines_read, lines_write));
+    // Registry-mutating tests each use a name unique to themselves (rather
+    // than a shared literal like "lines") so they can't collide with each
+    // other regardless of execution order under parallel test threads --
+    // the global registry (see `registry.rs`'s module doc: "this crate's
+    // only piece of global mutable state") is process-wide, so two tests
+    // registering the same name concurrently can otherwise observe each
+    // other's writes (issue #58).
+    let name = "lines-register_a_plugin_and_use_it_via_doc";
+    register_format(Format::new(name, lines_read, lines_write));
 
-    assert!(formats().contains(&"lines".to_string()));
-    let d = Doc::from_format("lines", "1 2 3").unwrap();
-    assert_eq!(d.to_format("lines").unwrap(), "1 2 3");
+    assert!(formats().contains(&name.to_string()));
+    let d = Doc::from_format(name, "1 2 3").unwrap();
+    assert_eq!(d.to_format(name).unwrap(), "1 2 3");
 }
 
 #[test]
 fn plugin_without_check_errors_cleanly_on_check_format() {
-    register_format(Format::new("nocheck", lines_read, lines_write));
+    let name = "nocheck-plugin_without_check_errors_cleanly_on_check_format";
+    register_format(Format::new(name, lines_read, lines_write));
 
-    let d = Doc::from_format("nocheck", "1 2 3").unwrap();
-    let err = d.check_format("nocheck").unwrap_err();
+    let d = Doc::from_format(name, "1 2 3").unwrap();
+    let err = d.check_format(name).unwrap_err();
     assert!(matches!(err, OmnistError::Document(_)));
     assert!(err.to_string().contains("has no check"));
 }
 
 #[test]
 fn plugin_replaces_earlier_registration_of_the_same_name() {
-    // register_format is "register (or replace)" -- registering "lines"
-    // again under a writer that always emits a fixed string confirms the
-    // second registration wins, matching Python's plain-dict-assignment
-    // semantics (`_REGISTRY[fmt.name] = fmt`).
-    register_format(Format::new("lines", lines_read, lines_write));
-    register_format(Format::new("lines", lines_read, |_doc| {
+    // register_format is "register (or replace)" -- registering the same
+    // name again under a writer that always emits a fixed string confirms
+    // the second registration wins, matching Python's plain-dict-assignment
+    // semantics (`_REGISTRY[fmt.name] = fmt`). The name itself is unique to
+    // this test (see comment on `register_a_plugin_and_use_it_via_doc`)
+    // since what's under test is same-name replacement *within* one test,
+    // not a fixed shared name across tests.
+    let name = "lines-plugin_replaces_earlier_registration_of_the_same_name";
+    register_format(Format::new(name, lines_read, lines_write));
+    register_format(Format::new(name, lines_read, |_doc| {
         Ok("replaced".to_string())
     }));
-    let d = Doc::from_format("lines", "1 2 3").unwrap();
-    assert_eq!(d.to_format("lines").unwrap(), "replaced");
+    let d = Doc::from_format(name, "1 2 3").unwrap();
+    assert_eq!(d.to_format(name).unwrap(), "replaced");
 }
 
 #[test]
 fn plugin_with_check_is_usable_via_check_format() {
+    let name = "withcheck-plugin_with_check_is_usable_via_check_format";
     register_format(
-        Format::new("withcheck", lines_read, lines_write)
+        Format::new(name, lines_read, lines_write)
             .with_check(|_doc| crate::report::WriteReport::new()),
     );
-    let d = Doc::from_format("withcheck", "1 2 3").unwrap();
-    assert!(d.check_format("withcheck").unwrap().is_ok());
+    let d = Doc::from_format(name, "1 2 3").unwrap();
+    assert!(d.check_format(name).unwrap().is_ok());
 }
