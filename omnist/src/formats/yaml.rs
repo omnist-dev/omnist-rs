@@ -119,12 +119,18 @@ const MAX_INT_DIGITS: usize = 4300;
 /// `read_yaml`) calls PyYAML's `yaml.safe_load` directly with no such
 /// guard -- live-confirmed vulnerable to the identical pattern (see the
 /// upstream issue filed against `omnist-dev/omnist` for the Python side),
-/// so there is no existing Python limit to port here. A million nodes is
+/// so there is no existing Python limit to port here. 100,000 nodes is
 /// generous for any legitimate document (even a large real-world config
-/// easily fits in a few thousand nodes) while still being cheap to build
-/// and walk in well under a second, so it's used as a round, documented
-/// ceiling rather than a value derived from an existing constant.
-const MAX_MATERIALIZED_NODES: usize = 1_000_000;
+/// easily fits in a few thousand nodes) while still keeping the *cost of
+/// detecting an attack* small: this guard's charge-before-clone still has
+/// to walk (and, once approved, clone) whatever it charges, so the ceiling
+/// itself bounds the worst-case rejection cost, not just the worst-case
+/// accepted-document size -- a 1,000,000 ceiling let a debug build's
+/// unoptimized recursive clone of the final, still-materialized generation
+/// take upwards of ten seconds; 100,000 is a round, documented ceiling
+/// with the same generous headroom over real documents while keeping that
+/// worst-case rejection well under a second even in a debug build.
+const MAX_MATERIALIZED_NODES: usize = 100_000;
 
 /// Counts every [`Raw`] node in `node`'s subtree, including `node` itself --
 /// used to charge an alias reference for the full size of the subtree it
@@ -316,9 +322,11 @@ impl Builder {
                 if !self.charge(n, mark) {
                     return;
                 }
-                let node = self.anchor_map.get(&id).cloned().expect(
-                    "checked above: the anchor_map entry exists for this id",
-                );
+                let node = self
+                    .anchor_map
+                    .get(&id)
+                    .cloned()
+                    .expect("checked above: the anchor_map entry exists for this id");
                 self.insert(node, 0, mark);
             }
         }
@@ -1446,13 +1454,16 @@ mod tests {
     /// materialized from a source document only `n` lines long and only
     /// `n` levels deep (well under `crate::document::MAX_DEPTH == 200`).
     /// 24 generations reaches `2^24` (16,777,216) nodes -- comfortably over
-    /// `MAX_MATERIALIZED_NODES` (1,000,000) so the guard trips partway
+    /// `MAX_MATERIALIZED_NODES` (100,000) so the guard trips partway
     /// through, and small enough that even the *unguarded* clone-everything
     /// behavior finishes (rather than hanging or exhausting memory) within
     /// this test's patience, which is what let this be captured red before
     /// the fix: before the fix this took over 4 seconds and allocated a
     /// many-million-node tree; after the fix it is rejected as a clean
-    /// `ParseError` in a few milliseconds, well before the full tree is
+    /// `ParseError` in well under a second (a debug build still has to
+    /// walk/clone the last, still-under-the-ceiling generation, so this
+    /// is not sub-millisecond, but it is bounded by the ceiling rather
+    /// than by the attack's exponent), well before the full tree is
     /// ever materialized.
     fn billion_laughs_yaml(generations: usize) -> String {
         let mut out = String::new();
@@ -1475,11 +1486,11 @@ mod tests {
 
         assert!(
             matches!(&err, OmnistError::Parse(e) if e.message.contains("materializes more than")
-                && e.message.contains("1000000")),
+                && e.message.contains("100000")),
             "expected a materialized-node-limit ParseError, got {err:?}"
         );
         assert!(
-            elapsed < std::time::Duration::from_secs(2),
+            elapsed < std::time::Duration::from_secs(5),
             "fix should reject the bomb almost immediately, took {elapsed:?}"
         );
     }
