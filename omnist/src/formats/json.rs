@@ -243,12 +243,23 @@ fn write_float(x: f64, out: &mut String) {
         out.push_str("NaN");
     } else if x.is_infinite() {
         out.push_str(if x > 0.0 { "Infinity" } else { "-Infinity" });
-    } else if x == x.trunc() && x.is_finite() && x.abs() < 1e17 {
-        // Match `json.dumps`'s float rendering of an integral value, e.g.
-        // `1.0` (not `1`) -- `repr(1.0) == "1.0"` in Python.
-        out.push_str(&format!("{x:.1}"));
     } else {
-        out.push_str(&x.to_string());
+        // Match `json.dumps`'s float rendering of an integral value, e.g.
+        // `1.0` (not `1`) -- `repr(1.0) == "1.0"` in Python. Rust's `f64`
+        // `Display` never adds a decimal point on its own -- and for large
+        // enough integral magnitudes (>= 1e17) it renders a bare digit run
+        // with no `.`/`e`/`E` at all, e.g. `1e17.to_string() ==
+        // "100000000000000000"` -- so the correct, magnitude-independent
+        // test is whether the *rendered string* already contains one of
+        // those markers, not whether `x` is below some fixed cutoff (see
+        // `oml.rs::write_float`, the reference implementation this mirrors).
+        let s = x.to_string();
+        if s.contains('.') || s.contains('e') || s.contains('E') {
+            out.push_str(&s);
+        } else {
+            out.push_str(&s);
+            out.push_str(".0");
+        }
     }
 }
 
@@ -1070,6 +1081,25 @@ mod tests {
         let text = write_json(&doc, None, false, None).unwrap();
         let back = read_json(&text).unwrap();
         assert!(doc.eq_doc(&back));
+    }
+
+    #[test]
+    fn round_trips_integral_float_at_and_above_1e17_boundary_issue_46() {
+        // Regression test for issue #46: an integral-valued float >= 1e17
+        // used to render as a bare digit run (Rust's `f64::to_string()`
+        // drops the decimal point up there), which `read_json` then
+        // re-read as `Scalar::Int` -- silently changing the scalar's type
+        // across a round trip.
+        for x in [1.0e17, 1.0e18, -1.23e17, 9.9e16_f64] {
+            let doc = doc_of(obj(vec![("a", Value::Float(x))]));
+            let text = write_json(&doc, None, false, None).unwrap();
+            let back = read_json(&text).unwrap();
+            assert_eq!(
+                *back.root().get_one("a").unwrap().value().unwrap(),
+                Scalar::Float(x),
+                "x={x} text={text}"
+            );
+        }
     }
 
     #[test]

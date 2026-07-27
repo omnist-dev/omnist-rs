@@ -648,19 +648,28 @@ fn xml_text(scalar: &Scalar) -> String {
 }
 
 /// Same float-formatting convention as `toml.rs`'s `write_float`: `nan`/
-/// `inf`/`-inf` lowercase for special values, an explicit `.0` for an
-/// integral finite value (matching Python's `str(float)`, which Rust's
-/// bare `{}` formatter does not add on its own), default `Display`
-/// otherwise.
+/// `inf`/`-inf` lowercase for special values, an explicit `.0` appended
+/// whenever the default `Display` rendering doesn't already contain a
+/// `.`/`e`/`E` marker (matching Python's `str(float)`, which always emits
+/// one of those markers; Rust's bare `{}` formatter does not, and for
+/// integral values >= 1e17 it doesn't even include a decimal point -- see
+/// issue #46).
 fn write_float_text(x: f64) -> String {
     if x.is_nan() {
         "nan".to_string()
     } else if x.is_infinite() {
         if x > 0.0 { "inf" } else { "-inf" }.to_string()
-    } else if x == x.trunc() && x.is_finite() && x.abs() < 1e17 {
-        format!("{x:.1}")
     } else {
-        x.to_string()
+        // See `json.rs::write_float` for why this checks the rendered
+        // string for `.`/`e`/`E` rather than comparing `x` against a fixed
+        // magnitude cutoff (issue #46: Rust's `f64::to_string()` drops the
+        // decimal point for integral values >= 1e17).
+        let s = x.to_string();
+        if s.contains('.') || s.contains('e') || s.contains('E') {
+            s
+        } else {
+            format!("{s}.0")
+        }
     }
 }
 

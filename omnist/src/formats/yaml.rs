@@ -859,10 +859,18 @@ fn write_float(x: f64, out: &mut String) {
         out.push_str(".nan");
     } else if x.is_infinite() {
         out.push_str(if x > 0.0 { ".inf" } else { "-.inf" });
-    } else if x == x.trunc() && x.is_finite() && x.abs() < 1e17 {
-        out.push_str(&format!("{x:.1}"));
     } else {
-        out.push_str(&x.to_string());
+        // See `json.rs::write_float` for why this checks the rendered
+        // string for `.`/`e`/`E` rather than comparing `x` against a fixed
+        // magnitude cutoff (issue #46: Rust's `f64::to_string()` drops the
+        // decimal point for integral values >= 1e17).
+        let s = x.to_string();
+        if s.contains('.') || s.contains('e') || s.contains('E') {
+            out.push_str(&s);
+        } else {
+            out.push_str(&s);
+            out.push_str(".0");
+        }
     }
 }
 
@@ -1509,6 +1517,23 @@ mod tests {
         let text = write_yaml(&doc, false, None).unwrap();
         let back = read_yaml(&text).unwrap();
         assert!(doc.eq_doc(&back));
+    }
+
+    #[test]
+    fn round_trips_integral_float_at_and_above_1e17_boundary_issue_46() {
+        // Regression test for issue #46 (see json.rs's twin test for the
+        // full explanation): an integral-valued float >= 1e17 used to
+        // render as a bare digit run and re-read as `Scalar::Int`.
+        for x in [1.0e17, 1.0e18, -1.23e17, 9.9e16_f64] {
+            let doc = doc_of(obj(vec![("a", Value::Float(x))]));
+            let text = write_yaml(&doc, false, None).unwrap();
+            let back = read_yaml(&text).unwrap();
+            assert_eq!(
+                *back.root().get_one("a").unwrap().value().unwrap(),
+                Scalar::Float(x),
+                "x={x} text={text}"
+            );
+        }
     }
 
     #[test]

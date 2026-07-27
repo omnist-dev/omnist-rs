@@ -560,6 +560,19 @@ fn float_integral_value_gets_a_decimal_point() {
 }
 
 #[test]
+fn round_trips_integral_float_at_and_above_1e17_boundary_issue_46() {
+    // Regression test for issue #46: an integral-valued float >= 1e17 used
+    // to render as a bare digit run, which `coerce()` then re-read via
+    // `try_parse_int` as `Scalar::Int` instead of `Scalar::Float`.
+    for x in [1.0e17, 1.0e18, -1.23e17, 9.9e16_f64] {
+        let doc = Doc::from_raw(edges(vec![("root", RawNode::Leaf(Scalar::Float(x)))])).unwrap();
+        let text = write_xml(&doc, false, None).unwrap();
+        let back = read_xml(&text).unwrap();
+        assert!(doc.eq_doc(&back), "x={x} text={text}");
+    }
+}
+
+#[test]
 fn nan_and_infinity_round_trip() {
     let doc = Doc::from_raw(edges(vec![(
         "root",
