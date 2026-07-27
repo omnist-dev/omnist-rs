@@ -679,7 +679,7 @@ impl<'a> Parser<'a> {
             }
             match text.parse::<i64>() {
                 Ok(v) => Ok(Value::Int(v)),
-                Err(_) => Err(self.error_at(start, out_of_range_message("", &text))),
+                Err(_) => Err(self.error_at(start, out_of_range_message("", text))),
             }
         }
     }

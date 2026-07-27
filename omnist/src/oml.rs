@@ -632,7 +632,7 @@ impl<'a> Scanner<'a> {
             }
             let v: i64 = text
                 .parse()
-                .map_err(|_| self.error_at(start, out_of_range_message("", &text)))?;
+                .map_err(|_| self.error_at(start, out_of_range_message("", text)))?;
             Ok((TokKind::Int(v), start, end))
         }
     }
