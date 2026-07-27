@@ -63,6 +63,7 @@
 use crate::document::{self, RawNode, Scalar, check_write_depth};
 use crate::error::{ParseError, WriteError};
 use crate::formats::int_cap::{MAX_INT_DIGITS, out_of_range_message, over_cap_message};
+use crate::formats::string_escape::{OML_ESCAPES, write_quoted};
 use crate::schema::{is_iso_date, is_iso_datetime, is_iso_time};
 
 // Same security guard as Python's `_MAX_INT_DIGITS`: reject an integer
@@ -1150,19 +1151,7 @@ fn write_float(v: f64) -> String {
 /// issue #10's omnist-ts#36-equivalent note).
 fn write_string(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for ch in s.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
+    write_quoted(s, &OML_ESCAPES, &mut out);
     out
 }
 

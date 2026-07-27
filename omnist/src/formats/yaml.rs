@@ -99,6 +99,7 @@ use crate::document::{Doc, Value};
 use crate::error::{OmnistError, ParseError};
 use crate::formats::float_fmt;
 use crate::formats::int_cap::{MAX_INT_DIGITS, out_of_range_message, over_cap_message};
+use crate::formats::string_escape::{YAML_ESCAPES, write_quoted};
 use crate::report::{Severity, WriteReport};
 use indexmap::IndexMap;
 
@@ -962,19 +963,7 @@ fn write_float(x: f64, out: &mut String) {
 /// leading/embedded punctuation) -- otherwise written plain.
 fn write_yaml_string(s: &str, out: &mut String) {
     if needs_quoting(s) {
-        out.push('"');
-        for c in s.chars() {
-            match c {
-                '"' => out.push_str("\\\""),
-                '\\' => out.push_str("\\\\"),
-                '\n' => out.push_str("\\n"),
-                '\t' => out.push_str("\\t"),
-                '\u{0085}' => out.push_str("\\N"),
-                c if (c as u32) < 0x20 => out.push_str(&format!("\\x{:02x}", c as u32)),
-                c => out.push(c),
-            }
-        }
-        out.push('"');
+        write_quoted(s, &YAML_ESCAPES, out);
     } else {
         out.push_str(s);
     }
