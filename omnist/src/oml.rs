@@ -105,26 +105,49 @@ enum TokKind {
     Float(f64),
 }
 
-struct Scanner {
-    chars: Vec<char>,
+struct Scanner<'a> {
+    text: &'a str,
     n: usize,
     pos: usize,
 }
 
-impl Scanner {
-    fn new(text: &str) -> Self {
+impl<'a> Scanner<'a> {
+    fn new(text: &'a str) -> Self {
         // Strip a leading UTF-8 BOM, matching the Python reference.
         let text = text.strip_prefix('\u{feff}').unwrap_or(text);
-        let chars: Vec<char> = text.chars().collect();
-        let n = chars.len();
-        Scanner { chars, n, pos: 0 }
+        // `pos`/`n` are byte offsets into `text` (kept on UTF-8 char
+        // boundaries throughout), not char indices -- this scanner reads
+        // UTF-8 lazily via `char_at` instead of materializing the whole
+        // input into a `Vec<char>` upfront (issue #43).
+        let n = text.len();
+        Scanner { text, n, pos: 0 }
+    }
+
+    /// Decode the char starting at byte offset `at`, if any. `at` must be a
+    /// char boundary -- always true for `self.pos` and for every lookahead
+    /// offset used below, since they only ever land on boundaries this same
+    /// scanner produced.
+    fn char_at(&self, at: usize) -> Option<char> {
+        self.text.get(at..)?.chars().next()
+    }
+
+    /// Byte at offset `at`, for ASCII-only structural lookahead (digits,
+    /// punctuation, keyword matching) where decoding a full char would be
+    /// unnecessary work.
+    fn byte_at(&self, at: usize) -> Option<u8> {
+        self.text.as_bytes().get(at).copied()
     }
 
     fn line_col(&self, pos: usize) -> (usize, usize) {
+        // Byte-offset line/col, matching `toml.rs`'s own `line_col`
+        // convention: counts `\n` *bytes* (always single-byte in UTF-8), so
+        // this is correct regardless of multi-byte characters earlier in
+        // the text.
+        let bytes = self.text.as_bytes();
         let mut line = 1usize;
         let mut last_nl: Option<usize> = None;
-        for (i, &c) in self.chars[..pos].iter().enumerate() {
-            if c == '\n' {
+        for (i, &b) in bytes[..pos].iter().enumerate() {
+            if b == b'\n' {
                 line += 1;
                 last_nl = Some(i);
             }
@@ -143,9 +166,8 @@ impl Scanner {
 
     fn word_boundary_ok(&self, end: usize) -> bool {
         !self
-            .chars
-            .get(end)
-            .is_some_and(|c| c.is_ascii_alphanumeric() || *c == '-')
+            .byte_at(end)
+            .is_some_and(|b| b.is_ascii_alphanumeric() || b == b'-')
     }
 
     /// Advance past (and describe) the next significant token.
@@ -162,7 +184,9 @@ impl Scanner {
             if self.pos >= self.n {
                 return Ok((TokKind::Eof, self.pos, self.pos));
             }
-            let c = self.chars[self.pos];
+            let c = self
+                .char_at(self.pos)
+                .expect("just checked self.pos < self.n above");
             return match c {
                 '"' => self.scan_dquote_family(start),
                 '\'' => self.scan_raw_string(start),
@@ -200,14 +224,21 @@ impl Scanner {
         let start = self.pos;
         let mut saw_sep = false;
         loop {
-            match self.chars.get(self.pos) {
+            match self.char_at(self.pos) {
                 Some(' ') | Some('\t') => self.pos += 1,
                 Some('#') => {
-                    while !matches!(self.chars.get(self.pos), Some('\n') | None) {
-                        self.pos += 1;
+                    // Comment content may contain arbitrary (including
+                    // multi-byte) characters -- advance by each char's own
+                    // UTF-8 length, not a flat `+= 1`, so `self.pos` stays
+                    // on a char boundary.
+                    while let Some(c) = self.char_at(self.pos) {
+                        if c == '\n' {
+                            break;
+                        }
+                        self.pos += c.len_utf8();
                     }
                 }
-                Some('\r') if self.chars.get(self.pos + 1) == Some(&'\n') => {
+                Some('\r') if self.char_at(self.pos + 1) == Some('\n') => {
                     self.pos += 2;
                     saw_sep = true;
                 }
@@ -228,7 +259,7 @@ impl Scanner {
     // -- strings ----------------------------------------------------------
 
     fn scan_dquote_family(&mut self, start: usize) -> Result<(TokKind, usize, usize), ParseError> {
-        if self.chars.get(start + 1) == Some(&'"') && self.chars.get(start + 2) == Some(&'"') {
+        if self.char_at(start + 1) == Some('"') && self.char_at(start + 2) == Some('"') {
             self.scan_multiline(start)
         } else {
             self.scan_dquote(start)
@@ -239,7 +270,7 @@ impl Scanner {
         let mut i = start + 1;
         let mut out = String::new();
         loop {
-            match self.chars.get(i) {
+            match self.char_at(i) {
                 None => {
                     return Err(self.error_at(
                         start,
@@ -256,15 +287,15 @@ impl Scanner {
                     out.push_str(&ch);
                     i = next_i;
                 }
-                Some(&c) if (c as u32) < 0x20 => {
+                Some(c) if (c as u32) < 0x20 => {
                     return Err(self.error_at(
                         start,
                         format!("control character U+{:04X} in string", c as u32),
                     ));
                 }
-                Some(&c) => {
+                Some(c) => {
                     out.push(c);
-                    i += 1;
+                    i += c.len_utf8();
                 }
             }
         }
@@ -274,14 +305,14 @@ impl Scanner {
         let mut i = start + 3;
         // Opening-newline elision: a single \n or \r\n right after the
         // """ delimiter is dropped, not part of the value.
-        if self.chars.get(i) == Some(&'\n') {
+        if self.char_at(i) == Some('\n') {
             i += 1;
-        } else if self.chars.get(i) == Some(&'\r') && self.chars.get(i + 1) == Some(&'\n') {
+        } else if self.char_at(i) == Some('\r') && self.char_at(i + 1) == Some('\n') {
             i += 2;
         }
         let mut out = String::new();
         loop {
-            match self.chars.get(i) {
+            match self.char_at(i) {
                 None => {
                     return Err(self.error_at(
                         start,
@@ -291,7 +322,7 @@ impl Scanner {
                 Some('"') => {
                     let mut run = 0usize;
                     let mut j = i;
-                    while self.chars.get(j) == Some(&'"') {
+                    while self.char_at(j) == Some('"') {
                         run += 1;
                         j += 1;
                     }
@@ -316,11 +347,11 @@ impl Scanner {
                     out.push_str(&ch);
                     i = next_i;
                 }
-                Some(&c) if c == '\t' || c == '\n' || (c as u32) >= 0x20 => {
+                Some(c) if c == '\t' || c == '\n' || (c as u32) >= 0x20 => {
                     out.push(c);
-                    i += 1;
+                    i += c.len_utf8();
                 }
-                Some(&c) => {
+                Some(c) => {
                     return Err(self.error_at(
                         start,
                         format!("control character U+{:04X} in multiline string", c as u32),
@@ -333,7 +364,7 @@ impl Scanner {
     fn scan_raw_string(&mut self, start: usize) -> Result<(TokKind, usize, usize), ParseError> {
         let mut i = start + 1;
         loop {
-            match self.chars.get(i) {
+            match self.char_at(i) {
                 None => {
                     return Err(self.error_at(
                         start,
@@ -341,21 +372,21 @@ impl Scanner {
                     ));
                 }
                 Some('\'') => {
-                    let text: String = self.chars[start + 1..i].iter().collect();
+                    let text: String = self.text[start + 1..i].to_string();
                     i += 1;
                     self.pos = i;
                     return Ok((TokKind::Str(text), start, i));
                 }
-                Some(_) => i += 1,
+                Some(c) => i += c.len_utf8(),
             }
         }
     }
 
-    /// Decode one escape sequence at `self.chars[i] == '\\'`, reporting any
+    /// Decode one escape sequence at `self.char_at(i) == Some('\\')`, reporting any
     /// error at `tok_start` (the enclosing string's opening delimiter), not
     /// `i` -- matches the Python reference's error-position convention.
     fn decode_escape(&self, tok_start: usize, i: usize) -> Result<(String, usize), ParseError> {
-        let Some(&c) = self.chars.get(i + 1) else {
+        let Some(c) = self.char_at(i + 1) else {
             return Err(self.error_at(tok_start, "unterminated escape sequence".to_string()));
         };
         let simple = match c {
@@ -378,8 +409,7 @@ impl Scanner {
         let cp = self.read_hex4(tok_start, i + 2)?;
         let j = i + 6;
         if (0xD800..=0xDBFF).contains(&cp) {
-            let has_low_escape =
-                self.chars.get(j) == Some(&'\\') && self.chars.get(j + 1) == Some(&'u');
+            let has_low_escape = self.char_at(j) == Some('\\') && self.char_at(j + 1) == Some('u');
             let low = if has_low_escape {
                 Some(self.read_hex4(tok_start, j + 2)?)
             } else {
@@ -427,7 +457,7 @@ impl Scanner {
 
     fn read_hex4(&self, tok_start: usize, at: usize) -> Result<u32, ParseError> {
         let hex: String = (0..4)
-            .map(|k| self.chars.get(at + k).copied())
+            .map(|k| self.char_at(at + k))
             .collect::<Option<Vec<char>>>()
             .unwrap_or_default()
             .into_iter()
@@ -448,11 +478,7 @@ impl Scanner {
             self.pos = start + 4;
             return Ok((TokKind::Float(f64::NEG_INFINITY), start, self.pos));
         }
-        if self
-            .chars
-            .get(start + 1)
-            .is_some_and(|c| c.is_ascii_digit())
-        {
+        if self.char_at(start + 1).is_some_and(|c| c.is_ascii_digit()) {
             return self.scan_number(start);
         }
         Err(self.error_at(start, "stray character '-'".to_string()))
@@ -477,7 +503,7 @@ impl Scanner {
         end: usize,
         kind: TemporalKind,
     ) -> Result<(TokKind, usize, usize), ParseError> {
-        let text: String = self.chars[start..end].iter().collect();
+        let text: String = self.text[start..end].to_string();
         let valid = match kind {
             TemporalKind::Date => is_iso_date(&text),
             TemporalKind::Time => is_iso_time(&text),
@@ -497,7 +523,7 @@ impl Scanner {
 
     fn digits_from(&self, pos: usize) -> usize {
         let mut p = pos;
-        while self.chars.get(p).is_some_and(|c| c.is_ascii_digit()) {
+        while self.byte_at(p).is_some_and(|b| b.is_ascii_digit()) {
             p += 1;
         }
         p
@@ -510,11 +536,11 @@ impl Scanner {
 
     fn try_date(&self, pos: usize) -> Option<usize> {
         let mut p = self.expect_digits(pos, 4)?;
-        if self.chars.get(p) != Some(&'-') {
+        if self.byte_at(p) != Some(b'-') {
             return None;
         }
         p = self.expect_digits(p + 1, 2)?;
-        if self.chars.get(p) != Some(&'-') {
+        if self.byte_at(p) != Some(b'-') {
             return None;
         }
         self.expect_digits(p + 1, 2)
@@ -522,25 +548,25 @@ impl Scanner {
 
     fn try_time(&self, pos: usize) -> Option<usize> {
         let mut p = self.expect_digits(pos, 2)?;
-        if self.chars.get(p) != Some(&':') {
+        if self.byte_at(p) != Some(b':') {
             return None;
         }
         p = self.expect_digits(p + 1, 2)?;
-        if self.chars.get(p) == Some(&':')
+        if self.byte_at(p) == Some(b':')
             && let Some(after_secs) = self.expect_digits(p + 1, 2)
         {
             p = after_secs;
-            if self.chars.get(p) == Some(&'.') {
+            if self.byte_at(p) == Some(b'.') {
                 let frac_end = self.digits_from(p + 1);
                 if frac_end > p + 1 && frac_end - (p + 1) <= 6 {
                     p = frac_end;
                 }
             }
         }
-        if let Some(&sign) = self.chars.get(p)
-            && (sign == '+' || sign == '-')
+        if let Some(sign) = self.byte_at(p)
+            && (sign == b'+' || sign == b'-')
             && let Some(after_h) = self.expect_digits(p + 1, 2)
-            && self.chars.get(after_h) == Some(&':')
+            && self.byte_at(after_h) == Some(b':')
             && let Some(after_m) = self.expect_digits(after_h + 1, 2)
         {
             p = after_m;
@@ -550,7 +576,7 @@ impl Scanner {
 
     fn try_datetime(&self, pos: usize) -> Option<usize> {
         let d_end = self.try_date(pos)?;
-        if self.chars.get(d_end) != Some(&'T') {
+        if self.byte_at(d_end) != Some(b'T') {
             return None;
         }
         self.try_time(d_end + 1)
@@ -560,7 +586,7 @@ impl Scanner {
     /// scans `INTEGER`/`NUMDEC`/`NUMEXP`.
     fn scan_number(&mut self, start: usize) -> Result<(TokKind, usize, usize), ParseError> {
         let mut p = start;
-        if self.chars.get(p) == Some(&'-') {
+        if self.byte_at(p) == Some(b'-') {
             p += 1;
         }
         let int_start = p;
@@ -568,12 +594,12 @@ impl Scanner {
         debug_assert!(p > int_start, "caller guarantees at least one digit");
         let mut end = p;
         let mut is_float = false;
-        let frac_end = if self.chars.get(p) == Some(&'.') {
+        let frac_end = if self.byte_at(p) == Some(b'.') {
             self.digits_from(p + 1)
         } else {
             p
         };
-        if self.chars.get(p) == Some(&'.') && frac_end > p + 1 {
+        if self.byte_at(p) == Some(b'.') && frac_end > p + 1 {
             p = frac_end;
             is_float = true;
             end = self.try_exponent(p).unwrap_or(p);
@@ -581,7 +607,7 @@ impl Scanner {
             end = e;
             is_float = true;
         }
-        let text: String = self.chars[start..end].iter().collect();
+        let text: &str = &self.text[start..end];
         self.pos = end;
         if is_float {
             // `text` was built exclusively from ASCII digits, an optional
@@ -620,11 +646,11 @@ impl Scanner {
     }
 
     fn try_exponent(&self, pos: usize) -> Option<usize> {
-        if !matches!(self.chars.get(pos), Some('e') | Some('E')) {
+        if !matches!(self.byte_at(pos), Some(b'e') | Some(b'E')) {
             return None;
         }
         let mut q = pos + 1;
-        if matches!(self.chars.get(q), Some('+') | Some('-')) {
+        if matches!(self.byte_at(q), Some(b'+') | Some(b'-')) {
             q += 1;
         }
         let dstart = q;
@@ -632,10 +658,17 @@ impl Scanner {
         if q > dstart { Some(q) } else { None }
     }
 
+    /// `word` is always an ASCII literal keyword (`nan`/`inf`/`-inf`), so
+    /// comparing byte-for-byte at `pos + i` is exactly equivalent to
+    /// comparing char-for-char.
     fn matches_word(&self, pos: usize, word: &str) -> bool {
-        word.chars()
+        debug_assert!(
+            word.is_ascii(),
+            "matches_word is only used with ASCII keywords"
+        );
+        word.bytes()
             .enumerate()
-            .all(|(i, c)| self.chars.get(pos + i) == Some(&c))
+            .all(|(i, b)| self.byte_at(pos + i) == Some(b))
     }
 
     fn scan_word(&mut self, start: usize) -> Result<(TokKind, usize, usize), ParseError> {
@@ -647,15 +680,24 @@ impl Scanner {
             self.pos = start + 3;
             return Ok((TokKind::Float(f64::INFINITY), start, self.pos));
         }
-        let mut p = start + 1;
+        // The caller (`next`) only reaches here after confirming
+        // `char_at(start)` is alphabetic or `_` -- but that first char isn't
+        // necessarily ASCII (bare labels may start with a Unicode letter),
+        // so skip past it by its own UTF-8 length, not a flat `+ 1`. Every
+        // char *after* the first is restricted to ASCII
+        // alphanumeric/`_`/`-` by the loop below, so `p += 1` there is safe.
+        let first_len = self
+            .char_at(start)
+            .expect("caller already confirmed a char at `start`")
+            .len_utf8();
+        let mut p = start + first_len;
         while self
-            .chars
-            .get(p)
-            .is_some_and(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+            .byte_at(p)
+            .is_some_and(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
         {
             p += 1;
         }
-        let text: String = self.chars[start..p].iter().collect();
+        let text: String = self.text[start..p].to_string();
         self.pos = p;
         Ok((TokKind::Ident(text), start, p))
     }
@@ -673,15 +715,15 @@ enum TemporalKind {
 
 const RESERVED: [&str; 3] = ["null", "true", "false"];
 
-struct Parser {
-    sc: Scanner,
+struct Parser<'a> {
+    sc: Scanner<'a>,
     kind: TokKind,
     start: usize,
     end: usize,
 }
 
-impl Parser {
-    fn new(mut sc: Scanner) -> Result<Self, ParseError> {
+impl<'a> Parser<'a> {
+    fn new(mut sc: Scanner<'a>) -> Result<Self, ParseError> {
         let (kind, start, end) = sc.next()?;
         Ok(Parser {
             sc,
@@ -726,7 +768,7 @@ impl Parser {
         };
         self.skip_sep()?;
         if !matches!(self.kind, TokKind::Eof) {
-            let text: String = self.sc.chars[self.start..self.end].iter().collect();
+            let text: String = self.sc.text[self.start..self.end].to_string();
             return Err(self.sc.error_at(
                 self.start,
                 format!(
@@ -766,7 +808,7 @@ impl Parser {
             let label = self.parse_label()?;
             let (colon_kind, colon_start, colon_end) = self.advance()?;
             if !matches!(colon_kind, TokKind::Colon) {
-                let text: String = self.sc.chars[colon_start..colon_end].iter().collect();
+                let text: String = self.sc.text[colon_start..colon_end].to_string();
                 return Err(self.sc.error_at(
                     colon_start,
                     format!(
@@ -786,7 +828,7 @@ impl Parser {
                 break;
             }
             if !matches!(self.kind, TokKind::Sep) {
-                let text: String = self.sc.chars[self.start..self.end].iter().collect();
+                let text: String = self.sc.text[self.start..self.end].to_string();
                 return Err(self.sc.error_at(
                     self.start,
                     format!(
@@ -818,7 +860,7 @@ impl Parser {
                 }
             }
             other => {
-                let text: String = self.sc.chars[start..end].iter().collect();
+                let text: String = self.sc.text[start..end].to_string();
                 Err(self.sc.error_at(
                     start,
                     format!("expected a label, got {}", Self::tok_display(&other, &text)),
@@ -852,7 +894,7 @@ impl Parser {
         self.skip_sep()?;
         let (close_kind, close_start, close_end) = self.advance()?;
         if !matches!(close_kind, TokKind::RBrace) {
-            let text: String = self.sc.chars[close_start..close_end].iter().collect();
+            let text: String = self.sc.text[close_start..close_end].to_string();
             return Err(self.sc.error_at(
                 close_start,
                 format!(
@@ -897,7 +939,7 @@ impl Parser {
         }
         let (close_kind, close_start, close_end) = self.advance()?;
         if !matches!(close_kind, TokKind::RBracket) {
-            let text: String = self.sc.chars[close_start..close_end].iter().collect();
+            let text: String = self.sc.text[close_start..close_end].to_string();
             return Err(self.sc.error_at(
                 close_start,
                 format!(
@@ -925,7 +967,7 @@ impl Parser {
                 )),
             },
             other => {
-                let text: String = self.sc.chars[start..end].iter().collect();
+                let text: String = self.sc.text[start..end].to_string();
                 Err(self.sc.error_at(
                     start,
                     format!("expected a value, got {}", Self::tok_display(&other, &text)),

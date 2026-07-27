@@ -283,24 +283,36 @@ fn write_json_string(s: &str, out: &mut String) {
 
 // ---------------------------------------------------------------- Reader
 
-struct Parser {
-    chars: Vec<char>,
+struct Parser<'a> {
+    text: &'a str,
     n: usize,
     pos: usize,
 }
 
-impl Parser {
-    fn new(text: &str) -> Self {
-        let chars: Vec<char> = text.chars().collect();
-        let n = chars.len();
-        Parser { chars, n, pos: 0 }
+impl<'a> Parser<'a> {
+    fn new(text: &'a str) -> Self {
+        // `pos`/`n` are now byte offsets into `text`, not char indices --
+        // this scanner reads UTF-8 lazily (via `peek`/`char_at`, which
+        // decode at most one char at a time from the current byte offset)
+        // instead of materializing the whole input into a `Vec<char>`
+        // upfront (issue #43). `pos` is always kept on a UTF-8 char
+        // boundary, so every `text[pos..]`/`text.get(pos..)` slice below is
+        // safe.
+        let n = text.len();
+        Parser { text, n, pos: 0 }
     }
 
     fn line_col(&self, pos: usize) -> (usize, usize) {
+        // Byte-offset line/col computation, matching `toml.rs`'s own
+        // `line_col` convention (counts `\n` *bytes*, which are always
+        // single-byte in UTF-8, so this is correct regardless of any
+        // multi-byte characters earlier in the text).
+        let bytes = self.text.as_bytes();
+        let end = pos.min(self.n);
         let mut line = 1usize;
         let mut last_nl: Option<usize> = None;
-        for (i, &c) in self.chars[..pos.min(self.n)].iter().enumerate() {
-            if c == '\n' {
+        for (i, &b) in bytes[..end].iter().enumerate() {
+            if b == b'\n' {
                 line += 1;
                 last_nl = Some(i);
             }
@@ -317,8 +329,16 @@ impl Parser {
         ParseError::new(line, col, format!("invalid JSON: {msg}"))
     }
 
+    /// Decode the char starting at byte offset `at`, if any. `at` must be a
+    /// char boundary (always true for `self.pos`, and for the lookahead
+    /// offsets used below, since they only ever land on boundaries produced
+    /// by this same scanner).
+    fn char_at(&self, at: usize) -> Option<char> {
+        self.text.get(at..)?.chars().next()
+    }
+
     fn peek(&self) -> Option<char> {
-        self.chars.get(self.pos).copied()
+        self.char_at(self.pos)
     }
 
     fn skip_ws(&mut self) {
@@ -332,17 +352,26 @@ impl Parser {
 
     fn expect(&mut self, c: char) -> Result<(), ParseError> {
         if self.peek() == Some(c) {
-            self.pos += 1;
+            self.pos += c.len_utf8();
             Ok(())
         } else {
             Err(self.error_at(self.pos, format!("expected {c:?}")))
         }
     }
 
+    /// `word` is always an ASCII literal keyword (`true`/`false`/`null`/
+    /// `NaN`/`Infinity`/`-Infinity`), so comparing byte-for-byte at
+    /// `self.pos + i` is exactly equivalent to comparing char-for-char, and
+    /// avoids decoding a char per position.
     fn matches_word(&self, word: &str) -> bool {
-        word.chars()
+        debug_assert!(
+            word.is_ascii(),
+            "matches_word is only used with ASCII keywords"
+        );
+        let bytes = self.text.as_bytes();
+        word.bytes()
             .enumerate()
-            .all(|(i, c)| self.chars.get(self.pos + i) == Some(&c))
+            .all(|(i, b)| bytes.get(self.pos + i) == Some(&b))
     }
 
     fn parse_value(&mut self) -> Result<Value, ParseError> {
@@ -494,7 +523,7 @@ impl Parser {
                             let hi = self.parse_hex4()?;
                             if (0xD800..=0xDBFF).contains(&hi) {
                                 if self.peek() == Some('\\')
-                                    && self.chars.get(self.pos + 1) == Some(&'u')
+                                    && self.char_at(self.pos + 1) == Some('u')
                                 {
                                     self.pos += 2;
                                     let lo = self.parse_hex4()?;
@@ -557,7 +586,7 @@ impl Parser {
                 }
                 Some(c) => {
                     s.push(c);
-                    self.pos += 1;
+                    self.pos += c.len_utf8();
                 }
             }
         }
@@ -574,6 +603,9 @@ impl Parser {
                 self.error_at(self.pos, "invalid hex digit in unicode escape".to_string())
             })?;
             v = v * 16 + d;
+            // Hex digits are always ASCII (single byte); `to_digit(16)`
+            // already rejected any non-hex-digit (including any multi-byte
+            // char), so `+= 1` is exactly `+= c.len_utf8()` here.
             self.pos += 1;
         }
         Ok(v)
@@ -602,11 +634,16 @@ impl Parser {
             self.pos > int_start,
             "the '0' and digit-run branches above both advance pos by at least 1"
         );
+        // The rest of the number grammar (`.`/`e`/`E`/`+`/`-`/digits) is
+        // entirely ASCII, so lookahead here compares raw bytes rather than
+        // decoding a char at each position.
+        let bytes = self.text.as_bytes();
+        let byte_at = |p: usize| bytes.get(p).copied();
         let mut is_float = false;
         if self.peek() == Some('.') {
             let frac_start = self.pos + 1;
             let mut p = frac_start;
-            while self.chars.get(p).is_some_and(|c| c.is_ascii_digit()) {
+            while byte_at(p).is_some_and(|b| b.is_ascii_digit()) {
                 p += 1;
             }
             if p > frac_start {
@@ -616,11 +653,11 @@ impl Parser {
         }
         if matches!(self.peek(), Some('e') | Some('E')) {
             let mut p = self.pos + 1;
-            if matches!(self.chars.get(p), Some('+') | Some('-')) {
+            if matches!(byte_at(p), Some(b'+') | Some(b'-')) {
                 p += 1;
             }
             let exp_start = p;
-            while self.chars.get(p).is_some_and(|c| c.is_ascii_digit()) {
+            while byte_at(p).is_some_and(|b| b.is_ascii_digit()) {
                 p += 1;
             }
             if p > exp_start {
@@ -628,7 +665,7 @@ impl Parser {
                 self.pos = p;
             }
         }
-        let text: String = self.chars[start..self.pos].iter().collect();
+        let text: &str = &self.text[start..self.pos];
         if is_float {
             let v: f64 = text
                 .parse()
@@ -878,6 +915,21 @@ mod tests {
         assert_eq!(
             *root.get_one("c").unwrap().value().unwrap(),
             Scalar::Float(0.02)
+        );
+    }
+
+    #[test]
+    fn error_position_after_multibyte_content_reports_correct_line() {
+        // Regression for issue #43's byte-offset scanner rewrite:
+        // `line_col` now counts `\n` *bytes* rather than char-vec indices --
+        // confirm the reported line for an error on a later line is still
+        // correct when an earlier line contains multi-byte UTF-8 content
+        // (accented letters, emoji), i.e. byte-offset arithmetic doesn't
+        // regress on non-ASCII input.
+        let err = read_json("{\"s\": \"café \u{1F600}\"}\n@").unwrap_err();
+        assert!(
+            matches!(&err, OmnistError::Parse(e) if e.line == 2),
+            "got {err:?}"
         );
     }
 
