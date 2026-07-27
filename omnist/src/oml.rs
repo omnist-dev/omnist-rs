@@ -62,17 +62,19 @@
 
 use crate::document::{self, RawNode, Scalar, check_write_depth};
 use crate::error::{ParseError, WriteError};
+use crate::formats::int_cap::{MAX_INT_DIGITS, out_of_range_message, over_cap_message};
 use crate::schema::{is_iso_date, is_iso_datetime, is_iso_time};
 
-/// Same security guard as Python's `_MAX_INT_DIGITS`: reject an integer
-/// literal with more than this many digits before ever attempting to
-/// convert it (unbounded-digit int-to-str/str-to-int conversion is
-/// superlinear). `document.rs` has no equivalent constant -- its `Scalar`
-/// uses `i64` (max 19 digits), so the guard would be permanently dead code
-/// there (see that module's doc comment) -- this module is the one place an
-/// arbitrarily-long *digit run* can actually reach the parser (as OML
-/// source text), so the cap lives here instead.
-const MAX_INT_DIGITS: usize = 4300;
+// Same security guard as Python's `_MAX_INT_DIGITS`: reject an integer
+// literal with more than this many digits before ever attempting to
+// convert it (unbounded-digit int-to-str/str-to-int conversion is
+// superlinear). `document.rs` has no equivalent constant -- its `Scalar`
+// uses `i64` (max 19 digits), so the guard would be permanently dead code
+// there (see that module's doc comment) -- this module is the one place an
+// arbitrarily-long *digit run* can actually reach the parser (as OML
+// source text), so the cap lives here instead. Constant and message
+// constructors now live in [`crate::formats::int_cap`] (issue #49); this
+// module still owns the *finding* documented above.
 
 // ---------------------------------------------------------------------------
 // Scanner
@@ -600,21 +602,11 @@ impl Scanner {
         } else {
             let digits = &text[if text.starts_with('-') { 1 } else { 0 }..];
             if digits.len() > MAX_INT_DIGITS {
-                return Err(self.error_at(
-                    start,
-                    format!(
-                        "integer literal has {} digits, exceeding the {MAX_INT_DIGITS}-digit \
-                         limit (security: unbounded-digit int-to-str conversion is superlinear)",
-                        digits.len()
-                    ),
-                ));
+                return Err(self.error_at(start, over_cap_message("", digits.len())));
             }
-            let v: i64 = text.parse().map_err(|_| {
-                self.error_at(
-                    start,
-                    format!("integer literal {text:?} is out of range for a 64-bit integer"),
-                )
-            })?;
+            let v: i64 = text
+                .parse()
+                .map_err(|_| self.error_at(start, out_of_range_message("", &text)))?;
             Ok((TokKind::Int(v), start, end))
         }
     }

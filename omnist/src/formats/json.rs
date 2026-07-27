@@ -46,12 +46,13 @@
 use crate::WriteError;
 use crate::document::{Doc, Value};
 use crate::error::{OmnistError, ParseError};
+use crate::formats::int_cap::{MAX_INT_DIGITS, out_of_range_message, over_cap_message};
 use crate::report::{Severity, WriteReport};
 use indexmap::IndexMap;
 
-/// Same guard, same constant as `oml.rs`'s `MAX_INT_DIGITS` -- see this
-/// module's doc comment.
-const MAX_INT_DIGITS: usize = 4300;
+// Same guard, same constant as `oml.rs`'s -- see this module's doc
+// comment. Constant and message constructors now live in
+// [`crate::formats::int_cap`] (issue #49).
 
 /// Parse JSON text into a [`Doc`].
 ///
@@ -637,21 +638,11 @@ impl Parser {
         } else {
             let digits = &text[if text.starts_with('-') { 1 } else { 0 }..];
             if digits.len() > MAX_INT_DIGITS {
-                return Err(self.error_at(
-                    start,
-                    format!(
-                        "integer literal has {} digits, exceeding the {MAX_INT_DIGITS}-digit \
-                         limit (security: unbounded-digit int-to-str conversion is superlinear)",
-                        digits.len()
-                    ),
-                ));
+                return Err(self.error_at(start, over_cap_message("", digits.len())));
             }
             match text.parse::<i64>() {
                 Ok(v) => Ok(Value::Int(v)),
-                Err(_) => Err(self.error_at(
-                    start,
-                    format!("integer literal {text:?} is out of range for a 64-bit integer"),
-                )),
+                Err(_) => Err(self.error_at(start, out_of_range_message("", &text))),
             }
         }
     }

@@ -97,12 +97,13 @@ use yaml_rust2::scanner::{Marker, ScanError, TScalarStyle};
 use crate::WriteError;
 use crate::document::{Doc, Value};
 use crate::error::{OmnistError, ParseError};
+use crate::formats::int_cap::{MAX_INT_DIGITS, out_of_range_message, over_cap_message};
 use crate::report::{Severity, WriteReport};
 use indexmap::IndexMap;
 
-/// Same guard, same constant as `json.rs`'s/`oml.rs`'s `MAX_INT_DIGITS` -- see
-/// this module's doc comment.
-const MAX_INT_DIGITS: usize = 4300;
+// Same guard, same constant as `json.rs`'s/`oml.rs`'s -- see this
+// module's doc comment. Constant and message constructors now live in
+// [`crate::formats::int_cap`] (issue #49).
 
 /// Bound on the total number of [`Raw`] tree nodes materialized while
 /// rebuilding the event stream (issue #42, "YAML alias/anchor expansion
@@ -631,12 +632,7 @@ fn parse_int_literal(text: &str) -> Result<Value, ParseError> {
         return Err(ParseError::new(
             1,
             1,
-            format!(
-                "invalid YAML: integer literal has {} digits, exceeding the \
-                 {MAX_INT_DIGITS}-digit limit (security: unbounded-digit int-to-str \
-                 conversion is superlinear)",
-                digits.len()
-            ),
+            over_cap_message("invalid YAML: ", digits.len()),
         ));
     }
     // Parse the unsigned magnitude first, then apply the sign -- issue #26's
@@ -655,9 +651,7 @@ fn parse_int_literal(text: &str) -> Result<Value, ParseError> {
             return Err(ParseError::new(
                 1,
                 1,
-                format!(
-                    "invalid YAML: integer literal {text:?} is out of range for a 64-bit integer"
-                ),
+                out_of_range_message("invalid YAML: ", text),
             ));
         }
     };
@@ -675,7 +669,7 @@ fn parse_int_literal(text: &str) -> Result<Value, ParseError> {
         None => Err(ParseError::new(
             1,
             1,
-            format!("invalid YAML: integer literal {text:?} is out of range for a 64-bit integer"),
+            out_of_range_message("invalid YAML: ", text),
         )),
     }
 }
