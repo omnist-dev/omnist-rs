@@ -132,7 +132,7 @@ fn assert_raw_eq(fixture_note: &str, expected: &RawNode, actual: &RawNode) {
 fn parity_corpus_replays_every_fixture_against_rust() {
     let fixtures = corpus();
     assert!(
-        fixtures.len() >= 120,
+        fixtures.len() >= 180,
         "sanity check: expected a substantial extracted corpus, got {}",
         fixtures.len()
     );
@@ -649,8 +649,8 @@ fn parity_corpus_replays_every_fixture_against_rust() {
                         local_signature(root)
                     })
                     .collect();
-                let all_distinct = (0..sigs.len())
-                    .all(|i| (i + 1..sigs.len()).all(|j| sigs[i] != sigs[j]));
+                let all_distinct =
+                    (0..sigs.len()).all(|i| (i + 1..sigs.len()).all(|j| sigs[i] != sigs[j]));
                 assert_eq!(
                     all_distinct, expected_distinct,
                     "fixture {note:?}: local_signature distinctness diverged"
@@ -665,7 +665,11 @@ fn parity_corpus_replays_every_fixture_against_rust() {
                 let n = omnist::ops::normalize(&s);
                 let before = fx["expected_env_before"].as_u64().unwrap() as usize;
                 let after = fx["expected_env_after"].as_u64().unwrap() as usize;
-                assert_eq!(s.env().len(), before, "fixture {note:?}: env-before diverged");
+                assert_eq!(
+                    s.env().len(),
+                    before,
+                    "fixture {note:?}: env-before diverged"
+                );
                 assert_eq!(n.env().len(), after, "fixture {note:?}: env-after diverged");
                 assert!(
                     omnist::ops::equivalent(&s, &n),
@@ -714,8 +718,9 @@ fn parity_corpus_replays_every_fixture_against_rust() {
                 let outcome = fx["outcome"].as_str().unwrap();
                 match outcome {
                     "present_any" => {
-                        let e = extract(&s, &keep)
-                            .unwrap_or_else(|err| panic!("fixture {note:?}: extract failed: {err}"));
+                        let e = extract(&s, &keep).unwrap_or_else(|err| {
+                            panic!("fixture {note:?}: extract failed: {err}")
+                        });
                         let root = e.env().get(&e.root().name).unwrap();
                         let f = root
                             .field(label)
@@ -726,8 +731,9 @@ fn parity_corpus_replays_every_fixture_against_rust() {
                         );
                     }
                     "absent" => {
-                        let e = extract(&s, &keep)
-                            .unwrap_or_else(|err| panic!("fixture {note:?}: extract failed: {err}"));
+                        let e = extract(&s, &keep).unwrap_or_else(|err| {
+                            panic!("fixture {note:?}: extract failed: {err}")
+                        });
                         let root = e.env().get(&e.root().name).unwrap();
                         assert!(
                             root.field(label).is_none(),

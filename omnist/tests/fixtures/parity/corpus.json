@@ -1986,6 +1986,655 @@
       "note": "depth guard: a raw Doc node 190 levels deep (just under the limit) constructs and exports fine",
       "kind": "doc_construct_depth_ok",
       "depth": 190
+    },
+    {
+      "module": "test_any_grammar.test_parse_any_field",
+      "note": "any: OSD parses a bare 'any'-typed field",
+      "kind": "osd_parse_ok",
+      "input": "record Root { \"data\": any }\nroot Root"
+    },
+    {
+      "module": "test_any_grammar.test_parse_any_field_with_cardinality",
+      "note": "any: OSD parses an 'any'-typed field with cardinality [0,]",
+      "kind": "osd_parse_ok",
+      "input": "record Root { \"data\" [0,]: any }\nroot Root"
+    },
+    {
+      "module": "test_any_grammar.test_parse_any_field_with_cardinality",
+      "note": "any: OSD parses an 'any'-typed field with cardinality [2,5]",
+      "kind": "osd_parse_ok",
+      "input": "record Root { \"data\" [2,5]: any }\nroot Root"
+    },
+    {
+      "module": "test_any_grammar.test_any_question_mark_is_rejected",
+      "note": "any: 'any?' is rejected -- any already includes null, so '?' is redundant",
+      "kind": "osd_parse_error",
+      "input": "record Root { \"data\": any? }\nroot Root"
+    },
+    {
+      "module": "test_any_grammar.test_capitalized_any_is_unknown_ref_not_any_type",
+      "note": "any: capitalized 'Any' is a Ref('Any') -> unknown-type error, not special-cased",
+      "kind": "osd_parse_error",
+      "input": "record Root { \"data\": Any }\nroot Root"
+    },
+    {
+      "module": "test_any_grammar.test_record_named_any_is_rejected",
+      "note": "any: 'any' is a reserved type name and cannot be used as a record name",
+      "kind": "osd_parse_error",
+      "input": "record any { \"x\": string }\nroot any"
+    },
+    {
+      "module": "test_any_grammar.test_any_round_trip",
+      "note": "any: a builder-constructed schema with any-typed fields (required + unbounded array) round-trips through to_osd()+parse_schema() to an equivalent schema",
+      "kind": "schema_osd_roundtrip_equivalent",
+      "schema": "record Root {\n    \"id\": string,\n    \"data\": any,\n    \"many\" [0,]: any,\n}\nroot Root\n"
+    },
+    {
+      "module": "test_any_grammar.test_any_round_trip",
+      "note": "any: a parsed-from-OSD-text schema with any-typed fields round-trips through to_osd()+parse_schema() to an equivalent schema",
+      "kind": "schema_osd_roundtrip_equivalent",
+      "schema": "record Root {\n    \"id\": string,\n    \"data\": any,\n    \"many\" [0,]: any,\n}\nroot Root\n"
+    },
+    {
+      "module": "test_any_grammar.test_writer_emits_any_keyword",
+      "note": "any: to_osd() (pretty mode) emits the 'any' keyword for an any-typed field",
+      "kind": "osd_contains",
+      "schema": "record Root {\n    \"data\": any,\n}\nroot Root\n",
+      "contains": "any"
+    },
+    {
+      "module": "test_any_grammar.test_writer_emits_any_for_compact_mode_too",
+      "note": "any: to_osd(indent=None) (compact mode) also emits the 'any' keyword",
+      "kind": "osd_contains",
+      "schema": "record Root { \"data\": any } root Root\n",
+      "contains": "any"
+    },
+    {
+      "module": "test_any_core.test_validate_accepts_anything_at_any_field",
+      "note": "any: an any-typed field accepts 'a string'",
+      "kind": "schema_validate",
+      "schema": "record Root { \"data\" [1,1]: any }\nroot Root",
+      "doc_json_input": {
+        "data": "a string"
+      },
+      "expected_ok": true
+    },
+    {
+      "module": "test_any_core.test_validate_accepts_anything_at_any_field",
+      "note": "any: an any-typed field accepts 123",
+      "kind": "schema_validate",
+      "schema": "record Root { \"data\" [1,1]: any }\nroot Root",
+      "doc_json_input": {
+        "data": 123
+      },
+      "expected_ok": true
+    },
+    {
+      "module": "test_any_core.test_validate_accepts_anything_at_any_field",
+      "note": "any: an any-typed field accepts 1.5",
+      "kind": "schema_validate",
+      "schema": "record Root { \"data\" [1,1]: any }\nroot Root",
+      "doc_json_input": {
+        "data": 1.5
+      },
+      "expected_ok": true
+    },
+    {
+      "module": "test_any_core.test_validate_accepts_anything_at_any_field",
+      "note": "any: an any-typed field accepts True",
+      "kind": "schema_validate",
+      "schema": "record Root { \"data\" [1,1]: any }\nroot Root",
+      "doc_json_input": {
+        "data": true
+      },
+      "expected_ok": true
+    },
+    {
+      "module": "test_any_core.test_validate_accepts_anything_at_any_field",
+      "note": "any: an any-typed field accepts None",
+      "kind": "schema_validate",
+      "schema": "record Root { \"data\" [1,1]: any }\nroot Root",
+      "doc_json_input": {
+        "data": null
+      },
+      "expected_ok": true
+    },
+    {
+      "module": "test_any_core.test_validate_accepts_anything_at_any_field",
+      "note": "any: an any-typed field accepts {'nested': {'deep': [1, 2, 3]}}",
+      "kind": "schema_validate",
+      "schema": "record Root { \"data\" [1,1]: any }\nroot Root",
+      "doc_json_input": {
+        "data": {
+          "nested": {
+            "deep": [
+              1,
+              2,
+              3
+            ]
+          }
+        }
+      },
+      "expected_ok": true
+    },
+    {
+      "module": "test_any_core.test_validate_accepts_anything_at_any_field",
+      "note": "any: an any-typed field accepts {'a': None, 'b': [{'c': 1}, {'c': 2}]}",
+      "kind": "schema_validate",
+      "schema": "record Root { \"data\" [1,1]: any }\nroot Root",
+      "doc_json_input": {
+        "data": {
+          "a": null,
+          "b": [
+            {
+              "c": 1
+            },
+            {
+              "c": 2
+            }
+          ]
+        }
+      },
+      "expected_ok": true
+    },
+    {
+      "module": "test_any_core.test_validate_still_enforces_cardinality_on_any_label",
+      "note": "any: cardinality is still enforced on an any-typed label -- missing entirely fails",
+      "kind": "schema_validate",
+      "schema": "record Root { \"data\" [1,1]: any }\nroot Root",
+      "doc_json_input": {},
+      "expected_ok": false
+    },
+    {
+      "module": "test_any_core.test_validate_any_field_cardinality_range_respected",
+      "note": "any: [2,5] cardinality on an any label accepts 3 occurrences",
+      "kind": "schema_validate",
+      "schema": "record Root { \"data\" [2,5]: any }\nroot Root",
+      "doc_json_input": {
+        "data": [
+          1,
+          2,
+          3
+        ]
+      },
+      "expected_ok": true
+    },
+    {
+      "module": "test_any_core.test_validate_any_field_cardinality_range_respected",
+      "note": "any: [2,5] cardinality on an any label rejects 1 occurrence (below min)",
+      "kind": "schema_validate",
+      "schema": "record Root { \"data\" [2,5]: any }\nroot Root",
+      "doc_json_input": {
+        "data": [
+          1
+        ]
+      },
+      "expected_ok": false
+    },
+    {
+      "module": "test_any_core.test_materialize_any_field_is_identity_pass_through",
+      "note": "any: materialize() leaves a value nested inside an any field untouched (ISO date string stays a string) while a sibling datetime field still upgrades",
+      "kind": "materialize_case",
+      "schema": "record Root {\n    \"data\": any,\n    \"created\": datetime,\n}\nroot Root\n",
+      "doc_json": {
+        "data": {
+          "when": "2024-01-01"
+        },
+        "created": "2024-01-01T00:00:00"
+      },
+      "expected": {
+        "$edges": [
+          [
+            "data",
+            {
+              "$edges": [
+                [
+                  "when",
+                  {
+                    "$str": "2024-01-01"
+                  }
+                ]
+              ]
+            }
+          ],
+          [
+            "created",
+            {
+              "$str": "2024-01-01T00:00:00"
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "module": "test_any_core.test_materialize_any_field_never_raises",
+      "note": "any: materialize() never raises on an arbitrarily-shaped value nested inside an any field",
+      "kind": "materialize_case",
+      "schema": "record Root {\n    \"data\": any,\n}\nroot Root\n",
+      "doc_json": {
+        "data": {
+          "x": 1,
+          "y": null,
+          "z": {
+            "deep": "ok"
+          }
+        }
+      },
+      "expected": {
+        "$edges": [
+          [
+            "data",
+            {
+              "$edges": [
+                [
+                  "x",
+                  {
+                    "$int": 1
+                  }
+                ],
+                [
+                  "y",
+                  {
+                    "$null": true
+                  }
+                ],
+                [
+                  "z",
+                  {
+                    "$edges": [
+                      [
+                        "deep",
+                        {
+                          "$str": "ok"
+                        }
+                      ]
+                    ]
+                  }
+                ]
+              ]
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "module": "test_any_core.test_scalar_sub_any",
+      "note": "any: a string field is compatible_with (sub) an any field",
+      "kind": "schema_compatible_with",
+      "schema_a": "record Root { \"x\": string }\nroot Root",
+      "schema_b": "record Root { \"x\": any }\nroot Root",
+      "expected": true
+    },
+    {
+      "module": "test_any_core.test_scalar_sub_any",
+      "note": "any: the reverse (any sub string) is not compatible_with",
+      "kind": "schema_compatible_with",
+      "schema_a": "record Root { \"x\": any }\nroot Root",
+      "schema_b": "record Root { \"x\": string }\nroot Root",
+      "expected": false
+    },
+    {
+      "module": "test_any_core.test_nullable_scalar_sub_any",
+      "note": "any: a nullable string field is compatible_with an any field",
+      "kind": "schema_compatible_with",
+      "schema_a": "record Root { \"x\": string? }\nroot Root",
+      "schema_b": "record Root { \"x\": any }\nroot Root",
+      "expected": true
+    },
+    {
+      "module": "test_any_core.test_record_sub_any",
+      "note": "any: a ref-typed field (record child) is compatible_with an any field",
+      "kind": "schema_compatible_with",
+      "schema_a": "record Child { \"y\": integer }\nrecord Root { \"child\": Child }\nroot Root",
+      "schema_b": "record Root { \"child\": any }\nroot Root",
+      "expected": true
+    },
+    {
+      "module": "test_any_core.test_record_sub_any",
+      "note": "any: the reverse (any sub record) is not compatible_with",
+      "kind": "schema_compatible_with",
+      "schema_a": "record Root { \"child\": any }\nroot Root",
+      "schema_b": "record Child { \"y\": integer }\nrecord Root { \"child\": Child }\nroot Root",
+      "expected": false
+    },
+    {
+      "module": "test_any_core.test_any_sub_any",
+      "note": "any: an any field is compatible_with another any field (both directions)",
+      "kind": "schema_compatible_with",
+      "schema_a": "record Root { \"x\": any }\nroot Root",
+      "schema_b": "record Root { \"x\": any }\nroot Root",
+      "expected": true
+    },
+    {
+      "module": "test_any_core.test_any_sub_any",
+      "note": "any: two schemas differing only by two independently-built any fields are equivalent()",
+      "kind": "schema_equivalent",
+      "schema_a": "record Root { \"x\": any }\nroot Root",
+      "schema_b": "record Root { \"x\": any }\nroot Root",
+      "expected": true
+    },
+    {
+      "module": "test_any_core.test_local_signature_any_is_distinct_from_scalars_and_ref",
+      "note": "any: local_signature of any/string/nullable-string/ref-typed single-field records are all four pairwise distinct",
+      "kind": "local_signature_distinct",
+      "schemas": [
+        "record R { \"x\": any }\nroot R",
+        "record R { \"x\": string }\nroot R",
+        "record R { \"x\": string? }\nroot R",
+        "record Other { \"y\": integer }\nrecord R { \"x\": Other }\nroot R"
+      ],
+      "expected_distinct": true
+    },
+    {
+      "module": "test_any_core.test_two_records_differing_only_string_vs_any_have_different_signatures",
+      "note": "any: local_signature differs between a string-typed field and an any-typed field",
+      "kind": "local_signature_distinct",
+      "schemas": [
+        "record R { \"x\": string }\nroot R",
+        "record R { \"x\": any }\nroot R"
+      ],
+      "expected_distinct": true
+    },
+    {
+      "module": "test_any_core.test_normalize_never_merges_any_field_record_with_scalar_field_record",
+      "note": "any: normalize() never merges a record with an any-typed field into a record with a same-labeled scalar-typed field -- both A and B survive distinctly",
+      "kind": "schema_normalize_env_len",
+      "schema": "record A { \"x\": any }\nrecord B { \"x\": string }\nrecord Root { \"a\": A, \"b\": B }\nroot Root",
+      "expected_env_before": 3,
+      "expected_env_after": 3
+    },
+    {
+      "module": "test_any_core.test_normalize_merges_identical_any_records",
+      "note": "any: normalize() merges two structurally-identical any-field records (A, B) into one -- env shrinks from 3 to 2, and root's two fields end up pointing at the same target",
+      "kind": "schema_normalize_env_len",
+      "schema": "record A { \"x\": any }\nrecord B { \"x\": any }\nrecord Root { \"a\": A, \"b\": B }\nroot Root",
+      "expected_env_before": 3,
+      "expected_env_after": 2,
+      "expect_same_target": true
+    },
+    {
+      "module": "test_any_core.test_normalize_round_trip_preserves_any_field_semantics",
+      "note": "any: a document accepted (or not) by the pre-normalize schema is accepted (or not) identically by the post-normalize schema",
+      "kind": "schema_validate",
+      "schema": "record A { \"x\": any }\nrecord B { \"x\": any }\nrecord Root { \"a\": A, \"b\": B }\nroot Root",
+      "doc_json_input": {
+        "a": {
+          "x": [
+            1,
+            2,
+            3
+          ]
+        },
+        "b": {
+          "x": null
+        }
+      },
+      "expected_ok": false
+    },
+    {
+      "module": "test_any_core.test_normalize_round_trip_preserves_any_field_semantics",
+      "note": "any: same document/normalized-schema pair, checked against the normalize() output directly",
+      "kind": "schema_validate",
+      "schema": "record A {\n    \"x\": any,\n}\nrecord Root {\n    \"a\": A,\n    \"b\": A,\n}\nroot Root\n",
+      "doc_json_input": {
+        "a": {
+          "x": [
+            1,
+            2,
+            3
+          ]
+        },
+        "b": {
+          "x": null
+        }
+      },
+      "expected_ok": false
+    },
+    {
+      "module": "test_any_core.test_any_field_record_is_satisfiable",
+      "note": "any: a record whose only field is any is never is_empty()",
+      "kind": "schema_is_empty",
+      "schema": "record Root { \"x\": any }\nroot Root",
+      "expected": false
+    },
+    {
+      "module": "test_any_core.test_prune_keeps_any_only_record",
+      "note": "any: prune() keeps an any-only record satisfiable and equivalent to the original",
+      "kind": "schema_prune_equivalent",
+      "schema": "record Root { \"x\": any }\nroot Root"
+    },
+    {
+      "module": "test_any_core.test_any_never_rescues_unsatisfiable_sibling",
+      "note": "any: an any field never rescues a record whose mandatory sibling (a self-only ref cycle) is itself unsatisfiable",
+      "kind": "schema_is_empty",
+      "schema": "record Root { \"loop\": Root, \"x\": any }\nroot Root",
+      "expected": true
+    },
+    {
+      "module": "test_any_core.test_extract_keeps_any_field_when_requested",
+      "note": "any: extract() keeps a requested any-typed field",
+      "kind": "schema_extract_field_type",
+      "schema": "record Root { \"id\": string, \"data\": any }\nroot Root",
+      "keep": [
+        "id",
+        "data"
+      ],
+      "label": "data",
+      "outcome": "present_any"
+    },
+    {
+      "module": "test_any_core.test_extract_drops_optional_any_field_when_not_requested",
+      "note": "any: extract() drops an unrequested *optional* any-typed field",
+      "kind": "schema_extract_field_type",
+      "schema": "record Root { \"id\": string, \"data\" [0,1]: any }\nroot Root",
+      "keep": [
+        "id"
+      ],
+      "label": "data",
+      "outcome": "absent"
+    },
+    {
+      "module": "test_any_core.test_extract_raises_when_mandatory_any_field_dropped",
+      "note": "any: extract() raises when dropping a *mandatory* any-typed field",
+      "kind": "schema_extract_field_type",
+      "schema": "record Root { \"id\": string, \"data\" [1,1]: any }\nroot Root",
+      "keep": [
+        "id"
+      ],
+      "label": "data",
+      "outcome": "error"
+    },
+    {
+      "module": "test_any_core.test_infer_never_produces_any_type",
+      "note": "any: infer() over samples=[{'a': 1, 'b': 'x'}, {'a': 2}] never produces an AnyType-typed field",
+      "kind": "infer_no_any",
+      "samples": [
+        {
+          "a": 1,
+          "b": "x"
+        },
+        {
+          "a": 2
+        }
+      ]
+    },
+    {
+      "module": "test_any_core.test_infer_never_produces_any_type",
+      "note": "any: infer() over samples=[{'v': None}, {'v': None}] never produces an AnyType-typed field",
+      "kind": "infer_no_any",
+      "samples": [
+        {
+          "v": null
+        },
+        {
+          "v": null
+        }
+      ]
+    },
+    {
+      "module": "test_any_core.test_infer_never_produces_any_type",
+      "note": "any: infer() over samples=[{'id': 1, 'tags': ['a', 'b'], 'addr': {'city': 'X'}}] never produces an AnyType-typed field",
+      "kind": "infer_no_any",
+      "samples": [
+        {
+          "id": 1,
+          "tags": [
+            "a",
+            "b"
+          ],
+          "addr": {
+            "city": "X"
+          }
+        }
+      ]
+    },
+    {
+      "module": "test_any_core.test_infer_never_produces_any_type",
+      "note": "any: infer() over samples=[{'a': {'deep': {'nested': 1}}}, {'a': {'deep': {'nested': 2}}}] never produces an AnyType-typed field",
+      "kind": "infer_no_any",
+      "samples": [
+        {
+          "a": {
+            "deep": {
+              "nested": 1
+            }
+          }
+        },
+        {
+          "a": {
+            "deep": {
+              "nested": 2
+            }
+          }
+        }
+      ]
+    },
+    {
+      "module": "test_any_core.test_matrix_null_accepted_at_any",
+      "note": "any: null is accepted at an any-typed field",
+      "kind": "schema_validate",
+      "schema": "record Root { \"x\": any }\nroot Root",
+      "doc_json_input": {
+        "x": null
+      },
+      "expected_ok": true
+    },
+    {
+      "module": "test_any_core.test_matrix_cardinality_enforced_on_any_label",
+      "note": "any: cardinality [0,] on an any label with 0 occurrence(s) -> accepted",
+      "kind": "schema_validate",
+      "schema": "record Root { \"x\" [0,]: any }\nroot Root",
+      "doc_json_input": {},
+      "expected_ok": true
+    },
+    {
+      "module": "test_any_core.test_matrix_cardinality_enforced_on_any_label",
+      "note": "any: cardinality [1,] on an any label with 0 occurrence(s) -> rejected",
+      "kind": "schema_validate",
+      "schema": "record Root { \"x\" [1,]: any }\nroot Root",
+      "doc_json_input": {},
+      "expected_ok": false
+    },
+    {
+      "module": "test_any_core.test_matrix_cardinality_enforced_on_any_label",
+      "note": "any: cardinality [1,] on an any label with 1 occurrence(s) -> accepted",
+      "kind": "schema_validate",
+      "schema": "record Root { \"x\" [1,]: any }\nroot Root",
+      "doc_json_input": {
+        "x": [
+          0
+        ]
+      },
+      "expected_ok": true
+    },
+    {
+      "module": "test_any_core.test_matrix_cardinality_enforced_on_any_label",
+      "note": "any: cardinality [2,5] on an any label with 1 occurrence(s) -> rejected",
+      "kind": "schema_validate",
+      "schema": "record Root { \"x\" [2,5]: any }\nroot Root",
+      "doc_json_input": {
+        "x": [
+          0
+        ]
+      },
+      "expected_ok": false
+    },
+    {
+      "module": "test_any_core.test_matrix_cardinality_enforced_on_any_label",
+      "note": "any: cardinality [2,5] on an any label with 3 occurrence(s) -> accepted",
+      "kind": "schema_validate",
+      "schema": "record Root { \"x\" [2,5]: any }\nroot Root",
+      "doc_json_input": {
+        "x": [
+          0,
+          1,
+          2
+        ]
+      },
+      "expected_ok": true
+    },
+    {
+      "module": "test_any_core.test_matrix_any_always_satisfiable",
+      "note": "any: a mandatory any-typed field is always satisfiable",
+      "kind": "schema_is_empty",
+      "schema": "record Root { \"x\" [1,1]: any }\nroot Root",
+      "expected": false
+    },
+    {
+      "module": "test_any_core.test_matrix_t_sub_any_true",
+      "note": "any: matrix -- scalar field is compatible_with an any field",
+      "kind": "schema_compatible_with",
+      "schema_a": "record Root { \"x\": string }\nroot Root",
+      "schema_b": "record Root { \"x\": any }\nroot Root",
+      "expected": true
+    },
+    {
+      "module": "test_any_core.test_matrix_any_sub_t_false",
+      "note": "any: matrix -- an any field is NOT compatible_with a scalar field",
+      "kind": "schema_compatible_with",
+      "schema_a": "record Root { \"x\": any }\nroot Root",
+      "schema_b": "record Root { \"x\": string }\nroot Root",
+      "expected": false
+    },
+    {
+      "module": "test_any_core.test_matrix_t_sub_any_true",
+      "note": "any: matrix -- nullable_scalar field is compatible_with an any field",
+      "kind": "schema_compatible_with",
+      "schema_a": "record Root { \"x\": string? }\nroot Root",
+      "schema_b": "record Root { \"x\": any }\nroot Root",
+      "expected": true
+    },
+    {
+      "module": "test_any_core.test_matrix_any_sub_t_false",
+      "note": "any: matrix -- an any field is NOT compatible_with a nullable_scalar field",
+      "kind": "schema_compatible_with",
+      "schema_a": "record Root { \"x\": any }\nroot Root",
+      "schema_b": "record Root { \"x\": string? }\nroot Root",
+      "expected": false
+    },
+    {
+      "module": "test_any_core.test_matrix_t_sub_any_true",
+      "note": "any: matrix -- record field is compatible_with an any field",
+      "kind": "schema_compatible_with",
+      "schema_a": "record Child { \"y\": integer }\nrecord Root { \"x\": Child }\nroot Root",
+      "schema_b": "record Root { \"x\": any }\nroot Root",
+      "expected": true
+    },
+    {
+      "module": "test_any_core.test_matrix_any_sub_t_false",
+      "note": "any: matrix -- an any field is NOT compatible_with a record field",
+      "kind": "schema_compatible_with",
+      "schema_a": "record Root { \"x\": any }\nroot Root",
+      "schema_b": "record Child { \"y\": integer }\nrecord Root { \"x\": Child }\nroot Root",
+      "expected": false
+    },
+    {
+      "module": "test_any_core.test_matrix_any_sub_any_true",
+      "note": "any: matrix -- an any field is compatible_with another any field",
+      "kind": "schema_compatible_with",
+      "schema_a": "record Root { \"x\": any }\nroot Root",
+      "schema_b": "record Root { \"x\": any }\nroot Root",
+      "expected": true
     }
   ]
 }
