@@ -469,6 +469,31 @@ pub fn check_xml(doc: &Doc) -> WriteReport {
     rep
 }
 
+/// Marker type implementing [`crate::formats::Codec`] for XML -- adapts
+/// [`read_xml`]/[`write_xml`]/[`check_xml`] to the registry's uniform
+/// shape with the documented defaults (`strict: false`, no report). The
+/// single-document-element root-shape error `write_xml` raises fires from
+/// inside `write_xml` itself, outside `finish_write` and before any
+/// scanning, exactly as before -- this impl only calls `write_xml`, it
+/// doesn't reimplement it.
+pub(crate) struct Xml;
+
+impl crate::formats::Codec for Xml {
+    const NAME: &'static str = "xml";
+
+    fn read(text: &str) -> Result<Doc, OmnistError> {
+        read_xml(text)
+    }
+
+    fn write(doc: &Doc) -> Result<String, OmnistError> {
+        write_xml(doc, false, None).map_err(Into::into)
+    }
+
+    fn check(doc: &Doc) -> WriteReport {
+        check_xml(doc)
+    }
+}
+
 fn scan_xml_into(node: &RawNode, path: &str, rep: &mut WriteReport) {
     match node {
         RawNode::Edges(edges) => {

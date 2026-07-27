@@ -115,40 +115,23 @@ fn registry() -> &'static RwLock<IndexMap<String, Format>> {
 }
 
 fn builtins() -> IndexMap<String, Format> {
-    use crate::document::RawNode;
-    use crate::formats::{json, toml, xml, yaml};
-    use crate::oml;
+    use crate::formats::Codec;
+    use crate::formats::json::Json;
+    use crate::formats::toml::Toml;
+    use crate::formats::xml::Xml;
+    use crate::formats::yaml::Yaml;
+    use crate::oml::Oml;
 
     let mut m = IndexMap::new();
     let mut add = |fmt: Format| {
         m.insert(fmt.name.clone(), fmt);
     };
 
-    add(Format::new("json", json::read_json, |doc| {
-        json::write_json(doc, None, false, None).map_err(Into::into)
-    })
-    .with_check(json::check_json));
-    add(Format::new("yaml", yaml::read_yaml, |doc| {
-        yaml::write_yaml(doc, false, None).map_err(Into::into)
-    })
-    .with_check(yaml::check_yaml));
-    add(Format::new("toml", toml::read_toml, |doc| {
-        toml::write_toml(doc, false, None).map_err(Into::into)
-    })
-    .with_check(toml::check_toml));
-    add(Format::new("xml", xml::read_xml, |doc| {
-        xml::write_xml(doc, false, None).map_err(Into::into)
-    })
-    .with_check(xml::check_xml));
-    add(Format::new(
-        "oml",
-        |text| {
-            let raw: RawNode = oml::read_oml(text)?;
-            Doc::from_raw(raw).map_err(Into::into)
-        },
-        |doc| oml::write_oml(&doc.to_raw(), 2).map_err(Into::into),
-    )
-    .with_check(oml::check_oml));
+    add(Json::format());
+    add(Yaml::format());
+    add(Toml::format());
+    add(Xml::format());
+    add(Oml::format());
 
     m
 }

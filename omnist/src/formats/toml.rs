@@ -403,6 +403,30 @@ pub fn check_toml(doc: &Doc) -> WriteReport {
     rep
 }
 
+/// Marker type implementing [`crate::formats::Codec`] for TOML -- adapts
+/// [`read_toml`]/[`write_toml`]/[`check_toml`] to the registry's uniform
+/// shape with the documented defaults (`strict: false`, no report). The
+/// root-shape error `write_toml` raises for a non-object root fires from
+/// inside `write_toml` itself, outside `finish_write`, exactly as before --
+/// this impl only calls `write_toml`, it doesn't reimplement it.
+pub(crate) struct Toml;
+
+impl crate::formats::Codec for Toml {
+    const NAME: &'static str = "toml";
+
+    fn read(text: &str) -> Result<Doc, OmnistError> {
+        read_toml(text)
+    }
+
+    fn write(doc: &Doc) -> Result<String, OmnistError> {
+        write_toml(doc, false, None).map_err(Into::into)
+    }
+
+    fn check(doc: &Doc) -> WriteReport {
+        check_toml(doc)
+    }
+}
+
 /// Drops every null-valued field/array-item, recording a `null.omitted`
 /// warning for each (TOML has no null at all) -- see this module's doc
 /// comment. Mirrors Python's `_strip_nulls` path-numbering exactly:

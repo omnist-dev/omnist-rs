@@ -132,6 +132,30 @@ pub fn check_json(doc: &Doc) -> WriteReport {
     rep
 }
 
+/// Marker type implementing [`crate::formats::Codec`] for JSON -- adapts
+/// [`read_json`]/[`write_json`]/[`check_json`] to the registry's uniform
+/// shape with the documented defaults (`indent: None`, `strict: false`, no
+/// report). See the trait's doc comment for why `write_json`'s `strict`-
+/// dependent content (NaN/Infinity substitution) ruled out a richer
+/// `scan`/`emit`-splitting trait.
+pub(crate) struct Json;
+
+impl crate::formats::Codec for Json {
+    const NAME: &'static str = "json";
+
+    fn read(text: &str) -> Result<Doc, OmnistError> {
+        read_json(text)
+    }
+
+    fn write(doc: &Doc) -> Result<String, OmnistError> {
+        write_json(doc, None, false, None).map_err(Into::into)
+    }
+
+    fn check(doc: &Doc) -> WriteReport {
+        check_json(doc)
+    }
+}
+
 /// Lenient-mode substitution: a NaN/Infinity leaf becomes `Null` so the
 /// written text is always valid JSON. Mirrors Python's `_prepare_json`.
 fn prepare(node: Value) -> Value {

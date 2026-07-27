@@ -22,7 +22,52 @@ pub mod toml;
 pub mod xml;
 pub mod yaml;
 
-use crate::document::Value;
+use crate::document::{Doc, Value};
+use crate::error::OmnistError;
+use crate::report::WriteReport;
+
+/// The (read, write, check) contract every builtin format codec already
+/// implements as a naming convention -- expressed once (issue #52).
+///
+/// `read`/`write`/`check` intentionally match the registry's
+/// [`crate::registry::ReadFn`]/[`crate::registry::WriteFn`]/
+/// [`crate::registry::CheckFn`] signatures exactly: no `strict`, no
+/// `report`, no format-specific options (`write_json`'s `indent`,
+/// `write_oml`'s `RawNode`/`indent` shape). Each format's richer public
+/// `read_X`/`write_X(doc, ..., strict, report)`/`check_X` functions are
+/// unchanged and remain the actual public API -- a `Codec` impl is thin
+/// `pub(crate)` plumbing that calls them with the registry's documented
+/// defaults (`indent: None`, `strict: false`, no report requested; OML's
+/// `Doc::from_raw`/`to_raw` bridging), exactly what the hand-written
+/// wrapper closures in `registry::builtins` did before this issue -- see
+/// `registry.rs`'s module doc for why those defaults are the right ones
+/// and why the registry's signatures are simpler than the public
+/// functions'.
+///
+/// A richer trait sketch (scan/emit split, `strict`/`report`-aware
+/// `write`) was considered and rejected: `write_json` needs `strict` to
+/// pick lenient vs. strict *content* (NaN/Infinity substitution), not just
+/// whether `finish_write` raises, so a `strict`-unaware `emit` provided
+/// method would be wrong for JSON specifically and each impl would have to
+/// override `write` anyway -- collapsing the supposed savings. This
+/// leaner shape captures the actual duplication (the registry's adapter
+/// closures) without forcing an artificial decomposition that fights each
+/// format's real differences.
+pub(crate) trait Codec: 'static {
+    /// The name this codec is registered under (`"json"`, `"yaml"`, ...).
+    const NAME: &'static str;
+
+    fn read(text: &str) -> Result<Doc, OmnistError>;
+    fn write(doc: &Doc) -> Result<String, OmnistError>;
+    fn check(doc: &Doc) -> WriteReport;
+
+    /// Build this codec's [`crate::registry::Format`] entry -- the
+    /// wrapper-closure boilerplate `registry::builtins` used to hand-write
+    /// once per format, now written once here instead.
+    fn format() -> crate::registry::Format {
+        crate::registry::Format::new(Self::NAME, Self::read, Self::write).with_check(Self::check)
+    }
+}
 
 /// One position `visit_grouped` reaches, passed to its callback alongside
 /// the current path. Kept as a single enum (rather than two separate

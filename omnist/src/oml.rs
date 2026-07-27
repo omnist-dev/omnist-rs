@@ -1021,6 +1021,32 @@ pub fn check_oml(_doc: &crate::document::Doc) -> crate::report::WriteReport {
     crate::report::WriteReport::new()
 }
 
+/// Marker type implementing [`crate::formats::Codec`] for OML -- adapts
+/// [`read_oml`]/[`write_oml`]/[`check_oml`] to the registry's uniform
+/// `Doc`-in/`Doc`-out shape, exactly as `registry::builtins` did by hand
+/// before this issue: `read` bridges `read_oml`'s [`RawNode`] result
+/// through [`crate::document::Doc::from_raw`], and `write` bridges the
+/// other way through `Doc::to_raw` before calling `write_oml` with its
+/// documented default indent (2).
+pub(crate) struct Oml;
+
+impl crate::formats::Codec for Oml {
+    const NAME: &'static str = "oml";
+
+    fn read(text: &str) -> Result<document::Doc, crate::error::OmnistError> {
+        let raw: RawNode = read_oml(text)?;
+        document::Doc::from_raw(raw).map_err(Into::into)
+    }
+
+    fn write(doc: &document::Doc) -> Result<String, crate::error::OmnistError> {
+        write_oml(&doc.to_raw(), 2).map_err(Into::into)
+    }
+
+    fn check(doc: &document::Doc) -> crate::report::WriteReport {
+        check_oml(doc)
+    }
+}
+
 /// `node_depth` is *this edges list's own* depth, matching
 /// `document.rs`'s `push_raw`/`build_node` convention exactly: the guard is
 /// checked for every node (container *and* leaf) at its own depth, with a
