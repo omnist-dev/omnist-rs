@@ -153,6 +153,7 @@
 use crate::WriteError;
 use crate::document::{Doc, MAX_DEPTH, RawNode, Scalar};
 use crate::error::{DocumentError, OmnistError, ParseError};
+use crate::formats::textpos::line_col_bytes;
 use crate::report::{Severity, WriteReport};
 use quick_xml::Reader;
 use quick_xml::events::Event;
@@ -283,12 +284,12 @@ fn parse_content(
 }
 
 /// Builds a [`ParseError`] located at the reader's current byte position
-/// (converted to a 1-based line/column via [`line_col`]), for the error
+/// (converted to a 1-based line/column via [`line_col_bytes`]), for the error
 /// conditions this module detects itself rather than receiving from
 /// `quick_xml` (unexpected EOF, mixed content).
 fn located_error(reader: &Reader<&[u8]>, source: &str, message: &str) -> OmnistError {
     let pos = (reader.buffer_position() as usize).min(source.len());
-    let (line, col) = line_col(source, pos);
+    let (line, col) = line_col_bytes(source, pos);
     ParseError::new(line, col, message).into()
 }
 
@@ -311,7 +312,7 @@ fn normalize_line_endings(s: &str) -> String {
 
 fn xml_parse_error(reader: &Reader<&[u8]>, source: &str, e: &quick_xml::Error) -> OmnistError {
     let pos = (reader.buffer_position() as usize).min(source.len());
-    let (line, col) = line_col(source, pos);
+    let (line, col) = line_col_bytes(source, pos);
     ParseError::new(line, col, format!("invalid XML: {e}")).into()
 }
 
@@ -345,7 +346,7 @@ fn resolve_general_ref(
         "quot" => Ok('"'),
         other => {
             let pos = (reader.buffer_position() as usize).min(source.len());
-            let (line, col) = line_col(source, pos);
+            let (line, col) = line_col_bytes(source, pos);
             Err(ParseError::new(
                 line,
                 col,
@@ -357,24 +358,6 @@ fn resolve_general_ref(
             .into())
         }
     }
-}
-
-/// 1-based (line, column) of byte offset `pos` in `text` -- same shape as
-/// `toml.rs`'s identical helper.
-fn line_col(text: &str, pos: usize) -> (usize, usize) {
-    let mut line = 1usize;
-    let mut last_nl: Option<usize> = None;
-    for (i, b) in text.as_bytes()[..pos.min(text.len())].iter().enumerate() {
-        if *b == b'\n' {
-            line += 1;
-            last_nl = Some(i);
-        }
-    }
-    let col = match last_nl {
-        Some(i) => pos - i,
-        None => pos + 1,
-    };
-    (line, col)
 }
 
 /// Turns element text into a [`Scalar`] -- see this module's doc comment
