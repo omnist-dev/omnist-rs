@@ -104,13 +104,20 @@ pub fn write_json(
 }
 
 /// Report what writing JSON would adjust, without producing output.
+///
+/// Walks every leaf via the shared [`crate::formats::visit_grouped`] walker
+/// (issue #51) rather than a bespoke `collect_leaves` pass; the path
+/// `String` that ends up in a [`crate::report::Adjustment`] is only built
+/// for the (rare) NaN/Infinity leaf -- not for every leaf up front (issue
+/// #44), since `visit_grouped` reuses one path buffer for the whole walk.
 pub fn check_json(doc: &Doc) -> WriteReport {
     let mut rep = WriteReport::new();
-    let mut leaves = Vec::new();
     let grouped = doc.to_grouped();
-    collect_leaves(&grouped, "$", &mut leaves);
-    for (path, v) in leaves {
-        if let Value::Float(x) = v
+    let mut path = String::from("$");
+    crate::formats::visit_grouped(&grouped, &mut path, &mut |visited, path| {
+        if let crate::formats::Visited::Node {
+            value: Value::Float(x),
+        } = visited
             && (x.is_nan() || x.is_infinite())
         {
             rep.add(
@@ -120,41 +127,8 @@ pub fn check_json(doc: &Doc) -> WriteReport {
                 Severity::Error,
             );
         }
-    }
+    });
     rep
-}
-
-/// Yield `(path, value)` for every scalar leaf in a grouped `Value`, mirroring
-/// Python's `_leaves` generator. `Doc::to_grouped()` output is already
-/// depth-checked (see this module's doc comment), so no depth guard is
-/// needed here -- only path bookkeeping for same-label array indices.
-fn collect_leaves<'a>(node: &'a Value, path: &str, out: &mut Vec<(String, &'a Value)>) {
-    match node {
-        Value::Object(map) => {
-            for (label, child) in map {
-                match child {
-                    Value::Array(items) => {
-                        for (i, item) in items.iter().enumerate() {
-                            let p = if i == 0 {
-                                format!("{path}.{label}")
-                            } else {
-                                format!("{path}.{label}[{i}]")
-                            };
-                            collect_leaves(item, &p, out);
-                        }
-                    }
-                    other => {
-                        collect_leaves(other, &format!("{path}.{label}"), out);
-                    }
-                }
-            }
-        }
-        // A grouped `Value` never has a bare top-level/standalone `Array`
-        // outside an object edge -- `to_grouped` only ever produces one
-        // under an `Object` entry (see `document.rs`) -- so this arm only
-        // ever matches a scalar leaf.
-        other => out.push((path.to_string(), other)),
-    }
 }
 
 /// Lenient-mode substitution: a NaN/Infinity leaf becomes `Null` so the

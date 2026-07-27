@@ -627,7 +627,19 @@ impl Schema {
     /// the first.
     pub fn validate(&self, cursor: &document::Cursor<'_>) -> ValidationResult {
         let mut res = ValidationResult::new();
-        self.conform(cursor, &FieldType::Ref(self.root.clone()), &mut res);
+        // `path` is the one path `String` this walk allocates up front (the
+        // root); every deeper edge reuses this same buffer (push a segment,
+        // recurse, truncate back) rather than allocating its own -- see
+        // issue #44. `res.add` still copies out a path when an error is
+        // actually recorded (`impl Into<String>` on a `&str` allocates), but
+        // that only happens for edges that actually produce a problem.
+        let mut path = cursor.path.clone();
+        self.conform(
+            cursor,
+            &FieldType::Ref(self.root.clone()),
+            &mut res,
+            &mut path,
+        );
         res
     }
 
@@ -635,21 +647,33 @@ impl Schema {
         self.validate(cursor).ok()
     }
 
-    fn conform(&self, cursor: &document::Cursor<'_>, ty: &FieldType, res: &mut ValidationResult) {
+    fn conform(
+        &self,
+        cursor: &document::Cursor<'_>,
+        ty: &FieldType,
+        res: &mut ValidationResult,
+        path: &mut String,
+    ) {
         match self.resolve(ty) {
             // `any` accepts every legal Document value unchecked -- there is
             // nothing to conform against, mirroring Python's
             // `_conform`: `if isinstance(d, AnyType): return`.
             Resolved::Any => {}
-            Resolved::Scalar(s) => self.conform_scalar(cursor, s, res),
-            Resolved::Record(r) => self.conform_record(cursor, r, res),
+            Resolved::Scalar(s) => self.conform_scalar(cursor, s, res, path),
+            Resolved::Record(r) => self.conform_record(cursor, r, res, path),
         }
     }
 
-    fn conform_scalar(&self, cursor: &document::Cursor<'_>, s: Scalar, res: &mut ValidationResult) {
+    fn conform_scalar(
+        &self,
+        cursor: &document::Cursor<'_>,
+        s: Scalar,
+        res: &mut ValidationResult,
+        path: &str,
+    ) {
         if !cursor.is_leaf() {
             res.add(
-                &cursor.path,
+                path,
                 format!("expected a {} value, got an object", s.kind().as_str()),
                 ErrorCode::ShapeMismatch,
             );
@@ -660,17 +684,13 @@ impl Schema {
             .expect("is_leaf() true implies value() succeeds");
         if matches!(v, DocScalar::Null) {
             if !s.is_nullable() {
-                res.add(
-                    &cursor.path,
-                    "null not allowed here",
-                    ErrorCode::NullNotAllowed,
-                );
+                res.add(path, "null not allowed here", ErrorCode::NullNotAllowed);
             }
             return;
         }
         if !matches_kind(v, s.kind()) {
             res.add(
-                &cursor.path,
+                path,
                 format!(
                     "expected {}, got {} ({})",
                     s.kind().as_str(),
@@ -682,36 +702,56 @@ impl Schema {
         }
     }
 
+    /// Walks every edge without building a path `String` for it up front
+    /// (issue #44): `path` is a single buffer shared across the whole
+    /// `validate` walk. Each edge pushes its own segment (`.label` or
+    /// `.label[i]`, via [`crate::report::push_child_path`]) onto `path`,
+    /// recurses/reports using that borrowed `&str`, then truncates `path`
+    /// back before moving to the next edge -- so a document with no
+    /// unexpected fields, cardinality problems, or type mismatches never
+    /// allocates a path `String` per edge, only the one `res.add` actually
+    /// needs to keep (via `impl Into<String>`) when a problem is found.
     fn conform_record(
         &self,
         cursor: &document::Cursor<'_>,
         rec: &Record,
         res: &mut ValidationResult,
+        path: &mut String,
     ) {
         if cursor.is_leaf() {
             res.add(
-                &cursor.path,
+                path.as_str(),
                 "expected an object, got a value",
                 ErrorCode::ShapeMismatch,
             );
             return;
         }
         let edges = cursor
-            .edges()
-            .expect("is_leaf() false implies edges() succeeds");
+            .raw_edges()
+            .expect("is_leaf() false implies raw_edges() succeeds");
         let mut counts: IndexMap<&str, usize> = IndexMap::new();
-        for (label, child) in &edges {
-            *counts.entry(label.as_str()).or_insert(0) += 1;
+        for (label, i, child_id) in &edges {
+            *counts.entry(*label).or_insert(0) += 1;
+            let base = path.len();
+            crate::report::push_child_path(path, label, *i);
             match rec.field(label) {
-                None => res.add(&child.path, "unexpected field", ErrorCode::UnexpectedField),
-                Some(f) => self.conform(child, &f.ty, res),
+                None => res.add(
+                    path.as_str(),
+                    "unexpected field",
+                    ErrorCode::UnexpectedField,
+                ),
+                Some(f) => {
+                    let child = cursor.seek(*child_id);
+                    self.conform(&child, &f.ty, res, path);
+                }
             }
+            path.truncate(base);
         }
         for f in rec.fields() {
             let c = counts.get(f.label.as_str()).copied().unwrap_or(0);
             if c < f.min || f.max.is_some_and(|max| c > max) {
                 res.add(
-                    &cursor.path,
+                    path.as_str(),
                     format!(
                         "field {:?} occurs {} time(s), expected {}",
                         f.label,

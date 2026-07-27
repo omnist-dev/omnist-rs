@@ -817,39 +817,20 @@ pub fn write_yaml(
 /// (NEL) string/label -- see this module's doc comment.
 pub fn check_yaml(doc: &Doc) -> WriteReport {
     let mut rep = WriteReport::new();
-    scan_nel(&doc.to_grouped(), "$", &mut rep);
-    rep
-}
-
-fn scan_nel(node: &Value, path: &str, rep: &mut WriteReport) {
-    match node {
-        Value::Object(map) => {
-            for (label, child) in map {
-                if label.contains('\u{0085}') {
-                    rep.add(
-                        format!("{path}.{label}"),
-                        "string.line-break-char",
-                        "label contains U+0085 (NEL); written double-quoted to round-trip \
-                         correctly",
-                        Severity::Warning,
-                    );
-                }
-                match child {
-                    Value::Array(items) => {
-                        for (i, item) in items.iter().enumerate() {
-                            let p = if i == 0 {
-                                format!("{path}.{label}")
-                            } else {
-                                format!("{path}.{label}[{i}]")
-                            };
-                            scan_nel(item, &p, rep);
-                        }
-                    }
-                    other => scan_nel(other, &format!("{path}.{label}"), rep),
-                }
-            }
+    let grouped = doc.to_grouped();
+    let mut path = String::from("$");
+    crate::formats::visit_grouped(&grouped, &mut path, &mut |visited, path| match visited {
+        crate::formats::Visited::Edge { label } if label.contains('\u{0085}') => {
+            rep.add(
+                path,
+                "string.line-break-char",
+                "label contains U+0085 (NEL); written double-quoted to round-trip correctly",
+                Severity::Warning,
+            );
         }
-        Value::Str(s) if s.contains('\u{0085}') => {
+        crate::formats::Visited::Node {
+            value: Value::Str(s),
+        } if s.contains('\u{0085}') => {
             rep.add(
                 path,
                 "string.line-break-char",
@@ -858,7 +839,8 @@ fn scan_nel(node: &Value, path: &str, rep: &mut WriteReport) {
             );
         }
         _ => {}
-    }
+    });
+    rep
 }
 
 fn indent(out: &mut String, level: usize) {

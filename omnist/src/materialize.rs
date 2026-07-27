@@ -75,7 +75,12 @@ pub fn materialize(node: &RawNode, schema: Option<&Schema>) -> Result<RawNode, M
     };
     let mut res = ValidationResult::new();
     let root_ty = FieldType::Ref(schema.root().clone());
-    let out = materialize_type(node, schema, &root_ty, "$", &mut res);
+    // One path `String`, allocated once and reused for the whole walk (push
+    // a segment per edge, recurse, truncate back) rather than one `format!`
+    // per edge regardless of whether that edge ever reports anything --
+    // see issue #44.
+    let mut path = String::from("$");
+    let out = materialize_type(node, schema, &root_ty, &mut path, &mut res);
     if !res.ok() {
         return Err(MaterializeError(res));
     }
@@ -86,7 +91,7 @@ fn materialize_type(
     node: &RawNode,
     schema: &Schema,
     ty: &FieldType,
-    path: &str,
+    path: &mut String,
     res: &mut ValidationResult,
 ) -> RawNode {
     match schema.resolve(ty) {
@@ -102,12 +107,12 @@ fn materialize_record(
     node: &RawNode,
     schema: &Schema,
     rec: &crate::schema::Record,
-    path: &str,
+    path: &mut String,
     res: &mut ValidationResult,
 ) -> RawNode {
     let RawNode::Edges(edges) = node else {
         res.add(
-            path,
+            path.as_str(),
             "expected an object, got a value",
             ErrorCode::ShapeMismatch,
         );
@@ -118,27 +123,29 @@ fn materialize_record(
     for (label, child) in edges {
         let i = *counts.entry(label.as_str()).or_insert(0);
         counts.insert(label.as_str(), i + 1);
-        let p = if i == 0 {
-            format!("{path}.{label}")
-        } else {
-            format!("{path}.{label}[{i}]")
-        };
+        let base = path.len();
+        crate::report::push_child_path(path, label, i);
         match rec.field(label) {
             None => {
-                res.add(&p, "unexpected field", ErrorCode::UnexpectedField);
+                res.add(
+                    path.as_str(),
+                    "unexpected field",
+                    ErrorCode::UnexpectedField,
+                );
                 out.push((label.clone(), child.clone()));
             }
             Some(f) => {
-                let m = materialize_type(child, schema, &f.ty, &p, res);
+                let m = materialize_type(child, schema, &f.ty, path, res);
                 out.push((label.clone(), m));
             }
         }
+        path.truncate(base);
     }
     for f in rec.fields() {
         let c = counts.get(f.label.as_str()).copied().unwrap_or(0);
         if c < f.min || f.max.is_some_and(|max| c > max) {
             res.add(
-                path,
+                path.as_str(),
                 format!(
                     "field {:?} occurs {} time(s), expected {}",
                     f.label,

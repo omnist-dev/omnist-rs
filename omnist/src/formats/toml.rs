@@ -414,7 +414,7 @@ fn strip_nulls(node: Value, path: &str, rep: &mut WriteReport) -> Value {
                 match child {
                     Value::Null => {
                         rep.add(
-                            format!("{path}.{label}"),
+                            crate::report::child_path(path, &label, 0),
                             "null.omitted",
                             "null value dropped (TOML has no null)",
                             Severity::Warning,
@@ -423,11 +423,7 @@ fn strip_nulls(node: Value, path: &str, rep: &mut WriteReport) -> Value {
                     Value::Array(items) => {
                         let mut kept = Vec::with_capacity(items.len());
                         for (i, item) in items.into_iter().enumerate() {
-                            let p = if i == 0 {
-                                format!("{path}.{label}")
-                            } else {
-                                format!("{path}.{label}[{i}]")
-                            };
+                            let p = crate::report::child_path(path, &label, i);
                             if matches!(item, Value::Null) {
                                 rep.add(
                                     p,
@@ -442,7 +438,7 @@ fn strip_nulls(node: Value, path: &str, rep: &mut WriteReport) -> Value {
                         out.insert(label, Value::Array(kept));
                     }
                     other => {
-                        let p = format!("{path}.{label}");
+                        let p = crate::report::child_path(path, &label, 0);
                         out.insert(label, strip_nulls(other, &p, rep));
                     }
                 }

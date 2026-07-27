@@ -156,9 +156,9 @@ use crate::error::{DocumentError, OmnistError, ParseError};
 use crate::formats::float_fmt;
 use crate::formats::textpos::line_col_bytes;
 use crate::report::{Severity, WriteReport};
+use indexmap::IndexMap;
 use quick_xml::Reader;
 use quick_xml::events::Event;
-use std::collections::HashMap;
 
 // ============================================================== Reader
 
@@ -482,15 +482,18 @@ fn scan_xml_into(node: &RawNode, path: &str, rep: &mut WriteReport) {
                 );
                 return;
             }
-            let mut counts: HashMap<String, usize> = HashMap::new();
+            // `IndexMap`, not `HashMap`: `ops/mod.rs`'s no-`HashMap`
+            // convention is for anything feeding canonical output, and
+            // while iteration order is never observed here (each entry is
+            // looked up by its own label), an ordered map keeps that
+            // determinism argument local instead of requiring the reader to
+            // re-derive it (issue #51).
+            let mut counts: IndexMap<&str, usize> = IndexMap::new();
             for (label, child) in edges {
-                let i = *counts.get(label).unwrap_or(&0);
-                counts.insert(label.clone(), i + 1);
-                let p = if i == 0 {
-                    format!("{path}.{label}")
-                } else {
-                    format!("{path}.{label}[{i}]")
-                };
+                let entry = counts.entry(label.as_str()).or_insert(0);
+                let i = *entry;
+                *entry += 1;
+                let p = crate::report::child_path(path, label, i);
                 if !is_valid_xml_name(label) {
                     rep.add(
                         p.clone(),
