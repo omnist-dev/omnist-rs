@@ -992,6 +992,15 @@ mod tests {
     }
 
     #[test]
+    fn non_table_root_is_a_write_error_even_with_a_report_supplied() {
+        let doc = doc_of(Value::Int(5));
+        let mut rep = WriteReport::new();
+        let err = write_toml(&doc, false, Some(&mut rep)).unwrap_err();
+        assert!(err.to_string().contains("top-level table"));
+        assert!(rep.is_empty());
+    }
+
+    #[test]
     fn empty_object_root_writes_empty_text() {
         let doc = doc_of(Value::Object(IndexMap::new()));
         let text = write_toml(&doc, false, None).unwrap();

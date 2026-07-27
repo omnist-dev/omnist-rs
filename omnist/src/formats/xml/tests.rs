@@ -352,6 +352,15 @@ fn write_rejects_a_multi_edge_root() {
     assert!(err.to_string().contains("exactly one document element"));
 }
 
+#[test]
+fn write_requires_exactly_one_top_level_edge_even_with_a_report_supplied() {
+    let doc = Doc::of(&crate::document::Value::Int(5)).unwrap();
+    let mut rep = crate::report::WriteReport::new();
+    let err = write_xml(&doc, false, Some(&mut rep)).unwrap_err();
+    assert!(err.to_string().contains("exactly one document element"));
+    assert!(rep.is_empty());
+}
+
 // ---------------------------------------------------------------------- write: shapes
 
 #[test]
