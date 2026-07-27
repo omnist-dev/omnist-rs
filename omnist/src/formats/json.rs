@@ -47,6 +47,7 @@ use crate::WriteError;
 use crate::document::{Doc, Value};
 use crate::error::{OmnistError, ParseError};
 use crate::formats::int_cap::{MAX_INT_DIGITS, out_of_range_message, over_cap_message};
+use crate::formats::textpos::line_col_bytes;
 use crate::report::{Severity, WriteReport};
 use indexmap::IndexMap;
 
@@ -303,30 +304,8 @@ impl<'a> Parser<'a> {
         Parser { text, n, pos: 0 }
     }
 
-    fn line_col(&self, pos: usize) -> (usize, usize) {
-        // Byte-offset line/col computation, matching `toml.rs`'s own
-        // `line_col` convention (counts `\n` *bytes*, which are always
-        // single-byte in UTF-8, so this is correct regardless of any
-        // multi-byte characters earlier in the text).
-        let bytes = self.text.as_bytes();
-        let end = pos.min(self.n);
-        let mut line = 1usize;
-        let mut last_nl: Option<usize> = None;
-        for (i, &b) in bytes[..end].iter().enumerate() {
-            if b == b'\n' {
-                line += 1;
-                last_nl = Some(i);
-            }
-        }
-        let col = match last_nl {
-            Some(i) => pos - i,
-            None => pos + 1,
-        };
-        (line, col)
-    }
-
     fn error_at(&self, pos: usize, msg: String) -> ParseError {
-        let (line, col) = self.line_col(pos);
+        let (line, col) = line_col_bytes(self.text, pos);
         ParseError::new(line, col, format!("invalid JSON: {msg}"))
     }
 

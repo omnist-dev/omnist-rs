@@ -208,6 +208,7 @@ use crate::WriteError;
 use crate::document::{Doc, Value};
 use crate::error::{OmnistError, ParseError};
 use crate::formats::int_cap::{MAX_INT_DIGITS, out_of_range_message, over_cap_message};
+use crate::formats::textpos::line_col_bytes;
 use crate::report::{Severity, WriteReport};
 use crate::schema::{is_iso_date, is_iso_datetime, is_iso_time};
 use indexmap::IndexMap;
@@ -252,7 +253,7 @@ fn toml_parse_error(text: &str, e: &toml_edit::TomlError) -> ParseError {
     if e.message().contains("overflow") {
         return toml_overflow_error(text, span);
     }
-    let (line, col) = line_col(text, span.start);
+    let (line, col) = line_col_bytes(text, span.start);
     ParseError::new(line, col, format!("invalid TOML: {}", e.message()))
 }
 
@@ -267,7 +268,7 @@ fn toml_parse_error(text: &str, e: &toml_edit::TomlError) -> ParseError {
 /// leaves hex/octal/binary literals uncapped (a disclosed divergence,
 /// not a parity claim).
 fn toml_overflow_error(text: &str, span: std::ops::Range<usize>) -> ParseError {
-    let (line, col) = line_col(text, span.start);
+    let (line, col) = line_col_bytes(text, span.start);
     let raw = &text[span];
     let digits: String = raw.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
     let digit_count = digits
@@ -278,23 +279,6 @@ fn toml_overflow_error(text: &str, span: std::ops::Range<usize>) -> ParseError {
         return ParseError::new(line, col, over_cap_message("invalid TOML: ", digit_count));
     }
     ParseError::new(line, col, out_of_range_message("invalid TOML: ", raw))
-}
-
-/// 1-based (line, column) of byte offset `pos` in `text`.
-fn line_col(text: &str, pos: usize) -> (usize, usize) {
-    let mut line = 1usize;
-    let mut last_nl: Option<usize> = None;
-    for (i, b) in text.as_bytes()[..pos.min(text.len())].iter().enumerate() {
-        if *b == b'\n' {
-            line += 1;
-            last_nl = Some(i);
-        }
-    }
-    let col = match last_nl {
-        Some(i) => pos - i,
-        None => pos + 1,
-    };
-    (line, col)
 }
 
 /// Converts a `toml_edit` table (top-level document or inline table) into a

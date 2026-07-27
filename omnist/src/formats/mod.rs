@@ -15,6 +15,7 @@
 
 pub(crate) mod int_cap;
 pub mod json;
+pub(crate) mod textpos;
 pub mod toml;
 pub mod xml;
 pub mod yaml;
