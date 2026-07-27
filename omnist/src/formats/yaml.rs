@@ -104,6 +104,51 @@ use indexmap::IndexMap;
 /// this module's doc comment.
 const MAX_INT_DIGITS: usize = 4300;
 
+/// Bound on the total number of [`Raw`] tree nodes materialized while
+/// rebuilding the event stream (issue #42, "YAML alias/anchor expansion
+/// amplification"): every ordinary node counts once, but a `*alias`
+/// reference counts the *entire size* of the subtree it clones, so a chain
+/// of anchors each referencing the previous generation's alias multiple
+/// times ("billion laughs") is rejected by total materialized size long
+/// before `resolve_merges`'s depth guard (`crate::document::MAX_DEPTH`,
+/// which bounds nesting *depth*, not fan-out) would ever see it -- this
+/// attack reaches enormous size at *shallow*, constant-per-generation
+/// depth, which is exactly what the depth guard cannot catch.
+///
+/// Python's reference implementation (`~/dev/omnist/omnist/formats.py`'s
+/// `read_yaml`) calls PyYAML's `yaml.safe_load` directly with no such
+/// guard -- live-confirmed vulnerable to the identical pattern (see the
+/// upstream issue filed against `omnist-dev/omnist` for the Python side),
+/// so there is no existing Python limit to port here. 100,000 nodes is
+/// generous for any legitimate document (even a large real-world config
+/// easily fits in a few thousand nodes) while still keeping the *cost of
+/// detecting an attack* small: this guard's charge-before-clone still has
+/// to walk (and, once approved, clone) whatever it charges, so the ceiling
+/// itself bounds the worst-case rejection cost, not just the worst-case
+/// accepted-document size -- a 1,000,000 ceiling let a debug build's
+/// unoptimized recursive clone of the final, still-materialized generation
+/// take upwards of ten seconds; 100,000 is a round, documented ceiling
+/// with the same generous headroom over real documents while keeping that
+/// worst-case rejection well under a second even in a debug build.
+const MAX_MATERIALIZED_NODES: usize = 100_000;
+
+/// Counts every [`Raw`] node in `node`'s subtree, including `node` itself --
+/// used to charge an alias reference for the full size of the subtree it
+/// clones, not just "one node", so repeated aliasing of a large anchor is
+/// charged its real, amplified cost.
+fn count_nodes(node: &Raw) -> usize {
+    match node {
+        Raw::Scalar(..) => 1,
+        Raw::Sequence(items) => 1 + items.iter().map(count_nodes).sum::<usize>(),
+        Raw::Mapping(entries) => {
+            1 + entries
+                .iter()
+                .map(|(k, v)| count_nodes(k) + count_nodes(v))
+                .sum::<usize>()
+        }
+    }
+}
+
 // ============================================================== Reader
 
 /// The raw shape `yaml_rust2`'s event stream is rebuilt into: a scalar with
@@ -128,6 +173,13 @@ struct Builder {
     key_stack: Vec<Option<Raw>>,
     anchor_map: HashMap<usize, Raw>,
     docs: Vec<Raw>,
+    /// Running total of [`Raw`] nodes materialized so far -- see
+    /// [`MAX_MATERIALIZED_NODES`].
+    node_count: usize,
+    /// Set once [`MAX_MATERIALIZED_NODES`] is exceeded; further events are
+    /// ignored (no more work is done building an already-rejected tree) and
+    /// this is surfaced as a [`ParseError`] once parsing finishes.
+    error: Option<ParseError>,
 }
 
 impl Builder {
@@ -137,7 +189,35 @@ impl Builder {
             key_stack: Vec::new(),
             anchor_map: HashMap::new(),
             docs: Vec::new(),
+            node_count: 0,
+            error: None,
         }
+    }
+
+    /// Charges `n` newly-materialized nodes against the running total,
+    /// setting `self.error` (if not already set) the first time the total
+    /// exceeds [`MAX_MATERIALIZED_NODES`]. Returns `true` if the caller
+    /// should proceed (still under the limit), `false` if it tripped (or
+    /// had already tripped) and should skip the work it was about to do.
+    fn charge(&mut self, n: usize, mark: Marker) -> bool {
+        if self.error.is_some() {
+            return false;
+        }
+        self.node_count = self.node_count.saturating_add(n);
+        if self.node_count > MAX_MATERIALIZED_NODES {
+            self.error = Some(ParseError::new(
+                mark.line(),
+                mark.col() + 1,
+                format!(
+                    "invalid YAML: document materializes more than \
+                     {MAX_MATERIALIZED_NODES} nodes (security: unbounded anchor/alias \
+                     expansion can amplify a small document into an enormous tree, \
+                     independent of nesting depth)"
+                ),
+            ));
+            return false;
+        }
+        true
     }
 
     fn insert(&mut self, node: Raw, aid: usize, _mark: Marker) {
@@ -181,6 +261,13 @@ impl Builder {
     /// structurally-dead error branch, matching `json.rs`'s identical
     /// surrogate-pair `.expect()` precedent.
     fn on_event_impl(&mut self, ev: Event, mark: Marker) {
+        // Once tripped, stop doing any further tree-building work -- the
+        // document is already rejected, and continuing to clone/insert
+        // subsequent alias references would just keep paying the same
+        // amplified cost this guard exists to avoid.
+        if self.error.is_some() {
+            return;
+        }
         match ev {
             Event::Nothing | Event::StreamStart | Event::StreamEnd | Event::DocumentStart => {}
             Event::DocumentEnd => match self.doc_stack.len() {
@@ -190,12 +277,20 @@ impl Builder {
                 1 => self.docs.push(self.doc_stack.pop().unwrap().0),
                 _ => unreachable!("a single document's stack never nests more than one root"),
             },
-            Event::SequenceStart(aid, _) => self.doc_stack.push((Raw::Sequence(Vec::new()), aid)),
+            Event::SequenceStart(aid, _) => {
+                if !self.charge(1, mark) {
+                    return;
+                }
+                self.doc_stack.push((Raw::Sequence(Vec::new()), aid));
+            }
             Event::SequenceEnd => {
                 let (node, aid) = self.doc_stack.pop().expect("matched by SequenceStart");
                 self.insert(node, aid, mark);
             }
             Event::MappingStart(aid, _) => {
+                if !self.charge(1, mark) {
+                    return;
+                }
                 self.doc_stack.push((Raw::Mapping(Vec::new()), aid));
                 self.key_stack.push(None);
             }
@@ -205,13 +300,33 @@ impl Builder {
                 self.insert(node, aid, mark);
             }
             Event::Scalar(v, style, aid, tag) => {
+                if !self.charge(1, mark) {
+                    return;
+                }
                 self.insert(Raw::Scalar(v, style, tag), aid, mark);
             }
             Event::Alias(id) => {
-                let node = self.anchor_map.get(&id).cloned().expect(
-                    "yaml_rust2's scanner rejects an alias to an undefined anchor before this \
-                     receiver ever runs -- see on_event_impl's doc comment",
-                );
+                // Count the *whole subtree's* size before cloning it -- an
+                // alias amplifies by the size of what it references, not
+                // by one node, so charging anything less would let the
+                // exponential "billion laughs" pattern through uncounted.
+                // The borrow of `anchor_map` ends with this block, so
+                // `self.charge` below can take `&mut self` freely.
+                let n = {
+                    let referenced = self.anchor_map.get(&id).expect(
+                        "yaml_rust2's scanner rejects an alias to an undefined anchor before \
+                         this receiver ever runs -- see on_event_impl's doc comment",
+                    );
+                    count_nodes(referenced)
+                };
+                if !self.charge(n, mark) {
+                    return;
+                }
+                let node = self
+                    .anchor_map
+                    .get(&id)
+                    .cloned()
+                    .expect("checked above: the anchor_map entry exists for this id");
                 self.insert(node, 0, mark);
             }
         }
@@ -245,6 +360,9 @@ pub fn read_yaml(text: &str) -> Result<Doc, OmnistError> {
     parser
         .load(&mut builder, true)
         .map_err(|e| scan_error_to_parse_error(&e))?;
+    if let Some(e) = builder.error {
+        return Err(e.into());
+    }
     if builder.docs.len() > 1 {
         return Err(ParseError::new(
             1,
@@ -1338,6 +1456,74 @@ mod tests {
         assert!(matches!(err, OmnistError::Parse(_)), "got {err:?}");
     }
 
+    /// Issue #42: builds the classic "billion laughs" pattern -- each
+    /// generation's anchor references the previous generation's alias
+    /// twice, so after `n` generations there are `2^n` leaf scalars
+    /// materialized from a source document only `n` lines long and only
+    /// `n` levels deep (well under `crate::document::MAX_DEPTH == 200`).
+    /// 24 generations reaches `2^24` (16,777,216) nodes -- comfortably over
+    /// `MAX_MATERIALIZED_NODES` (100,000) so the guard trips partway
+    /// through, and small enough that even the *unguarded* clone-everything
+    /// behavior finishes (rather than hanging or exhausting memory) within
+    /// this test's patience, which is what let this be captured red before
+    /// the fix: before the fix this took over 4 seconds and allocated a
+    /// many-million-node tree; after the fix it is rejected as a clean
+    /// `ParseError` in well under a second (a debug build still has to
+    /// walk/clone the last, still-under-the-ceiling generation, so this
+    /// is not sub-millisecond, but it is bounded by the ceiling rather
+    /// than by the attack's exponent), well before the full tree is
+    /// ever materialized.
+    fn billion_laughs_yaml(generations: usize) -> String {
+        let mut out = String::new();
+        out.push_str("a0: &a0 [x, x]\n");
+        for i in 1..generations {
+            out.push_str(&format!("a{i}: &a{i} [*a{prev}, *a{prev}]\n", prev = i - 1));
+        }
+        out
+    }
+
+    #[test]
+    fn billion_laughs_alias_amplification_is_rejected_fast_issue_42() {
+        let text = billion_laughs_yaml(24);
+        // A source document of only 24 short lines.
+        assert!(text.len() < 1000, "source text should be tiny: {text:?}");
+
+        let start = std::time::Instant::now();
+        let err = read_yaml(&text).unwrap_err();
+        let elapsed = start.elapsed();
+
+        assert!(
+            matches!(&err, OmnistError::Parse(e) if e.message.contains("materializes more than")
+                && e.message.contains("100000")),
+            "expected a materialized-node-limit ParseError, got {err:?}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "fix should reject the bomb almost immediately, took {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn moderate_legitimate_nested_alias_reuse_still_works() {
+        // A handful of anchors reused a few times each -- ordinary,
+        // legitimate YAML anchor/alias usage (e.g. shared defaults), well
+        // within any reasonable node-count limit. Must not be affected by
+        // the issue #42 fix.
+        let doc = read_yaml(
+            "base: &base\n  x: 1\n  y: 2\na: *base\nb: *base\nc: *base\nlist: &list [1, 2, 3]\nd: *list\ne: *list\n",
+        )
+        .unwrap();
+        let root = doc.root();
+        for label in ["a", "b", "c"] {
+            let node = root.get_one(label).unwrap();
+            assert_eq!(*node.get_one("x").unwrap().value().unwrap(), Scalar::Int(1));
+            assert_eq!(*node.get_one("y").unwrap().value().unwrap(), Scalar::Int(2));
+        }
+        for label in ["d", "e"] {
+            assert_eq!(root.get(label).len(), 3);
+        }
+    }
+
     // ---------------------------------------------------------- reader: merge keys
 
     #[test]
@@ -1979,6 +2165,84 @@ mod tests {
         // documented invariant on purpose.
         let mut b = Builder::new();
         b.on_event_impl(Event::Alias(999), test_marker());
+    }
+
+    // -------------------------------------------------- coverage: issue #42 node-count guard
+
+    /// Calling `charge` directly once `self.error` is already `Some(..)`
+    /// exercises the short-circuit at the very top of `charge` (returns
+    /// `false` without touching `node_count` or overwriting `error`) --
+    /// unreachable through `on_event_impl` alone, since its own top-of-
+    /// function `self.error.is_some()` check means `charge` is never
+    /// invoked a second time once tripped in the normal event-driven path.
+    #[test]
+    fn charge_after_already_tripped_is_a_pure_no_op() {
+        let mut b = Builder::new();
+        assert!(!b.charge(MAX_MATERIALIZED_NODES + 1, test_marker()));
+        let first_error = format!("{:?}", b.error);
+        let count_after_first_trip = b.node_count;
+        assert!(!b.charge(1, test_marker()));
+        assert_eq!(
+            format!("{:?}", b.error),
+            first_error,
+            "error must not change"
+        );
+        assert_eq!(
+            b.node_count, count_after_first_trip,
+            "node_count must not change once already tripped"
+        );
+    }
+
+    /// Drives the guard to trip from `Event::SequenceStart`'s `charge` call
+    /// specifically (as opposed to the size-charging `Event::Alias` path
+    /// the top-level `billion_laughs_...` integration test exercises),
+    /// confirming every one of the three plain-node `charge` call sites is
+    /// independently reachable.
+    #[test]
+    fn sequence_start_can_itself_trip_the_node_count_guard() {
+        let mut b = Builder::new();
+        b.node_count = MAX_MATERIALIZED_NODES;
+        b.on_event_impl(Event::SequenceStart(0, None), test_marker());
+        assert!(
+            matches!(&b.error, Some(e) if e.message.contains("materializes more than")),
+            "got {:?}",
+            b.error
+        );
+        // The doc_stack push it guards must not have happened.
+        assert!(b.doc_stack.is_empty());
+    }
+
+    /// Same as above, for `Event::MappingStart`.
+    #[test]
+    fn mapping_start_can_itself_trip_the_node_count_guard() {
+        let mut b = Builder::new();
+        b.node_count = MAX_MATERIALIZED_NODES;
+        b.on_event_impl(Event::MappingStart(0, None), test_marker());
+        assert!(
+            matches!(&b.error, Some(e) if e.message.contains("materializes more than")),
+            "got {:?}",
+            b.error
+        );
+        assert!(b.doc_stack.is_empty());
+        assert!(b.key_stack.is_empty());
+    }
+
+    /// Same as above, for `Event::Scalar`.
+    #[test]
+    fn scalar_can_itself_trip_the_node_count_guard() {
+        let mut b = Builder::new();
+        b.node_count = MAX_MATERIALIZED_NODES;
+        b.on_event_impl(
+            Event::Scalar("x".to_string(), TScalarStyle::Plain, 0, None),
+            test_marker(),
+        );
+        assert!(
+            matches!(&b.error, Some(e) if e.message.contains("materializes more than")),
+            "got {:?}",
+            b.error
+        );
+        // The insert it guards must not have happened.
+        assert!(b.doc_stack.is_empty());
     }
 
     // ---------------------------------------------------------- coverage: writer edge cases
