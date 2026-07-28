@@ -986,3 +986,139 @@ fn missing_separator_error_names_a_quoted_string_token() {
     assert!(err.message.contains("expected a separator"));
     assert!(err.message.contains("\"b\""));
 }
+
+// -- issue #75: capitalized / quoted-label boundary cases for the reserved
+// spellings (nan/inf/-inf, and null/true/false for symmetry with the other
+// two ports) ------------------------------------------------------------
+
+#[test]
+fn capitalized_null_true_false_is_a_bare_ident_not_the_keyword() {
+    // `RESERVED` (parser.rs) is matched case-sensitively, mirroring Python's
+    // `test_capitalized_nan_is_bare_ident_not_keyword` / TS's "capitalized
+    // NaN is a bare ident, not the keyword": a capitalized spelling of a
+    // reserved word is just an ordinary identifier, valid as a bare label
+    // and round-tripping like any other bare ident -- never mistaken for
+    // the lowercase keyword it capitalizes.
+    for word in ["Null", "True", "False", "NULL", "TRUE", "FALSE"] {
+        let raw = RawNode::Edges(vec![(
+            word.to_string(),
+            RawNode::Leaf(crate::document::Scalar::Int(1)),
+        )]);
+        let text = write_oml(&raw, 2).unwrap();
+        assert_eq!(
+            text,
+            format!("{word}: 1"),
+            "expected a bare unquoted label for {word:?}"
+        );
+        let parsed = read_oml(&text).unwrap();
+        assert_eq!(parsed, raw, "round trip mismatch for {word:?}");
+
+        // Also valid, and rejected the same way as any other unquoted
+        // string, when used as a *value* -- a capitalized spelling is not
+        // recognized as the `null`/`true`/`false` literal.
+        let err = read_oml(&format!("a: {word}")).unwrap_err();
+        assert!(
+            err.message.contains("bare word"),
+            "expected a bare-word error for value {word:?}, got {err:?}"
+        );
+    }
+}
+
+#[test]
+fn capitalized_nan_inf_is_a_bare_ident_not_the_keyword() {
+    // Same case-sensitivity property as above, but for `nan`/`inf`: the
+    // scanner's `matches_word` (scanner.rs) is a byte-exact ASCII compare,
+    // so `NAN`/`INF`/`NaN`/`Inf` never take the float-keyword scan path at
+    // all -- they fall through to ordinary identifier scanning, same as
+    // any other bare word.
+    for word in ["NAN", "INF", "NaN", "Inf"] {
+        let raw = RawNode::Edges(vec![(
+            word.to_string(),
+            RawNode::Leaf(crate::document::Scalar::Int(1)),
+        )]);
+        let text = write_oml(&raw, 2).unwrap();
+        assert_eq!(
+            text,
+            format!("{word}: 1"),
+            "expected a bare unquoted label for {word:?}"
+        );
+        let parsed = read_oml(&text).unwrap();
+        assert_eq!(parsed, raw, "round trip mismatch for {word:?}");
+
+        // As a value, a capitalized spelling is not recognized as the
+        // nan/inf float keyword -- it's an unquoted bare word, rejected
+        // the same way any other stray identifier value would be.
+        let err = read_oml(&format!("a: {word}")).unwrap_err();
+        assert!(
+            err.message.contains("bare word"),
+            "expected a bare-word error for value {word:?}, got {err:?}"
+        );
+    }
+
+    // `-INF`/`-NaN`/`-Inf`: unlike `NAN`/`INF`, a leading `-` is never part
+    // of identifier scanning (scan_minus owns it), and scan_minus only
+    // recognizes the exact lowercase `-inf` spelling before falling back to
+    // "next char must be a digit" -- so any capitalized `-`-prefixed
+    // spelling is a scan-level stray character, not a bare word and not a
+    // valid label token at all (it can never even reach parse_label).
+    for word in ["-INF", "-NaN", "-Inf"] {
+        let err = read_oml(&format!("a: {word}")).unwrap_err();
+        assert!(
+            err.message.contains("stray character '-'"),
+            "expected a stray-character error for {word:?}, got {err:?}"
+        );
+    }
+}
+
+#[test]
+fn bare_lowercase_nan_inf_neg_inf_cannot_be_a_label() {
+    // Companion to `reserved_word_cannot_be_a_bare_label`: unlike
+    // `null`/`true`/`false`, lowercase `nan`/`inf`/`-inf` are *not* in the
+    // parser's `RESERVED` list -- the scanner intercepts them as
+    // `TokKind::Float` before general identifier scanning ever runs (see
+    // `scan_word`/`scan_minus`), so `parse_label` never sees them as an
+    // `Ident` and the "reserved word" branch never fires for them. They're
+    // still correctly rejected as a label, just via the "expected a label"
+    // branch instead -- a real, if subtle, divergence from the
+    // null/true/false error message that's worth pinning down explicitly.
+    for (word, expected_fragment) in [
+        ("nan", "expected a label"),
+        ("inf", "expected a label"),
+        ("-inf", "expected a label"),
+    ] {
+        let err = read_oml(&format!("a: {{ {word}: 1 }}")).unwrap_err();
+        assert!(
+            err.message.contains(expected_fragment),
+            "expected {expected_fragment:?} for label {word:?}, got {err:?}"
+        );
+    }
+}
+
+#[test]
+fn quoted_reserved_spelling_is_a_valid_label_and_round_trips() {
+    // Grammar-doc conformance, mirroring Python's
+    // `test_oml_ex9_nan_is_a_number_token_never_a_label` /
+    // `test_oml_ex10_quoted_nan_is_a_valid_label` and TS's parametrized
+    // reserved-spelling-as-a-label test: quoting any of the reserved
+    // spellings -- the null/true/false keywords as well as the nan/inf/-inf
+    // number spellings -- turns it into a perfectly ordinary string label,
+    // which must round-trip through read -> write -> read unchanged.
+    for word in ["null", "true", "false", "nan", "inf", "-inf"] {
+        let raw = RawNode::Edges(vec![(
+            word.to_string(),
+            RawNode::Leaf(crate::document::Scalar::Int(1)),
+        )]);
+        let text = write_oml(&raw, 2).unwrap();
+        // None of these are valid bare labels (either RESERVED, or -- for
+        // nan/inf -- explicitly excluded in `is_bare_label`, or -- for
+        // -inf -- disqualified by the leading `-`), so the writer must
+        // quote every one of them.
+        assert_eq!(
+            text,
+            format!("{:?}: 1", word),
+            "expected a quoted label for {word:?}"
+        );
+        let parsed = read_oml(&text).unwrap();
+        assert_eq!(parsed, raw, "round trip mismatch for quoted {word:?}");
+    }
+}
