@@ -574,11 +574,36 @@ pub struct Schema {
 impl Schema {
     /// Builds a schema and immediately checks every `Ref` (the root's, and
     /// every field's) resolves within `env` -- mirrors Python's
-    /// `Schema.__init__` calling `check_refs()` unconditionally.
+    /// `Schema.__init__` calling `check_refs()` unconditionally. Also
+    /// enforces S-3 (omnist-spec docs/03-schema-model.md): no record may be
+    /// named after a scalar keyword or `any`, since a bare name in type
+    /// position always resolves to the builtin first and such a record could
+    /// never be referenced. `osd.rs`'s parser already enforces this; this is
+    /// the same check at the builder-API surface (omnist-rs#76).
     pub fn new(root: Ref, env: IndexMap<String, Record>) -> Result<Self, SchemaError> {
+        Self::check_reserved_names(&env)?;
         let schema = Schema { root, env };
         schema.check_refs()?;
         Ok(schema)
+    }
+
+    fn check_reserved_names(env: &IndexMap<String, Record>) -> Result<(), SchemaError> {
+        for name in env.keys() {
+            if name == "any" {
+                return Err(SchemaError::new(format!(
+                    "'any' is a reserved type name and cannot be used as a record name \
+                     (record {name:?})"
+                )));
+            }
+            if ScalarKind::ALL.iter().any(|k| k.as_str() == name) {
+                return Err(SchemaError::new(format!(
+                    "{name:?} is a reserved scalar name; a record cannot be defined with \
+                     this name, or it could never be referenced (a bare name in a type \
+                     position always means the builtin scalar)"
+                )));
+            }
+        }
+        Ok(())
     }
 
     pub fn root(&self) -> &Ref {
@@ -899,6 +924,35 @@ mod tests {
         let err = Schema::new(Ref::new("Root"), env).unwrap_err();
         assert!(err.to_string().contains("unknown type"));
         assert!(err.to_string().contains("Missing"));
+    }
+
+    #[test]
+    fn schema_rejects_a_record_named_after_a_scalar_keyword() {
+        // S-3 (omnist-spec docs/03-schema-model.md): a record named "string"
+        // could never be referenced, since a bare name in type position
+        // always resolves to the builtin scalar first. omnist-rs#76.
+        let mut env = Map::new();
+        env.insert(
+            "Root".to_string(),
+            Record::new(vec![Field::required("x", STRING).unwrap()]).unwrap(),
+        );
+        env.insert("string".to_string(), Record::new(vec![]).unwrap());
+        let err = Schema::new(Ref::new("Root"), env).unwrap_err();
+        assert!(err.to_string().contains("reserved scalar name"));
+        assert!(err.to_string().contains("\"string\""));
+    }
+
+    #[test]
+    fn schema_rejects_a_record_named_any() {
+        // S-3, the `any` half of the same constraint. omnist-rs#76.
+        let mut env = Map::new();
+        env.insert(
+            "Root".to_string(),
+            Record::new(vec![Field::required("x", STRING).unwrap()]).unwrap(),
+        );
+        env.insert("any".to_string(), Record::new(vec![]).unwrap());
+        let err = Schema::new(Ref::new("Root"), env).unwrap_err();
+        assert!(err.to_string().contains("reserved type name"));
     }
 
     #[test]

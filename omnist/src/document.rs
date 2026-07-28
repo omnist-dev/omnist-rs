@@ -41,6 +41,16 @@ use crate::error::DocumentError;
 /// Maximum nesting depth for a Document node (matches Python's `_MAX_DEPTH`).
 pub const MAX_DEPTH: usize = 200;
 
+/// Maximum total node count for a single Document (matches the reference
+/// default in omnist-spec docs/02-document-model.md Sec2.4: a depth limit
+/// alone doesn't bound a shallow-but-enormous document, e.g. a million
+/// sibling edges at depth 1). Enforced once, in [`push`], the single arena
+/// choke point every construction path (`build_node`, `push_raw`) funnels
+/// through -- see omnist-rs#78: previously the only node-count guard in
+/// this crate was scoped narrowly to `formats::yaml`'s anchor/alias
+/// amplification defense, leaving every other construction path unbounded.
+pub const MAX_NODES: usize = 1_000_000;
+
 /// An index into a [`Doc`]'s arena. Opaque outside this module's crate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId(usize);
@@ -219,7 +229,7 @@ fn build_node(
                     edges.push((k.clone(), cid));
                 }
             }
-            Ok(push(arena, NodeData::Internal(edges), depth))
+            push(arena, NodeData::Internal(edges), depth, path)
         }
         Value::Array(_) => Err(DocumentError::new(
             path,
@@ -230,18 +240,31 @@ fn build_node(
         // catch-all) so every arm is a real, exhaustive possibility --
         // no `Value::Array(_) | Value::Object(_) => unreachable!()` arm
         // to justify, since those two variants are already handled above.
-        Value::Null => Ok(push(arena, NodeData::Leaf(Scalar::Null), depth)),
-        Value::Bool(b) => Ok(push(arena, NodeData::Leaf(Scalar::Bool(*b)), depth)),
-        Value::Int(i) => Ok(push(arena, NodeData::Leaf(Scalar::Int(*i)), depth)),
-        Value::Float(x) => Ok(push(arena, NodeData::Leaf(Scalar::Float(*x)), depth)),
-        Value::Str(s) => Ok(push(arena, NodeData::Leaf(Scalar::Str(s.clone())), depth)),
+        Value::Null => push(arena, NodeData::Leaf(Scalar::Null), depth, path),
+        Value::Bool(b) => push(arena, NodeData::Leaf(Scalar::Bool(*b)), depth, path),
+        Value::Int(i) => push(arena, NodeData::Leaf(Scalar::Int(*i)), depth, path),
+        Value::Float(x) => push(arena, NodeData::Leaf(Scalar::Float(*x)), depth, path),
+        Value::Str(s) => push(arena, NodeData::Leaf(Scalar::Str(s.clone())), depth, path),
     }
 }
 
-fn push(arena: &mut Vec<Entry>, data: NodeData, depth: usize) -> NodeId {
+/// The shared node-count guard, checked once here since every construction
+/// path (`build_node`, `push_raw`) funnels through this single function.
+fn push(
+    arena: &mut Vec<Entry>,
+    data: NodeData,
+    depth: usize,
+    path: &str,
+) -> Result<NodeId, DocumentError> {
+    if arena.len() >= MAX_NODES {
+        return Err(DocumentError::new(
+            path,
+            format!("document exceeds the maximum node count ({MAX_NODES})"),
+        ));
+    }
     let id = NodeId(arena.len());
     arena.push(Entry { data, depth });
-    id
+    Ok(id)
 }
 
 /// A guarded handle on a Document tree: an arena of nodes plus the root.
@@ -688,14 +711,14 @@ fn push_raw(arena: &mut Vec<Entry>, node: RawNode, depth: usize) -> Result<NodeI
     // path for depth violations anyway (see `check_write_depth`).
     check_write_depth(depth, "$")?;
     match node {
-        RawNode::Leaf(s) => Ok(push(arena, NodeData::Leaf(s), depth)),
+        RawNode::Leaf(s) => push(arena, NodeData::Leaf(s), depth, "$"),
         RawNode::Edges(edges) => {
             let mut out = Vec::with_capacity(edges.len());
             for (label, child) in edges {
                 let cid = push_raw(arena, child, depth + 1)?;
                 out.push((label, cid));
             }
-            Ok(push(arena, NodeData::Internal(out), depth))
+            push(arena, NodeData::Internal(out), depth, "$")
         }
     }
 }
@@ -792,6 +815,32 @@ mod tests {
         let v = nest(MAX_DEPTH + 1);
         let err = Doc::of(&v).unwrap_err();
         assert!(err.message.contains("maximum depth"));
+    }
+
+    // -- node-count guard: max-nodes boundary (omnist-rs#78) -------------
+    //
+    // A shallow document can still be enormous -- depth alone doesn't bound
+    // total memory, e.g. a single label repeated a million times is depth 1.
+    // `wide(n)` builds `{"a": [0, 0, ..., 0]}` with `n` array elements, for
+    // a total node count of `n + 1` (the root object, plus one leaf per
+    // array element -- the array itself desugars into repeated edges, not
+    // its own node).
+
+    fn wide(n: usize) -> Value {
+        obj(&[("a", Value::Array(vec![Value::Int(0); n]))])
+    }
+
+    #[test]
+    fn node_guard_accepts_exactly_max_nodes() {
+        let v = wide(MAX_NODES - 1);
+        assert!(Doc::of(&v).is_ok());
+    }
+
+    #[test]
+    fn node_guard_rejects_one_past_max_nodes() {
+        let v = wide(MAX_NODES);
+        let err = Doc::of(&v).unwrap_err();
+        assert!(err.message.contains("maximum node count"));
     }
 
     #[test]
