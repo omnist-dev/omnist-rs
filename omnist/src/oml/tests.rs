@@ -303,6 +303,42 @@ fn reserved_word_cannot_be_a_bare_label() {
     assert!(err.message.contains("reserved word"));
 }
 
+// issue #75: capitalized/mixed-case spellings of the reserved words are
+// bare idents, not the keyword -- `matches_word` compares byte-for-byte
+// (see scanner.rs), so only the exact lowercase spelling is recognized.
+// A bare ident used as a *value* isn't a valid token on its own (only
+// null/true/false/nan/inf/-inf are), so it surfaces as a "bare word" error
+// -- mirroring Python's `test_capitalized_nan_is_bare_ident_not_keyword`
+// and the TS port's equivalent case.
+#[test]
+fn capitalized_reserved_words_are_bare_idents_not_keywords() {
+    for word in ["NAN", "NaN", "INF", "Inf", "NULL", "Null", "TRUE", "False"] {
+        let src = format!("a: {word}");
+        let err =
+            read_oml(&src).expect_err(&format!("expected {word:?} to be rejected as a bare word"));
+        assert!(
+            err.message.contains("bare word"),
+            "{word:?}: expected a bare-word error, got {:?}",
+            err.message
+        );
+    }
+}
+
+// issue #75: `nan`/`inf`/`-inf` (and the other reserved words) are valid
+// field labels once quoted -- `is_bare_label` explicitly excludes them
+// from ever being written unquoted (writer.rs), and a quoted string is
+// always a valid label on read, so these round-trip exactly like any
+// other label. Mirrors Python's grammar-doc conformance tests
+// (`test_oml_ex9_nan_is_a_number_token_never_a_label` /
+// `test_oml_ex10_quoted_nan_is_a_valid_label`) and the TS port's
+// parametrized "-inf"/"nan"/"inf"-as-a-label test.
+#[test]
+fn quoted_reserved_words_are_valid_labels_and_round_trip() {
+    for label in ["nan", "inf", "-inf", "null", "true", "false"] {
+        roundtrip_value(&obj(&[(label, Value::Int(1))]));
+    }
+}
+
 #[test]
 fn invalid_date_reports_a_clear_error() {
     let err = read_oml("a: 2024-02-30").unwrap_err();
