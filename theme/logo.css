@@ -1,0 +1,16 @@
+.menu-title {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.menu-title::before {
+    content: "";
+    display: inline-block;
+    width: 1.5rem;
+    height: 1.5rem;
+    background-image: url("../assets/logo.svg");
+    background-size: contain;
+    background-repeat: no-repeat;
+    flex-shrink: 0;
+}

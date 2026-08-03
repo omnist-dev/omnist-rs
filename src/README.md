@@ -1,5 +1,7 @@
 # Introduction
 
+<img src="./assets/logo.svg" alt="omnist logo" width="120" style="display:block;margin:0 auto 1.5rem;">
+
 **omnist** is one canonical data model for JSON, YAML, TOML, XML, and its
 own native OML, plus a schema language (OSD) to validate and compare
 shapes over that model. This book is the Rust port's documentation
