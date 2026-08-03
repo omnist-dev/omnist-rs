@@ -41,7 +41,7 @@ spelling, only to an equivalent Core one.
 existing -- so `read_oml`/`write_oml` work over `RawNode`'s literal edge
 list, never `Value`.
 
-## Temporal literals: shape-checked, then validated
+## Temporal literals: shape-checked, then validated, then canonicalized
 
 `date`/`time`/`datetime` literals are recognized by shape in this module's
 own scanner, then validated by the same shared
@@ -49,7 +49,17 @@ own scanner, then validated by the same shared
 `schema.rs` and every other codec use. A recognized-but-invalid literal
 (`2024-02-30`) is a `ParseError`, never silently accepted. Like every other
 codec, `Scalar` has no native temporal variant, so a valid literal becomes
-a `Scalar::Str` holding its exact source spelling.
+a `Scalar::Str`.
+
+**`time`/`datetime` literal text is canonicalized on read** (issue #90,
+fixed while building the [conformance harness](../conformance.md) against
+omnist-spec): a missing `:SS` is filled to `:00`, and an under-padded
+fractional-second component is zero-padded to 6 digits. `date` literals
+have no optional grammar components and pass through unchanged. This
+means a bare `12:00` reads as `Scalar::Str("12:00:00")`, **not**
+`"12:00"` -- see the corrected note in [Python
+divergences](../python-divergences.md#bare-time-literal-round-tripping-oml-pr-11)
+for what changed from this port's earlier, stronger byte-for-byte claim.
 
 ## Integer digit cap and `i64`
 

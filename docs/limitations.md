@@ -1,15 +1,18 @@
 # Limitations & stability
 
-## Alpha status: `0.0.x`, per this project's versioning rule
+## Alpha status: `0.1.0-alpha`, per this project's versioning rule
 
-This is the Rust port's first feature-complete milestone -- all library
-modules, all five format codecs, the CLI, a fuzzing/oracle harness, and
-this documentation are now in place (issue #28, the last port-order item
-per `docs/workflow-playbook.md` §4). It still ships as `0.0.x`. There is
-**no beta** until the project's maintainer explicitly signs off on the
-scoping decisions below; accumulating features or fixes alone never moves
-the version past `0.0.x`. Treat every public API in this crate as subject
-to change without a deprecation cycle until that sign-off happens.
+The Rust port's first feature-complete milestone (issue #28) plus its own
+conformance-test harness against
+[omnist-spec](https://github.com/omnist-dev/omnist-spec) (issue #82 --
+see [Conformance against omnist-spec](conformance.md) for the real,
+measured results) are both now in place, and the maintainer has signed
+off on moving past `0.0.x` to mark that milestone. It still ships
+`-alpha`, though: there is **no beta** until the maintainer explicitly
+signs off on the scoping decisions below (the `any`-type gap chief among
+them); accumulating further features or fixes alone never moves it past
+`-alpha` on its own. Treat every public API in this crate as subject to
+change without a deprecation cycle until that further sign-off happens.
 
 ## The `any`-type scoping gap (deferred, not forgotten)
 

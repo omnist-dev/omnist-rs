@@ -97,23 +97,30 @@ Permanent: yes, unless/until `Scalar` grows a native temporal variant --
 which PR #11 and #17 both treat as an open, not-yet-decided
 architectural question rather than a near-term plan.
 
-## Bare time literal round-tripping (OML, PR #11)
+## Bare time literal round-tripping (OML, PR #11; corrected by issue #90)
 
 **Python**: parses a bare time literal like `12:00` into a real
 `datetime.time` object, then always writes it back via
 `isoformat()`, which normalizes to `12:00:00` (seconds always present).
 
-**Rust**: `Scalar` stores the literal's exact source spelling and
-round-trips it byte-for-byte, so `12:00` stays `12:00`.
+**Rust, as of PR #11**: `Scalar` stored the literal's exact source
+spelling and round-tripped it byte-for-byte, so `12:00` stayed `12:00` --
+characterized at the time as "a *stronger* round-trip guarantee than
+Python's own, not a bug against Python's docs," no upstream issue filed.
 
-PR #11's live Python cross-check (19 OML source strings, every scalar
-kind) found this as the *only* difference between Rust and Python
-output, and characterized it deliberately as "a *stronger* round-trip
-guarantee than Python's own, not a bug against Python's docs" -- no
-upstream issue was filed.
+**Rust, as of issue #90** (found while building the [conformance
+harness](conformance.md) against omnist-spec): that stronger guarantee
+was itself a spec violation -- omnist-spec's OML grammar treats
+`time`/`datetime` literal text as canonicalized on read, the same way
+Python's `isoformat()` normalizes it. `read_oml`'s scanner now fills a
+missing `:SS` to `:00` and zero-pads under-padded fractional seconds to 6
+digits, so `12:00` now reads as `Scalar::Str("12:00:00")` -- matching
+Python's output exactly, not diverging from it. `date` literals (no
+optional grammar components) are unaffected.
 
-Permanent: yes, and arguably a Rust-side improvement rather than a gap to
-close.
+Permanent: yes, but now in the sense of "matches Python," not "diverges
+from it" -- this entry is kept for history; the actual current behavior
+is *not* a divergence.
 
 ## OML's UTC-offset preservation (PR #11) / TOML's identical case (PR #21)
 
@@ -225,7 +232,7 @@ Two structural gaps referenced above are covered in full in
 | `i64` vs arbitrary-precision `int` | Permanent | #5, #11, #17, #23 |
 | TOML hex/octal/binary uncapped in Python, capped here | Permanent | #21 |
 | Date-shaped string becomes native literal on write (TOML/YAML) | Permanent (pending a temporal `Scalar` variant) | #19, #21 |
-| Bare time literal round-trips exactly instead of normalizing | Permanent (stronger guarantee, not a gap) | #11 |
+| Bare time literal round-trips exactly instead of normalizing | **No longer a divergence** -- corrected by #90 to match Python | #11, #90 |
 | `infer()`/`infer_with_report()` split vs single `allow_any` kwarg | Revisitable | #15, #33 |
 | XML coercion: over-`i64` numeral falls to float | Permanent | #23 |
 | XML coercion: ASCII-only digit recognition | Permanent | #23 |

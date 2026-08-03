@@ -59,6 +59,31 @@ The only adjustment `check_yaml` ever records is forcing double-quoted
 style for a string containing U+0085 (NEL), which PyYAML's default styles
 would otherwise normalize away as a line break.
 
+## Legacy sexagesimal integers (`H:M:S`-shaped)
+
+YAML 1.1's implicit-int resolver also recognizes a colon-separated
+sexagesimal form -- `12:00:00` resolves to `Scalar::Int(43200)`, not a
+string. This module's resolver folds each `:`-separated group as
+`acc*60 + group` (checked arithmetic; overflow reports the same
+out-of-range `ParseError` as an oversized plain integer), requires no
+leading zero on the first group, and constrains later groups to `0..=59`
+-- so `01:20`, `1:60`, and `0:0:1` all stay plain strings (each violates
+one of those rules), matching PyYAML's own grammar. Confirmed by omnist-rs
+issue #87, found while building the conformance harness against
+[omnist-spec](../conformance.md).
+
+## Mapping keys are implicitly typed too (the "Norway problem")
+
+Every mapping key is run through the same implicit-type resolver as
+values, matching PyYAML: a key like `on:` is rejected (it resolves to
+`Bool(true)`, not a string), and so is any other non-string-resolving key
+shape (int-, float-, sexagesimal-shaped, `null`-shaped). The rejection is
+a `DocumentError` at path `"$"` with a Python-parity message (e.g.
+`object key True is not a string`, `object key 1.0 is not a string` --
+including keeping the `.0` on whole-number floats). Ordinary string keys,
+and non-boolean words like bare `y`/`n`, are unaffected. Confirmed by
+omnist-rs issue #88, found and fixed alongside #87 above.
+
 ## Integer digit cap
 
 Same 4300-digit cap as `json.rs`/`oml.rs`/`toml.rs`, applied to a plain
