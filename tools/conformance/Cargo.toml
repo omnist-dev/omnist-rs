@@ -18,6 +18,10 @@ path = "src/bin/self_test.rs"
 name = "runner"
 path = "src/bin/runner.rs"
 
+[[bin]]
+name = "vector_runner"
+path = "src/bin/vector_runner.rs"
+
 [dependencies]
 omnist = { path = "../../omnist" }
 serde_json = "1"
