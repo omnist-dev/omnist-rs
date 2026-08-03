@@ -14,5 +14,10 @@ path = "src/lib.rs"
 name = "self-test"
 path = "src/bin/self_test.rs"
 
+[[bin]]
+name = "runner"
+path = "src/bin/runner.rs"
+
 [dependencies]
 omnist = { path = "../../omnist" }
+serde_json = "1"
