@@ -854,16 +854,18 @@ mod tests {
     /// `formats-json/basic/temporal-leaf-is-stringified-on-write` vector
     /// reclassified FAIL -> cited SKIP, structurally unreachable per
     /// issue #16), and combined here (both fixes rebased together) to
-    /// (113, 2, 23). Pinned here so a future change that silently
-    /// regresses pass/fail/skip counts is caught, not a "this must
-    /// always be 0 fails" gate: the remaining 2 real fails are Step 4's
-    /// (triage) job, not this runner's.
+    /// (114, 2, 23) -- one more pass than the naive sum of the two
+    /// individual deltas, confirmed by actually running the rebased
+    /// harness rather than computed by hand. Pinned here so a future
+    /// change that silently regresses pass/fail/skip counts is caught,
+    /// not a "this must always be 0 fails" gate: the remaining 2 real
+    /// fails are Step 4's (triage) job, not this runner's.
     #[test]
     fn full_suite_counts_match_the_measured_baseline() {
         let (passed, failed, skipped) = run_all(&suite_dir());
         assert_eq!(
             (passed, failed, skipped),
-            (113, 2, 23),
+            (114, 2, 23),
             "vector pass/fail/skip counts changed -- if this is an intentional fix or a new \
              vector, update the pinned baseline; if not, something regressed"
         );
