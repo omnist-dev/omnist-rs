@@ -83,6 +83,26 @@
 //! specific syntax-failure-with-diagnostics vectors still skip, citing
 //! "SchemaError carries no structured path/code".
 //!
+//! **Structurally-unreachable temporal-write-report skip (issue #89, found
+//! during issue #82 Step 4 triage).** `formats-json/basic/
+//! temporal-leaf-is-stringified-on-write` expects a `write` of a
+//! `date`/`time`/`datetime`-kind leaf to JSON to report a
+//! `format.temporal-stringified` adjustment. `decode_document`/
+//! `decode_scalar` above already collapse those three kinds to plain
+//! `Scalar::Str` on the way in -- `omnist::document::Scalar` has no
+//! temporal variant at all (issue #16's architecture decision; see
+//! `document.rs`'s module doc and `formats/json.rs:16-20`) -- so the
+//! information needed to emit that adjustment is discarded before any
+//! writer runs, not merely unimplemented in the writer. `run_write`'s
+//! `has_unreachable_temporal_stringified_expectation` detector catches any
+//! `write` vector shaped this way (asserts a `*temporal-stringified`
+//! diagnostic code against an input containing a temporal-kind leaf) and
+//! skips it, citing issue #16. Only this one vector matches today --
+//! TOML/YAML have native temporal literals (no stringify-report needed on
+//! write) and XML has no temporal-write vector at all -- but the detector
+//! is structural, not name-keyed, so it will also catch any future vector
+//! shaped the same way.
+//!
 //! Usage:
 //!
 //!     cargo run -p conformance --bin vector_runner
@@ -411,7 +431,57 @@ fn run_materialize(v: &Json) -> VResult {
     }
 }
 
+/// Structural detector for the issue-#89 skip category: a `write` vector
+/// whose `expect.diagnostics` asserts a `*temporal-stringified` adjustment
+/// against an input document containing a `date`/`time`/`datetime`-kind
+/// leaf. `omnist::document::Scalar` has no temporal variant (issue #16's
+/// architecture decision -- see `document.rs`'s module doc and
+/// `formats/json.rs:16-20`), so `decode_document`/`decode_scalar` above
+/// already collapse such a leaf to a plain `Scalar::Str` before it ever
+/// reaches a writer. The information "this was originally date/time/
+/// datetime-typed" is discarded at construction, not at write time, so no
+/// writer in this port can ever emit the expected adjustment -- this is
+/// structurally unreachable, not an unimplemented feature.
+fn has_unreachable_temporal_stringified_expectation(v: &Json) -> bool {
+    let asserts_temporal_stringified = v["expect"]["diagnostics"]
+        .as_array()
+        .map(|ds| {
+            ds.iter().any(|d| {
+                d.get("code")
+                    .and_then(Json::as_str)
+                    .is_some_and(|c| c.ends_with("temporal-stringified"))
+            })
+        })
+        .unwrap_or(false);
+    asserts_temporal_stringified && document_has_temporal_leaf(&v["input"]["document"])
+}
+
+/// Walks a canonical-encoding document node looking for a `date`/`time`/
+/// `datetime`-kind scalar leaf (see `decode_document`'s doc comment for why
+/// these three kinds collapse to `Scalar::Str`).
+fn document_has_temporal_leaf(node: &Json) -> bool {
+    if let Some(scalar) = node.get("scalar") {
+        let kind = scalar.get("kind").and_then(Json::as_str);
+        return matches!(kind, Some("date") | Some("time") | Some("datetime"));
+    }
+    node.get("edges")
+        .and_then(Json::as_array)
+        .map(|edges| {
+            edges.iter().any(|pair| {
+                pair.as_array()
+                    .is_some_and(|arr| document_has_temporal_leaf(&arr[1]))
+            })
+        })
+        .unwrap_or(false)
+}
+
 fn run_write(v: &Json) -> VResult {
+    if has_unreachable_temporal_stringified_expectation(v) {
+        return skip(
+            "format.temporal-stringified adjustment is structurally unreachable -- \
+             Scalar has no temporal variant (issue #16 architecture decision); see issue #89",
+        );
+    }
     let input = &v["input"];
     let format = input["format"].as_str().unwrap_or("oml");
     let raw = decode_document(&input["document"]);
@@ -785,7 +855,7 @@ mod tests {
         let (passed, failed, skipped) = run_all(&suite_dir());
         assert_eq!(
             (passed, failed, skipped),
-            (113, 4, 22),
+            (113, 3, 23),
             "vector pass/fail/skip counts changed -- if this is an intentional fix or a new \
              vector, update the pinned baseline; if not, something regressed"
         );
@@ -831,6 +901,18 @@ mod tests {
             })
             .expect("vector exists");
         assert_eq!(dispatch(&v.vector).status, Status::Pass);
+    }
+
+    #[test]
+    fn a_structurally_unreachable_temporal_write_report_vector_skips() {
+        let vectors = iter_vectors(&suite_dir());
+        let v = vectors
+            .iter()
+            .find(|nv| {
+                nv.vector["name"] == "formats-json/basic/temporal-leaf-is-stringified-on-write"
+            })
+            .expect("vector exists");
+        assert_eq!(dispatch(&v.vector).status, Status::Skip);
     }
 
     #[test]
@@ -1228,6 +1310,28 @@ mod tests {
                 "document": {"edges": [["a", {"scalar": {"kind": "integer", "value": 1}}]]}
             },
             "expect": {"ok": true, "text": "{\"a\": 999}"}
+        });
+        assert_eq!(dispatch(&v).status, Status::Fail);
+    }
+
+    #[test]
+    fn run_write_diagnostic_path_mismatch_fails() {
+        // A non-temporal write vector asserting a diagnostic path the real
+        // `WriteReport` never produces -- exercises `run_write`'s
+        // paths-differ branch directly, distinct from the issue-#89 skip
+        // detector above (this vector doesn't match the structural
+        // temporal-leaf shape, so it reaches the real driver and fails on
+        // its own terms).
+        let v = json!({
+            "operation": "write",
+            "input": {
+                "format": "json",
+                "document": {"edges": [["a", {"scalar": {"kind": "integer", "value": 1}}]]}
+            },
+            "expect": {
+                "ok": true,
+                "diagnostics": [{"path": "$.nonexistent", "code": "format.some-code"}]
+            }
         });
         assert_eq!(dispatch(&v).status, Status::Fail);
     }
