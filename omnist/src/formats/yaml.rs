@@ -96,7 +96,7 @@ use yaml_rust2::scanner::{Marker, ScanError, TScalarStyle};
 
 use crate::WriteError;
 use crate::document::{Doc, Value};
-use crate::error::{OmnistError, ParseError};
+use crate::error::{DocumentError, OmnistError, ParseError};
 use crate::formats::float_fmt;
 use crate::formats::int_cap::{MAX_INT_DIGITS, out_of_range_message, over_cap_message};
 use crate::formats::string_escape::{YAML_ESCAPES, write_quoted};
@@ -501,7 +501,29 @@ fn raw_to_value(node: &Raw) -> Result<Value, OmnistError> {
             let mut map: IndexMap<String, Value> = IndexMap::new();
             for (k, v) in entries {
                 let key = match k {
-                    Raw::Scalar(s, _, _) => s.clone(),
+                    // Route the key through the same implicit-type
+                    // resolver mapping *values* already go through
+                    // (`scalar_to_value`) -- issue #88, the "Norway
+                    // problem": YAML 1.1's core schema resolves a bare
+                    // `on`/`off`/`yes`/`no`/`true`/`false`/`~`/etc. key the
+                    // same way it would as a value. A label MUST be a
+                    // string, so a key that resolves to anything else
+                    // (bool, null, int, float) is rejected here, matching
+                    // Python's `DocumentError: object key <value> is not a
+                    // string` (live-confirmed).
+                    Raw::Scalar(s, style, tag) => match scalar_to_value(s, *style, tag.as_ref())? {
+                        Value::Str(s) => s,
+                        other => {
+                            return Err(DocumentError::new(
+                                "$",
+                                format!(
+                                    "object key {} is not a string",
+                                    describe_non_string_key(&other)
+                                ),
+                            )
+                            .into());
+                        }
+                    },
                     _ => {
                         return Err(ParseError::new(
                             1,
@@ -518,6 +540,27 @@ fn raw_to_value(node: &Raw) -> Result<Value, OmnistError> {
             }
             Ok(Value::Object(map))
         }
+    }
+}
+
+/// Renders a non-string [`Value`] the way Python's reference implementation
+/// spells it in its `DocumentError` message (`True`/`False`/`None`/a plain
+/// number), for parity with the diagnostic text PyYAML/`omnist`'s own
+/// `object key <value> is not a string` error uses -- live-confirmed:
+/// `omnist.read_yaml("on:\n  push: true\n")` raises `object key True is not
+/// a string`. Only `Bool`/`Null`/`Int`/`Float` are structurally reachable
+/// here -- `scalar_to_value` (this function's only caller's source) never
+/// produces `Str` (excluded by the caller's own match arm before this runs)
+/// or `Array`/`Object` (it operates on a single `Raw::Scalar` leaf) -- the
+/// wildcard arm is an unreachable-but-harmless fallback, not a real case.
+fn describe_non_string_key(v: &Value) -> String {
+    match v {
+        Value::Bool(true) => "True".to_string(),
+        Value::Bool(false) => "False".to_string(),
+        Value::Null => "None".to_string(),
+        Value::Int(i) => i.to_string(),
+        Value::Float(f) => f.to_string(),
+        other => format!("{other:?}"),
     }
 }
 
@@ -592,6 +635,9 @@ fn resolve_plain_scalar(text: &str) -> Result<Value, ParseError> {
     if is_int_literal_shape(text) {
         return parse_int_literal(text);
     }
+    if is_sexagesimal_int_shape(text) {
+        return parse_sexagesimal_int(text);
+    }
     if is_float_literal_shape(text) {
         return parse_float_literal(text);
     }
@@ -604,8 +650,11 @@ fn resolve_plain_scalar(text: &str) -> Result<Value, ParseError> {
 /// Live-confirmed against `yaml.safe_load` (see module doc comment): PyYAML's
 /// `tag:yaml.org,2002:int` implicit resolver recognizes `0x`/`0b` prefixes and
 /// a bare leading zero as octal (`"017" -> 15`), but **not** a YAML-1.2-style
-/// `0o` prefix (`"0o17"` stays a plain string) -- the legacy sexagesimal
-/// `1:20` form is out of scope, same rationale as the timestamp normalizer.
+/// `0o` prefix (`"0o17"` stays a plain string). The legacy sexagesimal
+/// `1:20` form is handled separately by [`SEXAGESIMAL_INT_RE`]/
+/// [`is_sexagesimal_int_shape`] below (issue #87 -- this comment previously
+/// called it "out of scope", but the spec (`docs/formats/yaml.md`) and both
+/// sibling ports require it; that framing was simply wrong).
 static INT_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
     regex::Regex::new(
         r"^(?:[-+]?0b[0-1_]+|[-+]?0[0-7_]+|[-+]?(?:0|[1-9][0-9_]*)|[-+]?0x[0-9a-fA-F_]+)$",
@@ -615,6 +664,54 @@ static INT_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
 
 fn is_int_literal_shape(text: &str) -> bool {
     INT_RE.is_match(text)
+}
+
+/// PyYAML's legacy sexagesimal integer form: a colon-separated run of
+/// base-60 digit groups, e.g. `12:00:00` -> `12*3600 + 0*60 + 0 = 43200`.
+/// Live-confirmed against `yaml.safe_load`/`omnist.read_yaml` (issue #87):
+/// the first group must NOT have a leading zero (`"0:0:1"`/`"01:20"` stay
+/// plain strings) and every subsequent group is constrained to `0-59`
+/// (`"1:60"`/`"1:600"` stay plain strings) -- exactly mirroring PyYAML's own
+/// `tag:yaml.org,2002:int` resolver regex
+/// (`^[-+]?[1-9][0-9_]*(:[0-5]?[0-9])+$`, see
+/// <https://yaml.org/type/int.html>).
+static SEXAGESIMAL_INT_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"^[-+]?[1-9][0-9_]*(?::[0-5]?[0-9])+$").unwrap()
+});
+
+fn is_sexagesimal_int_shape(text: &str) -> bool {
+    SEXAGESIMAL_INT_RE.is_match(text)
+}
+
+/// Parses a sexagesimal-shaped string (already confirmed via
+/// [`is_sexagesimal_int_shape`]) into its base-60 integer value: fold each
+/// `:`-separated group left to right as `acc = acc*60 + group`, matching
+/// PyYAML's `construct_yaml_int`'s own sexagesimal branch. Uses checked
+/// arithmetic and reports the same out-of-range `ParseError` shape as
+/// `parse_int_literal` if the fold overflows `i64`.
+fn parse_sexagesimal_int(text: &str) -> Result<Value, ParseError> {
+    let neg = text.starts_with('-');
+    let t = text.strip_prefix(['+', '-']).unwrap_or(text);
+    let mut acc: i64 = 0;
+    for group in t.split(':') {
+        let cleaned: String = group.chars().filter(|&c| c != '_').collect();
+        let digit: i64 = cleaned
+            .parse()
+            .map_err(|_| ParseError::new(1, 1, out_of_range_message("invalid YAML: ", text)))?;
+        acc = acc
+            .checked_mul(60)
+            .and_then(|v| v.checked_add(digit))
+            .ok_or_else(|| ParseError::new(1, 1, out_of_range_message("invalid YAML: ", text)))?;
+    }
+    // `acc` is only ever built via the two checked ops above, both of which
+    // reject on overflow -- so `acc` is provably in `0..=i64::MAX` here,
+    // and `-acc` can never itself overflow `i64` (unlike the general
+    // "negate an arbitrary i64" case `parse_int_literal` handles, where the
+    // magnitude is parsed unsigned first specifically to allow `i64::MIN`).
+    // No `checked_neg` needed -- that would be a fallible-looking branch
+    // that's actually structurally dead, not a real error path to report.
+    let value = if neg { -acc } else { acc };
+    Ok(Value::Int(value))
 }
 
 fn parse_int_literal(text: &str) -> Result<Value, ParseError> {
@@ -1161,6 +1258,99 @@ mod tests {
     }
 
     #[test]
+    fn reads_legacy_sexagesimal_int_forms() {
+        // issue #87: live-confirmed against PyYAML/omnist -- `12:00:00`
+        // resolves via the legacy YAML-1.1 sexagesimal integer form
+        // (base-60 digit groups) to the plain integer 43200, not a string.
+        let doc =
+            read_yaml("a: 12:00:00\nb: 1:20\nc: 1:2:3\nd: -1:20\ne: +1:20\nf: 123:45\ng: 1_2:30\n")
+                .unwrap();
+        let root = doc.root();
+        assert_eq!(
+            *root.get_one("a").unwrap().value().unwrap(),
+            Scalar::Int(43200)
+        );
+        assert_eq!(
+            *root.get_one("b").unwrap().value().unwrap(),
+            Scalar::Int(80)
+        );
+        assert_eq!(
+            *root.get_one("c").unwrap().value().unwrap(),
+            Scalar::Int(3723)
+        );
+        assert_eq!(
+            *root.get_one("d").unwrap().value().unwrap(),
+            Scalar::Int(-80)
+        );
+        assert_eq!(
+            *root.get_one("e").unwrap().value().unwrap(),
+            Scalar::Int(80)
+        );
+        assert_eq!(
+            *root.get_one("f").unwrap().value().unwrap(),
+            Scalar::Int(7425)
+        );
+        assert_eq!(
+            *root.get_one("g").unwrap().value().unwrap(),
+            Scalar::Int(750)
+        );
+    }
+
+    #[test]
+    fn sexagesimal_first_group_over_i64_range_is_out_of_range_error() {
+        // Unlike PyYAML (arbitrary-precision Python ints), this port caps
+        // integers at i64, same ceiling `parse_int_literal` already
+        // enforces for plain decimal literals -- a first digit group this
+        // large fails to even parse as i64, hitting the group-parse
+        // `map_err` branch in `parse_sexagesimal_int`.
+        let text = format!("a: {}:0\n", "9".repeat(20));
+        let err = read_yaml(&text).unwrap_err();
+        assert!(
+            matches!(&err, OmnistError::Parse(e) if e.message.contains("out of range")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn sexagesimal_fold_overflow_across_many_in_range_groups_is_out_of_range_error() {
+        // Every individual group here is a legal 0-59 sexagesimal digit, so
+        // this exercises the *fold* overflow (`checked_mul(60)`/
+        // `checked_add`), not the single-group-parse overflow above.
+        let text = format!("a: 1{}\n", ":59".repeat(15));
+        let err = read_yaml(&text).unwrap_err();
+        assert!(
+            matches!(&err, OmnistError::Parse(e) if e.message.contains("out of range")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn sexagesimal_shape_with_leading_zero_or_out_of_range_group_stays_a_string() {
+        // Live-confirmed against PyYAML: the first digit group must NOT
+        // have a leading zero, and every subsequent `:NN` group must be
+        // 0-59 -- otherwise the whole thing stays a plain string, it does
+        // not partially resolve.
+        let doc = read_yaml("a: 0:0:1\nb: 1:60\nc: 1:600\nd: 01:20\n").unwrap();
+        let root = doc.root();
+        assert_eq!(
+            *root.get_one("a").unwrap().value().unwrap(),
+            Scalar::Str("0:0:1".to_string())
+        );
+        assert_eq!(
+            *root.get_one("b").unwrap().value().unwrap(),
+            Scalar::Str("1:60".to_string())
+        );
+        assert_eq!(
+            *root.get_one("c").unwrap().value().unwrap(),
+            Scalar::Str("1:600".to_string())
+        );
+        assert_eq!(
+            *root.get_one("d").unwrap().value().unwrap(),
+            Scalar::Str("01:20".to_string())
+        );
+    }
+
+    #[test]
     fn reads_float_and_inf_and_nan_tokens() {
         let doc = read_yaml("a: 1.5\nb: .inf\nc: -.inf\nd: .nan\ne: 1.0e+3\n").unwrap();
         let root = doc.root();
@@ -1649,6 +1839,70 @@ mod tests {
         assert!(
             matches!(&err, OmnistError::Parse(e) if e.message.contains("!!bool")),
             "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn bare_on_key_resolves_to_boolean_and_is_rejected_norway_problem() {
+        // issue #88: YAML 1.1's core schema resolves a bare `on:` key to
+        // the boolean `true`, same as it would as a value -- since a label
+        // MUST be a string, this must be rejected as a DocumentError, not
+        // silently kept as the literal string "on".
+        let err = read_yaml("on:\n  push: true\n").unwrap_err();
+        assert!(
+            matches!(&err, OmnistError::Document(e) if e.path == "$"),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn other_implicit_bool_and_null_key_spellings_are_also_rejected() {
+        for key in ["off", "yes", "no", "Off", "YES", "~", "null", "true"] {
+            let text = format!("{key}:\n  push: true\n");
+            let err = read_yaml(&text).unwrap_err();
+            assert!(
+                matches!(&err, OmnistError::Document(_)),
+                "key {key:?} got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn bare_y_or_n_key_is_not_a_bool_and_stays_a_string_label() {
+        // Live-confirmed against PyYAML/omnist: unlike "yes"/"no", bare
+        // "y"/"n" are NOT booleans under the implicit resolver, so these
+        // stay ordinary string keys and parse successfully.
+        let doc = read_yaml("y:\n  push: true\n").unwrap();
+        assert!(doc.root().get_one("y").is_ok());
+        let doc = read_yaml("n:\n  push: true\n").unwrap();
+        assert!(doc.root().get_one("n").is_ok());
+    }
+
+    #[test]
+    fn sexagesimal_looking_key_also_resolves_and_is_rejected() {
+        // Interaction check between #87 and #88: a key shaped like a
+        // sexagesimal int must go through the same resolver and be
+        // rejected as a non-string label, consistent with the bool case.
+        let err = read_yaml("12:00:00:\n  push: true\n").unwrap_err();
+        assert!(
+            matches!(&err, OmnistError::Document(e) if e.path == "$"),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn describe_non_string_key_renders_pythonic_spellings() {
+        assert_eq!(describe_non_string_key(&Value::Bool(true)), "True");
+        assert_eq!(describe_non_string_key(&Value::Bool(false)), "False");
+        assert_eq!(describe_non_string_key(&Value::Null), "None");
+        assert_eq!(describe_non_string_key(&Value::Int(43200)), "43200");
+        assert_eq!(describe_non_string_key(&Value::Float(1.5)), "1.5");
+        // Structurally unreachable via the real call site (see the
+        // function's doc comment), exercised directly here so the wildcard
+        // fallback arm is real, tested code, not a dead branch.
+        assert_eq!(
+            describe_non_string_key(&Value::Str("x".to_string())),
+            "Str(\"x\")"
         );
     }
 
