@@ -140,13 +140,17 @@ fn run_write(dir: &Path) -> CaseResult {
         Ok(r) => r,
         Err(e) => return fail(format!("read_oml failed: {e}")),
     };
-    // `write_oml`'s `Result` has no producing `Err` path in `oml/writer.rs`
-    // for any `RawNode` (verified by inspection -- there is no `return
-    // Err`/`WriteError::new` call anywhere in that module); it returns
-    // `Result` purely for API-signature uniformity with the fallible
-    // reader/writer pairs elsewhere in the crate. `.expect()`-documented
+    // `write_oml` DOES have a producing `Err` path: `oml/writer.rs`'s
+    // `write_edges`/`write_edges_compact` call `check_write_depth(...)?`
+    // (`document.rs`), which returns `Err` for over-`MAX_DEPTH` input.
+    // It's unreachable here specifically because `raw` came from
+    // `read_oml` above, whose parser already enforces `MAX_DEPTH` at parse
+    // time (`oml/parser.rs`'s `parse_brace_value`) -- the same reasoning
+    // `doc_from_oml_file` below documents for its own `.expect()`, not
+    // "this function has no Err path at all". `.expect()`-documented
     // rather than an untested `Err` arm with no real trigger.
-    let actual = write_oml(&raw, 2).expect("write_oml has no producing Err path for any RawNode");
+    let actual = write_oml(&raw, 2)
+        .expect("read_oml's depth guard already bounds this RawNode within write_oml's own limit");
     match compare_document(&actual, &expected) {
         Ok(true) => pass(),
         Ok(false) => fail("output does not match expected (structural comparison)"),
@@ -208,10 +212,14 @@ fn run_materialize(dir: &Path) -> CaseResult {
             Ok(r) => r,
             Err(e) => return fail(format!("expected success, materialize failed: {e}")),
         };
-        // Same reasoning as run_write's `write_oml` call: no producing
-        // `Err` path for any `RawNode`, including materialize's output.
-        let actual =
-            write_oml(&out_raw, 2).expect("write_oml has no producing Err path for any RawNode");
+        // Same reasoning as run_write's `write_oml` call: `write_oml` does
+        // have a producing `Err` path (`check_write_depth`), but it's
+        // unreachable here since `materialize` only upgrades scalar
+        // values in place -- it never adds nesting -- so `out_raw`'s
+        // depth is still bounded by `input_raw`'s, which `read_oml`'s
+        // parser already enforced within `MAX_DEPTH` at parse time.
+        let actual = write_oml(&out_raw, 2)
+            .expect("materialize preserves depth, so read_oml's depth guard still bounds this");
         let expected = match read_required(dir, "expected/output.oml") {
             Ok(s) => s,
             Err(r) => return r,
