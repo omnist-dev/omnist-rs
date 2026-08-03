@@ -7,9 +7,15 @@ use omnist::document::{Doc, Value};
 use omnist::formats::xml::{read_xml, write_xml};
 
 fn main() {
+    // `age` is a `Value::Str`, not `Value::Int`: XML text carries no type
+    // information (see `docs/formats/xml.md`'s "Text is untyped" section,
+    // and `omnist-rs#86`) -- writing a non-string scalar through XML now
+    // honestly reports that it reads back as a string (`value.stringified`),
+    // so this example keeps the round trip lossless by not writing a typed
+    // scalar in the first place.
     let mut fields = IndexMap::new();
     fields.insert("name".to_string(), Value::Str("Ada".to_string()));
-    fields.insert("age".to_string(), Value::Int(37));
+    fields.insert("age".to_string(), Value::Str("37".to_string()));
     let mut root = IndexMap::new();
     root.insert("person".to_string(), Value::Object(fields));
     let doc = Doc::of(&Value::Object(root)).unwrap();

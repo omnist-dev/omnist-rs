@@ -9,6 +9,9 @@ fn leaf_str(s: &str) -> RawNode {
     RawNode::Leaf(Scalar::Str(s.to_string()))
 }
 
+/// Only meaningful on the *write* side now (omnist-rs#86: `read_xml` never
+/// produces `Scalar::Int` -- every leaf it builds is a `Scalar::Str`). Kept
+/// for constructing `Doc`s to feed into `write_xml`/`check_xml`.
 fn leaf_int(i: i64) -> RawNode {
     RawNode::Leaf(Scalar::Int(i))
 }
@@ -32,10 +35,12 @@ fn reads_an_empty_element_as_empty_string_leaf() {
 
 #[test]
 fn reads_nested_elements() {
+    // omnist-rs#86: numeric-looking text stays a string -- typing is
+    // materialize's job, not the reader's.
     let doc = read_xml("<root><a>1</a></root>").unwrap();
     assert_eq!(
         doc.to_raw(),
-        edges(vec![("root", edges(vec![("a", leaf_int(1))]))])
+        edges(vec![("root", edges(vec![("a", leaf_str("1"))]))])
     );
 }
 
@@ -76,7 +81,7 @@ fn preserves_repeated_sibling_elements_as_repeated_edges() {
     assert_eq!(tag, "root");
     assert_eq!(
         *content,
-        edges(vec![("x", leaf_int(1)), ("x", leaf_int(2))])
+        edges(vec![("x", leaf_str("1")), ("x", leaf_str("2"))])
     );
 }
 
@@ -85,7 +90,10 @@ fn preserves_interleaved_distinct_labels_exactly() {
     // <b/><c/><b/> -- interleaved, not a contiguous run of "b". This is
     // exactly the shape a `Value::Object`/`IndexMap` can't represent,
     // which is why this module goes through `RawNode` instead of
-    // `to_grouped` (see this module's doc comment).
+    // `to_grouped` (see this module's doc comment). This is also the
+    // exact shape of omnist-rs#86's regression vector
+    // (`formats-xml/basic/interleaved-elements-preserve-order`): order
+    // preservation *and* untyped (string) leaves, both checked here.
     let doc = read_xml("<root><b>1</b><c>2</c><b>3</b></root>").unwrap();
     let RawNode::Edges(root_edges) = doc.to_raw() else {
         panic!("expected edges")
@@ -96,9 +104,9 @@ fn preserves_interleaved_distinct_labels_exactly() {
     };
     let labels: Vec<&str> = inner.iter().map(|(l, _)| l.as_str()).collect();
     assert_eq!(labels, vec!["b", "c", "b"]);
-    assert_eq!(inner[0].1, leaf_int(1));
-    assert_eq!(inner[1].1, leaf_int(2));
-    assert_eq!(inner[2].1, leaf_int(3));
+    assert_eq!(inner[0].1, leaf_str("1"));
+    assert_eq!(inner[1].1, leaf_str("2"));
+    assert_eq!(inner[2].1, leaf_str("3"));
 }
 
 #[test]
@@ -124,124 +132,101 @@ fn whitespace_only_text_alongside_children_is_not_mixed_content() {
     let doc = read_xml("<root>\n  <a>1</a>\n</root>").unwrap();
     assert_eq!(
         doc.to_raw(),
-        edges(vec![("root", edges(vec![("a", leaf_int(1))]))])
+        edges(vec![("root", edges(vec![("a", leaf_str("1"))]))])
     );
 }
 
-// --------------------------------------------------------------------- coercion
+// ------------------------------------------------- reader: text stays untyped
+
+// omnist-rs#86: `read_xml` used to type-infer leaf text (int/float/bool) at
+// parse time via a `coerce()` helper, contradicting `docs/formats/xml.md`
+// ("Text is untyped ... every leaf arrives as a string. Typing requires a
+// schema in stage 2.") and diverging from Python's reference `read_xml`.
+// These tests used to assert the coerced (buggy) typed result; they're kept
+// and updated in place -- same inputs, now asserting the untyped string
+// result -- rather than deleted, to preserve the coverage of exactly which
+// text shapes were previously (wrongly) coerced.
 
 #[test]
-fn coerces_booleans_case_insensitively() {
-    for (text, expected) in [
-        ("true", true),
-        ("True", true),
-        ("TRUE", true),
-        ("false", false),
-        ("FALSE", false),
-    ] {
+fn boolean_looking_text_stays_a_string() {
+    for text in ["true", "True", "TRUE", "false", "FALSE"] {
         let doc = read_xml(&format!("<r>{text}</r>")).unwrap();
         assert_eq!(
             doc.to_raw(),
-            edges(vec![("r", RawNode::Leaf(Scalar::Bool(expected)))])
+            edges(vec![("r", leaf_str(text))]),
+            "input {text:?}"
         );
     }
 }
 
 #[test]
-fn bool_match_does_not_trim_surrounding_whitespace() {
-    // Live-confirmed against Python: `_coerce(' true ')` stays the string
-    // `' true '` -- the bool comparison uses the raw text, not a trimmed
-    // copy (omnist-ts#53-style undocumented-narrowing lesson: verify, don't
-    // assume).
+fn bool_looking_text_with_surrounding_whitespace_stays_a_string() {
+    // Previously this was already a string under the old coercion (the bool
+    // match required an exact, untrimmed "true"/"false"), but it's included
+    // here alongside the other untyped-text tests for completeness now that
+    // *no* leaf text is ever coerced.
     let doc = read_xml("<r> true </r>").unwrap();
     assert_eq!(doc.to_raw(), edges(vec![("r", leaf_str(" true "))]));
 }
 
 #[test]
-fn coerces_plain_integers() {
+fn plain_integer_text_stays_a_string() {
     let doc = read_xml("<r>42</r>").unwrap();
-    assert_eq!(doc.to_raw(), edges(vec![("r", leaf_int(42))]));
+    assert_eq!(doc.to_raw(), edges(vec![("r", leaf_str("42"))]));
     let doc2 = read_xml("<r>-7</r>").unwrap();
-    assert_eq!(doc2.to_raw(), edges(vec![("r", leaf_int(-7))]));
+    assert_eq!(doc2.to_raw(), edges(vec![("r", leaf_str("-7"))]));
 }
 
 #[test]
-fn coerces_underscore_grouped_integer_literal() {
-    // Live-confirmed: Python's int("1_0") == 10.
+fn underscore_grouped_integer_literal_stays_a_string() {
+    // Previously coerced (Python's int("1_0") == 10); now the raw text is
+    // kept verbatim, underscore and all.
     let doc = read_xml("<r>1_0</r>").unwrap();
-    assert_eq!(doc.to_raw(), edges(vec![("r", leaf_int(10))]));
+    assert_eq!(doc.to_raw(), edges(vec![("r", leaf_str("1_0"))]));
 }
 
 #[test]
-fn coerces_leading_zero_integer() {
-    // Live-confirmed: Python's int("007") == 7 (int() has no octal
-    // interpretation of a leading zero, unlike a Python integer literal).
+fn leading_zero_integer_text_stays_a_string() {
     let doc = read_xml("<r>007</r>").unwrap();
-    assert_eq!(doc.to_raw(), edges(vec![("r", leaf_int(7))]));
+    assert_eq!(doc.to_raw(), edges(vec![("r", leaf_str("007"))]));
 }
 
 #[test]
-fn coerces_plain_floats() {
+fn plain_float_text_stays_a_string() {
     let doc = read_xml("<r>1.5</r>").unwrap();
-    assert_eq!(
-        doc.to_raw(),
-        edges(vec![("r", RawNode::Leaf(Scalar::Float(1.5)))])
-    );
+    assert_eq!(doc.to_raw(), edges(vec![("r", leaf_str("1.5"))]));
 }
 
 #[test]
-fn coerces_leading_and_trailing_dot_floats() {
-    // Live-confirmed: float(".5") == 0.5, float("5.") == 5.0.
+fn leading_and_trailing_dot_float_text_stays_a_string() {
     let doc = read_xml("<a>.5</a>").unwrap();
-    assert_eq!(
-        doc.to_raw(),
-        edges(vec![("a", RawNode::Leaf(Scalar::Float(0.5)))])
-    );
+    assert_eq!(doc.to_raw(), edges(vec![("a", leaf_str(".5"))]));
     let doc2 = read_xml("<a>5.</a>").unwrap();
-    assert_eq!(
-        doc2.to_raw(),
-        edges(vec![("a", RawNode::Leaf(Scalar::Float(5.0)))])
-    );
+    assert_eq!(doc2.to_raw(), edges(vec![("a", leaf_str("5."))]));
 }
 
 #[test]
-fn parses_inf_and_nan_words() {
-    // Live-confirmed: float("inf") == inf, float("Infinity") == inf,
-    // float("nan") == nan (any ASCII case, optionally signed).
-    for text in ["inf", "Infinity", "INFINITY", "-inf", "+inf"] {
+fn inf_and_nan_words_stay_strings() {
+    // Previously coerced via `float()`-style parsing (inf/infinity/nan,
+    // any ASCII case, optionally signed); now kept verbatim.
+    for text in ["inf", "Infinity", "INFINITY", "-inf", "+inf", "nan"] {
         let doc = read_xml(&format!("<r>{text}</r>")).unwrap();
-        let RawNode::Edges(e) = doc.to_raw() else {
-            panic!()
-        };
-        let RawNode::Leaf(Scalar::Float(f)) = &e[0].1 else {
-            panic!("expected float leaf for {text:?}")
-        };
-        assert!(f.is_infinite(), "{text} should be infinite, got {f}");
+        assert_eq!(
+            doc.to_raw(),
+            edges(vec![("r", leaf_str(text))]),
+            "input {text:?}"
+        );
     }
-    let doc = read_xml("<r>nan</r>").unwrap();
-    let RawNode::Edges(e) = doc.to_raw() else {
-        panic!()
-    };
-    let RawNode::Leaf(Scalar::Float(f)) = &e[0].1 else {
-        panic!("expected float leaf")
-    };
-    assert!(f.is_nan());
 }
 
 #[test]
-fn underscore_grouped_float_coerces() {
-    // Live-confirmed: float("1_0.5") == 10.5.
+fn underscore_grouped_float_text_stays_a_string() {
     let doc = read_xml("<r>1_0.5</r>").unwrap();
-    assert_eq!(
-        doc.to_raw(),
-        edges(vec![("r", RawNode::Leaf(Scalar::Float(10.5)))])
-    );
+    assert_eq!(doc.to_raw(), edges(vec![("r", leaf_str("1_0.5"))]));
 }
 
 #[test]
 fn malformed_underscore_grouping_stays_a_string() {
-    // Live-confirmed: Python's int()/float() reject a leading, trailing,
-    // or doubled underscore -- "_1", "1_", "1__0" all stay strings.
     for text in ["_1", "1_", "1__0"] {
         let doc = read_xml(&format!("<r>{text}</r>")).unwrap();
         assert_eq!(
@@ -260,34 +245,27 @@ fn non_numeric_text_stays_a_string() {
 
 #[test]
 fn hex_literal_text_stays_a_string() {
-    // Live-confirmed: Python's int("0x1A")/float("0x1A") both raise
-    // (no implicit base without base=0), so it stays a string.
     let doc = read_xml("<r>0x1A</r>").unwrap();
     assert_eq!(doc.to_raw(), edges(vec![("r", leaf_str("0x1A"))]));
 }
 
 #[test]
-fn whitespace_only_text_with_no_digits_stays_unchanged() {
-    // Live-confirmed: Python's int("  ")/float("  ") both raise (no
-    // digits at all), so _coerce falls through to the *original*,
-    // unstripped text.
+fn whitespace_only_text_stays_unchanged() {
     let doc = read_xml("<r>  </r>").unwrap();
     assert_eq!(doc.to_raw(), edges(vec![("r", leaf_str("  "))]));
 }
 
 #[test]
-fn oversized_integer_falls_back_to_float_not_a_parse_error() {
-    // Live-confirmed divergence: Python's _coerce("9"*20) is still an
-    // exact Python int (arbitrary precision) -- this port's Scalar::Int
-    // is i64-backed (19-digit range), so it falls through to
-    // try_parse_float instead of erroring, matching _coerce's actual
-    // int-then-float control flow (see this module's doc comment).
+fn oversized_integer_text_stays_a_string_not_a_parse_error() {
+    // Previously this was where `Scalar::Int`'s i64-only range forced a
+    // fallback to `Scalar::Float` (issue-worthy divergence from Python's
+    // arbitrary-precision `int`, documented at length in the old coercion
+    // doc comment). That whole representational question is moot now: a
+    // 20-digit run of `9`s just stays the literal text, no numeric parsing
+    // attempted at all.
     let text = "9".repeat(20);
     let doc = read_xml(&format!("<r>{text}</r>")).unwrap();
-    let RawNode::Edges(e) = doc.to_raw() else {
-        panic!()
-    };
-    assert!(matches!(&e[0].1, RawNode::Leaf(Scalar::Float(_))));
+    assert_eq!(doc.to_raw(), edges(vec![("r", leaf_str(&text))]));
 }
 
 // ------------------------------------------------------------------ CR normalization
@@ -506,28 +484,73 @@ fn empty_internal_node_reports_shape_empty_ambiguous() {
     );
 }
 
-// --------------------------------------------------------------- ambiguous string
+// ------------------------------------------------------- write: non-string scalars
+
+// omnist-rs#86: `read_xml` no longer infers scalar kind from element-text
+// shape, so a non-string scalar (`bool`/`int`/`float`) written to XML now
+// reads back as a plain string, not its original type -- XML has no native
+// typed literals, everything is text. This used to be silent (the old
+// shape-based read-side coercion happened to undo it); it's now reported,
+// matching Python's identical fix (`omnist#288`). These tests replace the
+// old `string.ambiguous`-based ones (that code checked whether a *string*
+// value merely looked like another type, which no longer means anything
+// once the reader never re-types on looks alone).
 
 #[test]
-fn string_that_looks_like_another_type_is_flagged_ambiguous() {
-    let doc = Doc::from_raw(edges(vec![("root", leaf_str("42"))])).unwrap();
+fn non_string_scalar_is_flagged_value_stringified() {
+    let doc = Doc::from_raw(edges(vec![("root", leaf_int(42))])).unwrap();
     let rep = check_xml(&doc);
     assert!(
         rep.adjustments()
             .iter()
-            .any(|a| a.code == "string.ambiguous"),
+            .any(|a| a.code == "value.stringified"),
         "{rep:?}"
     );
 }
 
 #[test]
-fn ordinary_string_is_not_flagged_ambiguous() {
+fn bool_and_float_scalars_are_also_flagged_value_stringified() {
+    let doc = Doc::from_raw(edges(vec![(
+        "root",
+        edges(vec![
+            ("b", RawNode::Leaf(Scalar::Bool(true))),
+            ("f", RawNode::Leaf(Scalar::Float(1.5))),
+        ]),
+    )]))
+    .unwrap();
+    let rep = check_xml(&doc);
+    let count = rep
+        .adjustments()
+        .iter()
+        .filter(|a| a.code == "value.stringified")
+        .count();
+    assert_eq!(count, 2, "{rep:?}");
+}
+
+#[test]
+fn a_string_that_looks_like_a_number_is_not_flagged() {
+    // A `Scalar::Str` is never flagged `value.stringified` -- it's already
+    // a string, nothing is being stringified. This is true regardless of
+    // what the string's text looks like, since read_xml never re-types on
+    // looks (omnist-rs#86).
+    let doc = Doc::from_raw(edges(vec![("root", leaf_str("42"))])).unwrap();
+    let rep = check_xml(&doc);
+    assert!(
+        !rep.adjustments()
+            .iter()
+            .any(|a| a.code == "value.stringified" || a.code == "string.ambiguous"),
+        "{rep:?}"
+    );
+}
+
+#[test]
+fn ordinary_string_is_not_flagged_value_stringified() {
     let doc = Doc::from_raw(edges(vec![("root", leaf_str("hello"))])).unwrap();
     let rep = check_xml(&doc);
     assert!(
         !rep.adjustments()
             .iter()
-            .any(|a| a.code == "string.ambiguous")
+            .any(|a| a.code == "value.stringified")
     );
 }
 
@@ -545,20 +568,49 @@ fn null_leaf_writes_as_empty_element_and_is_reported() {
 // ------------------------------------------------------------------------ round trip
 
 #[test]
-fn round_trips_every_scalar_kind() {
+fn round_trips_string_leaves() {
+    // omnist-rs#86: a non-string scalar (int/bool/float) no longer
+    // round-trips through XML at all -- it reads back as a string (see the
+    // `value.stringified` tests above) -- so the meaningful round-trip
+    // guarantee left for `read_xml`/`write_xml` alone (no schema) is over
+    // string leaves only.
     let doc = Doc::from_raw(edges(vec![(
         "root",
         edges(vec![
-            ("i", leaf_int(42)),
+            ("i", leaf_str("42")),
             ("s", leaf_str("hello")),
-            ("b", RawNode::Leaf(Scalar::Bool(true))),
-            ("f", RawNode::Leaf(Scalar::Float(1.5))),
+            ("b", leaf_str("true")),
+            ("f", leaf_str("1.5")),
         ]),
     )]))
     .unwrap();
     let text = write_xml(&doc, false, None).unwrap();
     let doc2 = read_xml(&text).unwrap();
     assert!(doc.eq_doc(&doc2));
+}
+
+#[test]
+fn non_string_scalar_reads_back_as_a_string_not_its_original_type() {
+    // The write-side counterpart of `non_string_scalar_is_flagged_value_stringified`:
+    // confirms what actually happens on a full write->read round trip, not
+    // just that it's reported.
+    let doc = Doc::from_raw(edges(vec![("root", leaf_int(42))])).unwrap();
+    let text = write_xml(&doc, false, None).unwrap();
+    let doc2 = read_xml(&text).unwrap();
+    assert_eq!(doc2.to_raw(), edges(vec![("root", leaf_str("42"))]));
+}
+
+#[test]
+fn bool_scalar_writes_as_the_word_true_and_reads_back_as_that_string() {
+    // Same shape as the int case above, for `Scalar::Bool(true)`
+    // specifically (`xml_text`'s `Scalar::Bool` arm has a `true`/`false`
+    // branch; `xml_text_covers_bool_false` already exercises the `false`
+    // side, this exercises `true`).
+    let doc = Doc::from_raw(edges(vec![("root", RawNode::Leaf(Scalar::Bool(true)))])).unwrap();
+    let text = write_xml(&doc, false, None).unwrap();
+    assert_eq!(text, "<root>true</root>");
+    let doc2 = read_xml(&text).unwrap();
+    assert_eq!(doc2.to_raw(), edges(vec![("root", leaf_str("true"))]));
 }
 
 #[test]
@@ -569,20 +621,38 @@ fn float_integral_value_gets_a_decimal_point() {
 }
 
 #[test]
-fn round_trips_integral_float_at_and_above_1e17_boundary_issue_46() {
+fn integral_float_at_and_above_1e17_boundary_issue_46_writes_without_a_decimal_point_regression() {
     // Regression test for issue #46: an integral-valued float >= 1e17 used
-    // to render as a bare digit run, which `coerce()` then re-read via
-    // `try_parse_int` as `Scalar::Int` instead of `Scalar::Float`.
+    // to render as a bare digit run, which the old `coerce()` then
+    // re-read as `Scalar::Int` instead of `Scalar::Float` (a round-trip
+    // failure at the time). omnist-rs#86 removed `coerce()` entirely, so
+    // that specific failure mode is structurally impossible now -- every
+    // leaf reads back as a string regardless of its digit shape -- but the
+    // float-formatting behavior issue #46 was actually about (always
+    // including a `.`/`e` marker) is still worth pinning down here.
     for x in [1.0e17, 1.0e18, -1.23e17, 9.9e16_f64] {
         let doc = Doc::from_raw(edges(vec![("root", RawNode::Leaf(Scalar::Float(x)))])).unwrap();
         let text = write_xml(&doc, false, None).unwrap();
+        assert!(
+            text.contains('.') || text.contains('e') || text.contains('E'),
+            "x={x} text={text}"
+        );
         let back = read_xml(&text).unwrap();
-        assert!(doc.eq_doc(&back), "x={x} text={text}");
+        // The float no longer round-trips as a Float (it's a Str now,
+        // omnist-rs#86) -- confirm it at least reads back as the same text
+        // that was written, i.e. no silent reinterpretation happened.
+        let RawNode::Edges(e) = back.to_raw() else {
+            panic!()
+        };
+        assert!(
+            matches!(&e[0].1, RawNode::Leaf(Scalar::Str(_))),
+            "x={x} text={text}"
+        );
     }
 }
 
 #[test]
-fn nan_and_infinity_round_trip() {
+fn nan_and_infinity_write_as_words_and_read_back_as_strings() {
     let doc = Doc::from_raw(edges(vec![(
         "root",
         edges(vec![
@@ -597,15 +667,17 @@ fn nan_and_infinity_round_trip() {
     assert!(text.contains("<b>inf</b>"));
     assert!(text.contains("<c>-inf</c>"));
     let doc2 = read_xml(&text).unwrap();
-    let RawNode::Edges(e) = doc2.to_raw() else {
-        panic!()
-    };
-    let RawNode::Edges(inner) = &e[0].1 else {
-        panic!()
-    };
-    assert!(matches!(&inner[0].1, RawNode::Leaf(Scalar::Float(f)) if f.is_nan()));
-    assert!(matches!(&inner[1].1, RawNode::Leaf(Scalar::Float(f)) if f.is_infinite() && *f > 0.0));
-    assert!(matches!(&inner[2].1, RawNode::Leaf(Scalar::Float(f)) if f.is_infinite() && *f < 0.0));
+    assert_eq!(
+        doc2.to_raw(),
+        edges(vec![(
+            "root",
+            edges(vec![
+                ("a", leaf_str("nan")),
+                ("b", leaf_str("inf")),
+                ("c", leaf_str("-inf")),
+            ])
+        )])
+    );
 }
 
 // ------------------------------------------------------------------ namespaces
@@ -669,7 +741,7 @@ fn comments_and_pis_inside_an_element_body_are_skipped() {
     let doc = read_xml("<root><!-- a comment --><a>1</a><?pi data?></root>").unwrap();
     assert_eq!(
         doc.to_raw(),
-        edges(vec![("root", edges(vec![("a", leaf_int(1))]))])
+        edges(vec![("root", edges(vec![("a", leaf_str("1"))]))])
     );
 }
 

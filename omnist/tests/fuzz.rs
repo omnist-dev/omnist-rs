@@ -201,9 +201,57 @@ fn arb_object_value(depth: u32) -> impl Strategy<Value = Value> {
     })
 }
 
-/// Single-top-level-key variant, for XML's single-document-element rule.
-fn arb_single_root_value(depth: u32) -> impl Strategy<Value = Value> {
-    (arb_label(), arb_value(depth)).prop_map(|(k, v)| {
+/// XML-only leaf generator (omnist-rs#93): since omnist-rs#86, `Str` is
+/// the *only* scalar kind `check_xml` accepts as losslessly writable --
+/// `Null`/`Bool`/`Int`/`Float` are all now reported as `value.stringified`
+/// (XML has no native typed literals, so every non-string scalar reads
+/// back as a plain string). `arb_scalar` above is shared by every format's
+/// round-trip property and stays fully general on purpose (JSON/YAML/TOML/
+/// OML all still need the full scalar mix); narrowing it would silently
+/// weaken those properties' coverage too. Instead, `xml_round_trips_when_
+/// lossless` gets its own tree built from a string-only leaf, so the
+/// `prop_assume!(check_xml(...).is_empty())` filter below has a real
+/// chance of passing rather than exhausting proptest's global-reject
+/// budget on trees that are almost never XML-lossless by construction
+/// (each generated tree has 4-in-8 odds *per leaf* of drawing a non-string
+/// scalar, and most trees have several leaves).
+fn arb_xml_scalar() -> impl Strategy<Value = Value> {
+    prop_oneof![
+        "[a-zA-Z0-9 _.-]{0,12}".prop_map(Value::Str),
+        arb_tricky_string().prop_map(Value::Str),
+        arb_temporal_string().prop_map(Value::Str),
+    ]
+}
+
+/// XML-only counterpart to `arb_value`, built from `arb_xml_scalar`
+/// instead of `arb_scalar` -- otherwise identical shape/depth/breadth
+/// bounds, so the property still exercises the same tree structures
+/// (nesting, branching, empty objects) that the other formats' properties
+/// do, just with a leaf kind that XML can actually round-trip losslessly.
+fn arb_xml_value(depth: u32) -> BoxedStrategy<Value> {
+    if depth == 0 {
+        arb_xml_scalar().boxed()
+    } else {
+        let leaf = arb_xml_scalar();
+        let recurse = arb_xml_value(depth - 1);
+        prop_oneof![
+            2 => leaf,
+            3 => proptest::collection::vec((arb_label(), recurse.clone()), 0..4)
+                .prop_map(|pairs| {
+                    let mut map = IndexMap::new();
+                    for (k, v) in pairs {
+                        map.insert(k, v);
+                    }
+                    Value::Object(map)
+                }),
+        ]
+        .boxed()
+    }
+}
+
+/// XML-only counterpart to `arb_single_root_value`, using `arb_xml_value`.
+fn arb_single_root_xml_value(depth: u32) -> impl Strategy<Value = Value> {
+    (arb_label(), arb_xml_value(depth)).prop_map(|(k, v)| {
         let mut map = IndexMap::new();
         map.insert(k, v);
         Value::Object(map)
@@ -257,7 +305,7 @@ proptest! {
     }
 
     #[test]
-    fn xml_round_trips_when_lossless(v in arb_single_root_value(3)) {
+    fn xml_round_trips_when_lossless(v in arb_single_root_xml_value(3)) {
         let doc = Doc::of(&v).unwrap();
         prop_assume!(xml::check_xml(&doc).is_empty());
         let text = xml::write_xml(&doc, true, None).unwrap();

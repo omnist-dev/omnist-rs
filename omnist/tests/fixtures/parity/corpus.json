@@ -546,14 +546,14 @@
     },
     {
       "module": "test_canonical.formats.xml",
-      "note": "format: single-rooted Doc({root:{name,age,active}}) round-trips through Doc.to_xml/from_xml",
+      "note": "format: single-rooted Doc({root:{name,age,active}}) (all-string -- XML has no native typed literals) round-trips through Doc.to_xml/from_xml",
       "kind": "format_roundtrip",
       "format": "xml",
       "doc_json": {
         "root": {
           "name": "Ada",
-          "age": 36,
-          "active": true
+          "age": "36",
+          "active": "true"
         }
       }
     },

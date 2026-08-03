@@ -21,8 +21,8 @@
 //!
 //! [`quick_xml`] is used for read-side tokenization only (default features,
 //! no `serde`); the omnist-specific layer -- interleaving/repetition
-//! preservation, the depth guard, scalar coercion, all-occurrences
-//! sanitization -- is hand-written, mirroring `yaml.rs`/`toml.rs`'s
+//! preservation, the depth guard, all-occurrences sanitization -- is
+//! hand-written, mirroring `yaml.rs`/`toml.rs`'s
 //! crate-for-tokenization-plus-hand-written-logic pattern.
 //!
 //! Checked per the omnist-ts#38 concern (an unfixable `fast-xml-parser`
@@ -54,59 +54,32 @@
 //! mentions them), so this is a deliberate, disclosed simplification, not
 //! a claimed parity guarantee.
 //!
-//! ## Scalar coercion, confirmed against live Python (omnist-ts#53 lesson)
+//! ## Text stays untyped until materialize (omnist-rs#86)
 //!
-//! `omnist-ts#53` found TS's XML scalar coercion narrower than Python's,
-//! undocumented. This module's [`coerce`] was checked against a live
-//! `~/dev/venvs/omnist` interpreter's `omnist.formats._coerce`, not
-//! assumed. Confirmed rules (see this module's tests for the exact
-//! input/output pairs exercised):
+//! XML's grammar carries no type information -- `<m>1</m>` and `<m>hi</m>`
+//! are syntactically identical, a bare text node. Per `docs/formats/xml.md`
+//! ("Text is untyped ... every leaf arrives as a string. Typing requires a
+//! schema in stage 2."), [`read_xml`] builds every leaf as `Scalar::Str`
+//! unconditionally, with no int/float/bool inference at parse time --
+//! confirmed against a live `~/dev/venvs/omnist` `read_xml`: `<m>1</m>`
+//! reads as `Scalar::Str("1")`, never `Scalar::Int(1)`.
 //!
-//! * Empty string reads as the empty string `""` -- never coerced.
-//! * A **case-insensitive, whole-string** match against `"true"`/`"false"`
-//!   reads as a bool -- **without trimming** first: live-confirmed
-//!   `_coerce(" true ")` stays the *string* `" true "` (surrounding
-//!   whitespace defeats the bool match, since Python compares
-//!   `text.lower()` against the literal text, not a trimmed copy).
-//! * Otherwise, Python tries `int(text)`, then `float(text)`, keeping the
-//!   **original, untrimmed** text if neither succeeds. Both of Python's
-//!   conversions themselves trim surrounding whitespace and accept a
-//!   single underscore between two digits as a digit-group separator
-//!   (`"1_0"` -> `10`, live-confirmed) -- this module's [`try_parse_int`]/
-//!   [`try_parse_float`] replicate exactly that (trim, then validate that
-//!   every `_` sits strictly between two ASCII digits before stripping
-//!   them and delegating to Rust's own `i64`/`f64` parsers).
-//! * `float(text)` also accepts the words `inf`/`infinity`/`nan` (any
-//!   ASCII case, optionally signed) -- live-confirmed `_coerce('Infinity')
-//!   -> inf`, `_coerce('nan') -> nan`. Rust's `f64::from_str` accepts the
-//!   same vocabulary (see this module's `parses_inf_and_nan_words` test),
-//!   so no special-casing was needed beyond the shared trim/underscore
-//!   step.
-//! * **Disclosed representational gap** (same shape as `json.rs`'s/
-//!   `toml.rs`'s i64-only `Scalar::Int`): live-confirmed
-//!   `_coerce('9'*19)` is a Python `int` and `_coerce('9'*20)` is *also*
-//!   still a Python `int` (arbitrary precision, no cap until 4300 digits,
-//!   where CPython's `int(str)` digit-limit guard makes `int()` raise and
-//!   `_coerce` falls back to `float()`, which overflows silently to
-//!   `inf` for `'9'*4301` -- live-confirmed). This port's `Scalar::Int` is
-//!   `i64`-backed (19-digit range), so anything from 20 digits up through
-//!   4300 digits that Python holds as an exact `int` instead falls
-//!   through to this module's own `try_parse_float`, which is *always*
-//!   attempted after `try_parse_int` fails (unlike `json.rs`/`toml.rs`,
-//!   which reject an over-`i64` integer *literal* outright as a
-//!   `ParseError`, because JSON/TOML's grammar lexically commits to
-//!   "this token is an integer" before parsing it). XML's `_coerce` has no
-//!   such lexical commitment -- it is textual coercion, tries int then
-//!   float unconditionally -- so falling back to a `Scalar::Float`
-//!   instead of erroring is the more faithful match to Python's actual
-//!   (int-then-float-fallback) control flow, not a new divergence
-//!   invented for this port.
-//! * **Not replicated**: Python's `int()`/`float()` accept any Unicode
-//!   decimal digit (e.g. U+0663 ARABIC-INDIC DIGIT THREE), live-confirmed
-//!   `_coerce('٣') == 3`. This module's parsers are ASCII-digit-only
-//!   (`char::is_ascii_digit`) -- a disclosed, narrower-than-Python
-//!   simplification in the same spirit as `omnist-ts#53`'s own
-//!   already-accepted narrowing, not silently assumed.
+//! An earlier version of this module ported a `coerce()` helper that
+//! type-inferred leaf text (bool/int/float) at parse time, contradicting
+//! the spec and diverging from Python's reference `read_xml` -- filed and
+//! fixed as omnist-rs#86 (found via the conformance harness, vector
+//! `formats-xml/basic/interleaved-elements-preserve-order`). Python fixed
+//! the identical bug in its own `read_xml` as `omnist#288`
+//! (`_xml_to_node` no longer infers scalar kind from text shape); this
+//! module's fix mirrors that commit.
+//!
+//! Schema-guided pretyping -- recovering `boolean`/`integer`/`number` from
+//! XML's untyped text *before* `materialize` sees it, so a schema-typed
+//! read can still get real numbers/bools instead of only strings, the way
+//! Python's `_xml_pretype` does when `read_xml(text, schema=...)` is
+//! called -- is a distinct, not-yet-ported feature. [`read_xml`] here has
+//! no schema parameter at all yet, so there is nothing to pretype; typing
+//! happens exclusively at `materialize`, same as every other format.
 //!
 //! ## All-occurrences sanitization (omnist-ts#36 regression)
 //!
@@ -183,7 +156,10 @@ pub fn read_xml(text: &str) -> Result<Doc, OmnistError> {
             }
             Event::Empty(e) => {
                 let tag = local_name(e.name());
-                let doc = Doc::from_raw(RawNode::Edges(vec![(tag, RawNode::Leaf(coerce("")))]))?;
+                let doc = Doc::from_raw(RawNode::Edges(vec![(
+                    tag,
+                    RawNode::Leaf(Scalar::Str(String::new())),
+                )]))?;
                 return Ok(doc);
             }
             Event::Eof => {
@@ -202,8 +178,8 @@ pub fn read_xml(text: &str) -> Result<Doc, OmnistError> {
 /// Reads the content of an already-opened element (the matching `Start`
 /// event has already been consumed by the caller) up to and including its
 /// `End` event, returning either an internal node ([`RawNode::Edges`], if
-/// it has child elements) or a leaf ([`RawNode::Leaf`], coerced from its
-/// text), mirroring Python's `_xml_to_node`.
+/// it has child elements) or a leaf ([`RawNode::Leaf`], its untyped text
+/// verbatim as a [`Scalar::Str`]), mirroring Python's `_xml_to_node`.
 fn parse_content(
     reader: &mut Reader<&[u8]>,
     source: &str,
@@ -232,7 +208,7 @@ fn parse_content(
             }
             Event::Empty(e) => {
                 let tag = local_name(e.name());
-                children.push((tag, RawNode::Leaf(coerce(""))));
+                children.push((tag, RawNode::Leaf(Scalar::Str(String::new()))));
             }
             Event::End(_) => break,
             Event::Text(e) => {
@@ -280,7 +256,7 @@ fn parse_content(
         }
         Ok(RawNode::Edges(children))
     } else {
-        Ok(RawNode::Leaf(coerce(&text)))
+        Ok(RawNode::Leaf(Scalar::Str(text)))
     }
 }
 
@@ -359,69 +335,6 @@ fn resolve_general_ref(
             .into())
         }
     }
-}
-
-/// Turns element text into a [`Scalar`] -- see this module's doc comment
-/// for the confirmed-against-live-Python coercion rules.
-fn coerce(text: &str) -> Scalar {
-    if text.is_empty() {
-        return Scalar::Str(String::new());
-    }
-    let low = text.to_lowercase();
-    if low == "true" {
-        return Scalar::Bool(true);
-    }
-    if low == "false" {
-        return Scalar::Bool(false);
-    }
-    if let Some(i) = try_parse_int(text) {
-        return Scalar::Int(i);
-    }
-    if let Some(f) = try_parse_float(text) {
-        return Scalar::Float(f);
-    }
-    Scalar::Str(text.to_string())
-}
-
-/// `None` if `s` contains an underscore that isn't strictly between two
-/// ASCII digits (Python's digit-group-separator rule for `int()`/
-/// `float()`); otherwise `Some` of `s` with every underscore removed.
-fn strip_underscores_if_valid(s: &str) -> Option<String> {
-    let chars: Vec<char> = s.chars().collect();
-    for (i, &c) in chars.iter().enumerate() {
-        if c == '_' {
-            let prev_ok = i > 0 && chars[i - 1].is_ascii_digit();
-            let next_ok = i + 1 < chars.len() && chars[i + 1].is_ascii_digit();
-            if !(prev_ok && next_ok) {
-                return None;
-            }
-        }
-    }
-    Some(chars.into_iter().filter(|&c| c != '_').collect())
-}
-
-/// Python's `int(text)`: trims whitespace, allows a `+`/`-` sign and
-/// underscore digit-group separators, ASCII digits only (see this
-/// module's doc comment on the Unicode-digit divergence).
-fn try_parse_int(text: &str) -> Option<i64> {
-    let t = text.trim();
-    if t.is_empty() {
-        return None;
-    }
-    let cleaned = strip_underscores_if_valid(t)?;
-    cleaned.parse::<i64>().ok()
-}
-
-/// Python's `float(text)`: trims whitespace, allows a sign, underscore
-/// digit-group separators, and the `inf`/`infinity`/`nan` words (any
-/// case) -- see this module's doc comment.
-fn try_parse_float(text: &str) -> Option<f64> {
-    let t = text.trim();
-    if t.is_empty() {
-        return None;
-    }
-    let cleaned = strip_underscores_if_valid(t)?;
-    cleaned.parse::<f64>().ok()
 }
 
 // ============================================================== Writer
@@ -542,17 +455,20 @@ fn scan_leaf(scalar: &Scalar, path: &str, rep: &mut WriteReport) {
             "null written as an empty element",
             Severity::Warning,
         ),
-        Scalar::Str(v) => {
-            if !matches!(coerce(v), Scalar::Str(_)) {
-                rep.add(
-                    path,
-                    "string.ambiguous",
-                    format!("string {v:?} looks like another type and reads back as that type"),
-                    Severity::Warning,
-                );
-            }
-        }
-        Scalar::Bool(_) | Scalar::Int(_) | Scalar::Float(_) => {}
+        // omnist-rs#86: read_xml no longer infers scalar kind from
+        // element-text shape, so a non-string scalar written to XML (XML
+        // has no native typed literals -- everything is text) now reads
+        // back as a string, not its original type. Previously silent
+        // (the old shape-based coercion happened to undo this on read);
+        // now reported like every other type-losing write, matching
+        // Python's identical fix (`omnist#288`, `value.stringified`).
+        Scalar::Bool(_) | Scalar::Int(_) | Scalar::Float(_) => rep.add(
+            path,
+            "value.stringified",
+            "non-string scalar written as text (reads back as a string)",
+            Severity::Warning,
+        ),
+        Scalar::Str(_) => {}
     }
     if let Scalar::Str(v) = scalar {
         if v.chars().any(is_xml_illegal_char) {

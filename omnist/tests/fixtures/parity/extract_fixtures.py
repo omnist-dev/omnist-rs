@@ -275,14 +275,21 @@ add("test_canonical.formats.toml",
     "format: Doc({name,age,active}) (no null field - TOML has no null literal) round-trips through Doc.to_toml/from_toml",
     "format_roundtrip", format="toml", doc_json=TOML_DOC)
 
-# XML requires a single-rooted document (one top-level edge).
-XML_DOC = {"root": {"name": "Ada", "age": 36, "active": True}}
+# XML requires a single-rooted document (one top-level edge). Unlike
+# json/yaml/toml above, XML text carries no type information (omnist#288 --
+# read_xml no longer infers scalar kind from element-text shape, matched by
+# omnist-rs#86): a typed scalar (int/bool/float) written to XML reads back
+# as a string, so it is *not* a value this round trip stays lossless over.
+# All-string values are the only shape XML round-trips losslessly with no
+# schema, so that's what this fixture uses.
+XML_DOC = {"root": {"name": "Ada", "age": "36", "active": "true"}}
 dx = doc(XML_DOC)
 xtext = dx.to_xml()
 xback = type(dx).from_xml(xtext)
 assert xback.to_data() == dx.to_data()
 add("test_canonical.formats.xml",
-    "format: single-rooted Doc({root:{name,age,active}}) round-trips through Doc.to_xml/from_xml",
+    "format: single-rooted Doc({root:{name,age,active}}) (all-string -- XML "
+    "has no native typed literals) round-trips through Doc.to_xml/from_xml",
     "format_roundtrip", format="xml", doc_json=XML_DOC)
 
 # --------------------------------------------------------------------
