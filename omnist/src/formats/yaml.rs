@@ -559,7 +559,17 @@ fn describe_non_string_key(v: &Value) -> String {
         Value::Bool(false) => "False".to_string(),
         Value::Null => "None".to_string(),
         Value::Int(i) => i.to_string(),
-        Value::Float(f) => f.to_string(),
+        Value::Float(f) => {
+            // Rust's `f64::to_string()` renders whole numbers like `1.0`
+            // as `"1"`, but Python's `repr(float)` always keeps the `.0`
+            // -- confirmed live: `repr(1.0)` is `'1.0'`, not `'1'`.
+            let s = f.to_string();
+            if f.is_finite() && !s.contains('.') && !s.contains('e') && !s.contains('E') {
+                format!("{s}.0")
+            } else {
+                s
+            }
+        }
         other => format!("{other:?}"),
     }
 }
@@ -1897,12 +1907,33 @@ mod tests {
         assert_eq!(describe_non_string_key(&Value::Null), "None");
         assert_eq!(describe_non_string_key(&Value::Int(43200)), "43200");
         assert_eq!(describe_non_string_key(&Value::Float(1.5)), "1.5");
+        // Whole-number floats must keep the `.0` (Python's `repr(1.0)` is
+        // `'1.0'`, not `'1'` -- `f64::to_string()` alone drops it).
+        assert_eq!(describe_non_string_key(&Value::Float(1.0)), "1.0");
+        assert_eq!(describe_non_string_key(&Value::Float(-2.0)), "-2.0");
         // Structurally unreachable via the real call site (see the
         // function's doc comment), exercised directly here so the wildcard
         // fallback arm is real, tested code, not a dead branch.
         assert_eq!(
             describe_non_string_key(&Value::Str("x".to_string())),
             "Str(\"x\")"
+        );
+    }
+
+    #[test]
+    fn int_and_float_shaped_mapping_keys_are_rejected_with_python_parity_messages() {
+        // Direct coverage for the reviewer-flagged gap: int/float-shaped
+        // (non-bool/null) keys are also generically rejected, and the
+        // whole-number float case must render as Python's `1.0`, not `1`.
+        let err = read_yaml("123:\n  a: 1\n").unwrap_err();
+        assert!(
+            matches!(&err, OmnistError::Document(e) if e.path == "$" && e.message.contains("123")),
+            "got {err:?}"
+        );
+        let err = read_yaml("1.0:\n  a: 1\n").unwrap_err();
+        assert!(
+            matches!(&err, OmnistError::Document(e) if e.path == "$" && e.message.contains("1.0")),
+            "got {err:?}"
         );
     }
 
