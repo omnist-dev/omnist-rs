@@ -28,6 +28,26 @@ jobs:
       - name: coverage
         run: cargo llvm-cov --workspace --fail-under-lines 100
 
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: dtolnay/rust-toolchain@stable
+      # Three binaries, run in order (issue #82 Step 6): each drives its
+      # own vendored omnist-spec suite and returns a real nonzero exit
+      # code on a real fail. Per spec §8.5.5, this gate is fail-count-only
+      # -- never fails merely because skips exist (every skip is already
+      # cited in-tree, see referee.rs/runner.rs/vector_runner.rs doc
+      # comments and issue #82's final report).
+      - name: referee self-test (10 fixtures)
+        run: cargo run -q -p conformance --bin self-test
+      - name: Track 1 -- directory-per-fixture runner
+        run: cargo run -q -p conformance --bin runner
+      - name: Track 2 -- JSON-vector suite runner
+        run: cargo run -q -p conformance --bin vector_runner
+
   doc-examples:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
