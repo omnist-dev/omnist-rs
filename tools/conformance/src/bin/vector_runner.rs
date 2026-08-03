@@ -279,10 +279,10 @@ fn run_parse(v: &Json) -> VResult {
 
     // `read_oml` returns a bare `RawNode` + `ParseError`; the other four
     // formats return `Doc` + `OmnistError`. Normalize both into
-    // `Result<RawNode, Option<(usize, usize)>>` (an optional line/col) so
+    // `Result<RawNode, Option<ErrPos>>` (an optional structural position) so
     // the rest of this driver is format-agnostic.
-    let result: Result<RawNode, Option<(usize, usize)>> = match format {
-        "oml" => read_oml(text).map_err(|e| Some((e.line, e.col))),
+    let result: Result<RawNode, Option<ErrPos>> = match format {
+        "oml" => read_oml(text).map_err(|e| Some(ErrPos::LineCol(e.line, e.col))),
         "json" => read_json(text)
             .map(|d| d.to_raw())
             .map_err(omnist_error_pos),
@@ -315,27 +315,58 @@ fn run_parse(v: &Json) -> VResult {
                 ));
             }
             let expected_paths = expected_diag_paths(v);
-            if expected_paths.is_empty() {
-                return pass();
-            }
-            match pos {
-                Some((line, col)) => {
-                    let actual_paths = vec![parse_error_path(line, col)];
-                    if paths_match(expected_paths, actual_paths) {
-                        pass()
-                    } else {
-                        fail("parse-error line:col does not match expected diagnostic path")
-                    }
-                }
-                None => skip("syntax-level error carries no structured line/col here"),
-            }
+            parse_failure_result(pos, expected_paths)
         }
     }
 }
 
-fn omnist_error_pos(e: OmnistError) -> Option<(usize, usize)> {
+/// The `Err(pos)` half of [`run_parse`]'s dispatch, split out as its own
+/// pure function so every arm (including the two that no longer have a
+/// real vector reaching them now that issue #88's `DocumentError`-path
+/// handling exists -- see the two direct unit tests right below this
+/// function) is independently, directly testable rather than relying on
+/// the vector suite's shape to happen to exercise it.
+fn parse_failure_result(pos: Option<ErrPos>, expected_paths: Vec<String>) -> VResult {
+    if expected_paths.is_empty() {
+        return pass();
+    }
+    match pos {
+        Some(ErrPos::LineCol(line, col)) => {
+            let actual_paths = vec![parse_error_path(line, col)];
+            if paths_match(expected_paths, actual_paths) {
+                pass()
+            } else {
+                fail("parse-error line:col does not match expected diagnostic path")
+            }
+        }
+        Some(ErrPos::Path(path)) => {
+            let actual_paths = vec![path];
+            if paths_match(expected_paths, actual_paths) {
+                pass()
+            } else {
+                fail("document-error path does not match expected diagnostic path")
+            }
+        }
+        None => skip("syntax-level error carries no structured line/col here"),
+    }
+}
+
+/// A parse failure's structural position, normalized across the two shapes
+/// `run_parse` can see: a syntax-level `ParseError`'s `{line, col}` (compared
+/// as `"{line}:{col}"`, see the module doc's "Parse-error structural
+/// matching" section), or a `DocumentError`'s own `path` (already a
+/// `"$..."`-shaped string, e.g. issue #88's mapping-key-must-be-a-string
+/// rejection, used as-is with no reformatting).
+#[derive(Debug)]
+enum ErrPos {
+    LineCol(usize, usize),
+    Path(String),
+}
+
+fn omnist_error_pos(e: OmnistError) -> Option<ErrPos> {
     match e {
-        OmnistError::Parse(pe) => Some((pe.line, pe.col)),
+        OmnistError::Parse(pe) => Some(ErrPos::LineCol(pe.line, pe.col)),
+        OmnistError::Document(de) => Some(ErrPos::Path(de.path)),
         _ => None,
     }
 }
@@ -847,25 +878,25 @@ mod tests {
     /// `main`/`main_with_dir` itself is process-entry-point code no test
     /// calls directly). The exact counts are this step's honest,
     /// freshly-reproduced measurement -- originally issue #82 Step 3's
-    /// report (112, 5, 22), updated to (113, 4, 22) by omnist-rs#86 (the
-    /// `formats-xml/basic/interleaved-elements-preserve-order` vector
-    /// moved FAIL -> PASS once `read_xml` stopped type-inferring leaf
-    /// text), then to (113, 3, 23) by omnist-rs#89 (the
-    /// `formats-json/basic/temporal-leaf-is-stringified-on-write` vector
-    /// reclassified FAIL -> cited SKIP, structurally unreachable per
-    /// issue #16), and combined here (both fixes rebased together) to
-    /// (114, 2, 23) -- one more pass than the naive sum of the two
-    /// individual deltas, confirmed by actually running the rebased
-    /// harness rather than computed by hand. Pinned here so a future
-    /// change that silently regresses pass/fail/skip counts is caught,
-    /// not a "this must always be 0 fails" gate: the remaining 2 real
-    /// fails are Step 4's (triage) job, not this runner's.
+    /// report (112, 5, 22), updated to (113, 4, 22) by omnist-rs#86 (XML
+    /// interleaving fix), then (113, 3, 23) by omnist-rs#89 (JSON
+    /// temporal-write vector reclassified FAIL -> cited SKIP), then
+    /// (114, 2, 23) once #86+#89 were combined (one extra pass beyond
+    /// the naive sum), and now further updated by omnist-rs#87/#88
+    /// (legacy sexagesimal int + Norway-problem mapping-key rejection),
+    /// which also incidentally resolves
+    /// `formats-json/basic/nested-array-is-rejected` from skip to pass
+    /// via the same general `DocumentError` path-checking fix. Every
+    /// count here is freshly reproduced by running the rebased harness,
+    /// not computed by hand. Pinned so a future change that silently
+    /// regresses pass/fail/skip counts is caught, not a "this must
+    /// always be 0 fails" gate.
     #[test]
     fn full_suite_counts_match_the_measured_baseline() {
         let (passed, failed, skipped) = run_all(&suite_dir());
         assert_eq!(
             (passed, failed, skipped),
-            (114, 2, 23),
+            (117, 0, 22),
             "vector pass/fail/skip counts changed -- if this is an intentional fix or a new \
              vector, update the pinned baseline; if not, something regressed"
         );
@@ -991,6 +1022,38 @@ mod tests {
         });
         let r = dispatch(&v);
         assert!(matches!(r.status, Status::Pass | Status::Fail));
+    }
+
+    #[test]
+    fn omnist_error_pos_returns_none_for_non_parse_non_document_variants() {
+        // No real `read_*` format function constructs a Schema/Materialize/
+        // Write/Format `OmnistError` today, so this catch-all arm has no
+        // real vector reaching it -- exercised directly instead, matching
+        // this file's own "both arms real and independently tested"
+        // convention (see `parse_failure_result`'s doc comment).
+        let e: OmnistError = omnist::error::FormatError("x".to_string()).into();
+        assert!(omnist_error_pos(e).is_none());
+    }
+
+    #[test]
+    fn parse_failure_result_none_pos_with_diagnostics_skips() {
+        let r = parse_failure_result(None, vec!["$".to_string()]);
+        assert_eq!(r.status, Status::Skip);
+    }
+
+    #[test]
+    fn parse_failure_result_document_path_mismatch_fails() {
+        let r = parse_failure_result(
+            Some(ErrPos::Path("$.wrong".to_string())),
+            vec!["$".to_string()],
+        );
+        assert_eq!(r.status, Status::Fail);
+    }
+
+    #[test]
+    fn parse_failure_result_document_path_match_passes() {
+        let r = parse_failure_result(Some(ErrPos::Path("$".to_string())), vec!["$".to_string()]);
+        assert_eq!(r.status, Status::Pass);
     }
 
     #[test]
@@ -1124,12 +1187,14 @@ mod tests {
     }
 
     #[test]
-    fn main_with_dir_on_the_real_suite_returns_one_because_of_real_fails() {
-        // Drives `main_with_dir`'s success path (valid dir), distinct from
-        // `missing_suite_dir_returns_two`'s error path -- the exit code is
-        // 1 because this suite genuinely has real fails (see this file's
-        // module doc comment and the issue #82 Step 3 report).
-        assert_eq!(main_with_dir(&suite_dir()), 1);
+    fn main_with_dir_on_the_real_suite_returns_zero() {
+        // Drives `main_with_dir`'s success path against the real vendored
+        // suite (distinct from `missing_suite_dir_returns_two`'s error
+        // path, and from `main_with_dir_on_an_all_passing_suite_returns_zero`'s
+        // synthetic single-vector dir). The exit code is 0 because the real
+        // suite now has zero real fails (see this file's module doc
+        // comment) -- omnist-rs#87/#88 closed out the last ones.
+        assert_eq!(main_with_dir(&suite_dir()), 0);
     }
 
     #[test]
