@@ -100,6 +100,22 @@ fn date_round_trips() {
 }
 
 #[test]
+fn datetime_date_then_time_lookahead_canonicalizes_missing_seconds() {
+    // Regression test for issue #90: the DATE-then-TIME one-token lookahead
+    // merge in the scanner correctly produces a single DATETIME token, but
+    // was storing the raw source text ("2024-01-01T10:30") instead of the
+    // canonical form with seconds filled in, unlike Python's real
+    // `datetime` object (`datetime.datetime(2024, 1, 1, 10, 30).isoformat()
+    // == "2024-01-01T10:30:00"`).
+    let parsed = Doc::from_raw(read_oml("a: 2024-01-01T10:30\n").unwrap()).unwrap();
+    let value = parsed.root().child("a").unwrap().value().unwrap();
+    assert!(
+        matches!(value, crate::document::Scalar::Str(s) if s == "2024-01-01T10:30:00"),
+        "expected canonical '2024-01-01T10:30:00', got {value:?}"
+    );
+}
+
+#[test]
 fn time_round_trips_with_and_without_seconds_and_fraction() {
     roundtrip_value(&obj(&[
         ("a", Value::Str("12:00:00".into())),
