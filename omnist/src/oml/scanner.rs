@@ -15,12 +15,20 @@
 //! recognized-but-semantically-invalid literal (`2024-02-30`) is a
 //! `ParseError`, not silently accepted. [`crate::document::Scalar`] has no
 //! native date/time/datetime variant (see `document.rs`'s module doc), so a
-//! valid temporal literal becomes a `Scalar::Str` holding its exact source
-//! spelling, matching [`crate::schema::matches_kind`]'s own convention.
+//! valid temporal literal becomes a `Scalar::Str` holding its *canonical*
+//! form (issue #90) -- `time`/`datetime` literals have their omitted `:SS`
+//! defaulted to `:00` and any fractional-seconds part zero-padded to 6
+//! digits via
+//! [`crate::schema::canonicalize_iso_time`]/[`crate::schema::canonicalize_iso_datetime`],
+//! matching what Python's real `datetime` objects normalize to. `date`
+//! literals have no optional components, so their source spelling is
+//! already canonical.
 
 use crate::error::ParseError;
 use crate::formats::int_cap::{MAX_INT_DIGITS, out_of_range_message, over_cap_message};
-use crate::schema::{is_iso_date, is_iso_datetime, is_iso_time};
+use crate::schema::{
+    canonicalize_iso_datetime, canonicalize_iso_time, is_iso_date, is_iso_datetime, is_iso_time,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum TokKind {
@@ -462,7 +470,14 @@ impl<'a> Scanner<'a> {
             return Err(self.error_at(end, format!("invalid {label} {text:?}")));
         }
         self.pos = end;
-        Ok((TokKind::Temporal(text), start, end))
+        let canonical = match kind {
+            // `date` has no optional components in the grammar -- the
+            // source spelling is already canonical.
+            TemporalKind::Date => text,
+            TemporalKind::Time => canonicalize_iso_time(&text),
+            TemporalKind::Datetime => canonicalize_iso_datetime(&text),
+        };
+        Ok((TokKind::Temporal(canonical), start, end))
     }
 
     fn digits_from(&self, pos: usize) -> usize {

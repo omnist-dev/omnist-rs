@@ -185,6 +185,64 @@ pub(crate) fn is_iso_datetime(s: &str) -> bool {
     ok_date && is_valid_time_captures(&caps)
 }
 
+/// Canonicalizes an already-`is_iso_time`-validated time string to its
+/// normalized form: a missing `:SS` defaults to `:00`, and a present
+/// fractional-seconds part is zero-padded to 6 digits (matching Python's
+/// real `datetime.time`/`datetime.datetime` `.isoformat()` output, which is
+/// what the OML temporal grammar's canonical form is defined against). Any
+/// UTC offset is carried through unchanged -- it's already in the
+/// grammar's canonical `+HH:MM`/`-HH:MM` shape.
+///
+/// # Panics
+/// Panics if `s` doesn't match `TIME_RE` -- callers must validate with
+/// `is_iso_time` first.
+pub(crate) fn canonicalize_iso_time(s: &str) -> String {
+    let caps = TIME_RE
+        .captures(s)
+        .expect("caller must validate with is_iso_time first");
+    canonicalize_time_captures(&caps)
+}
+
+/// Canonicalizes an already-`is_iso_datetime`-validated datetime string the
+/// same way as [`canonicalize_iso_time`], with the date portion (already
+/// fully-specified by the grammar -- `YYYY-MM-DD` has no optional parts)
+/// carried through unchanged.
+///
+/// # Panics
+/// Panics if `s` doesn't match `DATETIME_RE` -- callers must validate with
+/// `is_iso_datetime` first.
+pub(crate) fn canonicalize_iso_datetime(s: &str) -> String {
+    let caps = DATETIME_RE
+        .captures(s)
+        .expect("caller must validate with is_iso_datetime first");
+    let y = caps.name("y").expect("mandatory group").as_str();
+    let mo = caps.name("mo").expect("mandatory group").as_str();
+    let da = caps.name("da").expect("mandatory group").as_str();
+    format!("{y}-{mo}-{da}T{}", canonicalize_time_captures(&caps))
+}
+
+/// Shared canonicalization of the `h`/`m`/`s`/`f`/`off` capture groups that
+/// `TIME_RE` and `DATETIME_RE` both define identically for the time
+/// portion.
+fn canonicalize_time_captures(caps: &regex::Captures<'_>) -> String {
+    let h = caps.name("h").expect("mandatory group").as_str();
+    let m = caps.name("m").expect("mandatory group").as_str();
+    let s = caps.name("s").map_or("00", |c| c.as_str());
+    let mut out = format!("{h}:{m}:{s}");
+    if let Some(f) = caps.name("f") {
+        out.push('.');
+        let digits = f.as_str();
+        out.push_str(digits);
+        for _ in digits.len()..6 {
+            out.push('0');
+        }
+    }
+    if let Some(off) = caps.name("off") {
+        out.push_str(off.as_str());
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------
 // Scalar
 // ---------------------------------------------------------------------------
