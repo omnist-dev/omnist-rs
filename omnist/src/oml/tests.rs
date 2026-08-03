@@ -116,12 +116,37 @@ fn datetime_date_then_time_lookahead_canonicalizes_missing_seconds() {
 }
 
 #[test]
-fn time_round_trips_with_and_without_seconds_and_fraction() {
+fn time_round_trips_in_canonical_form() {
+    // Only already-canonical spellings round-trip identity-wise: a
+    // missing-seconds or under-padded-fraction source spelling is
+    // canonicalized on read (issue #90), so it deliberately does NOT
+    // round-trip back to the original `Value::Str` -- see
+    // `time_literal_without_seconds_canonicalizes_on_read` below for that
+    // behavior.
     roundtrip_value(&obj(&[
         ("a", Value::Str("12:00:00".into())),
-        ("b", Value::Str("12:00".into())),
-        ("c", Value::Str("12:00:00.123456".into())),
+        ("b", Value::Str("12:00:00.123456".into())),
     ]));
+}
+
+#[test]
+fn time_literal_without_seconds_canonicalizes_on_read() {
+    let parsed = Doc::from_raw(read_oml("a: 12:00\n").unwrap()).unwrap();
+    let value = parsed.root().child("a").unwrap().value().unwrap();
+    assert!(
+        matches!(value, crate::document::Scalar::Str(s) if s == "12:00:00"),
+        "expected canonical '12:00:00', got {value:?}"
+    );
+}
+
+#[test]
+fn time_literal_with_short_fraction_zero_pads_on_read() {
+    let parsed = Doc::from_raw(read_oml("a: 12:00:00.5\n").unwrap()).unwrap();
+    let value = parsed.root().child("a").unwrap().value().unwrap();
+    assert!(
+        matches!(value, crate::document::Scalar::Str(s) if s == "12:00:00.500000"),
+        "expected canonical '12:00:00.500000', got {value:?}"
+    );
 }
 
 #[test]
@@ -247,8 +272,14 @@ fn bare_time_literal_round_trips_as_a_time_not_a_quoted_string() {
     let text = write_oml(&raw, 2).unwrap();
     // Must write as a bare, unquoted time literal, not `"12:00"`.
     assert_eq!(text, "a: 12:00");
+    // Reading it back canonicalizes the missing seconds (issue #90), so the
+    // parsed value is "12:00:00", not a byte-identical round trip of `raw`.
+    let expected = RawNode::Edges(vec![(
+        "a".to_string(),
+        RawNode::Leaf(crate::document::Scalar::Str("12:00:00".to_string())),
+    )]);
     let parsed = read_oml(&text).unwrap();
-    assert_eq!(parsed, raw);
+    assert_eq!(parsed, expected);
 }
 
 // omnist-ts#36-equivalent: writer escaping must be all-occurrences, not

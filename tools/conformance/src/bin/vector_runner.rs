@@ -785,7 +785,7 @@ mod tests {
         let (passed, failed, skipped) = run_all(&suite_dir());
         assert_eq!(
             (passed, failed, skipped),
-            (112, 5, 22),
+            (113, 4, 22),
             "vector pass/fail/skip counts changed -- if this is an intentional fix or a new \
              vector, update the pinned baseline; if not, something regressed"
         );
