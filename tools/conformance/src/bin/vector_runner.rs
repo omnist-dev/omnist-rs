@@ -846,16 +846,24 @@ mod tests {
     /// driver (also this file's real coverage-driving test, since
     /// `main`/`main_with_dir` itself is process-entry-point code no test
     /// calls directly). The exact counts are this step's honest,
-    /// freshly-reproduced measurement (issue #82 Step 3's report) --
-    /// pinned here so a future change that silently regresses pass/fail/
-    /// skip counts is caught, not a "this must always be 0 fails" gate:
-    /// the 5 real fails are Step 4's (triage) job, not this runner's.
+    /// freshly-reproduced measurement -- originally issue #82 Step 3's
+    /// report (112, 5, 22), updated to (113, 4, 22) by omnist-rs#86 (the
+    /// `formats-xml/basic/interleaved-elements-preserve-order` vector
+    /// moved FAIL -> PASS once `read_xml` stopped type-inferring leaf
+    /// text), then to (113, 3, 23) by omnist-rs#89 (the
+    /// `formats-json/basic/temporal-leaf-is-stringified-on-write` vector
+    /// reclassified FAIL -> cited SKIP, structurally unreachable per
+    /// issue #16), and combined here (both fixes rebased together) to
+    /// (113, 2, 23). Pinned here so a future change that silently
+    /// regresses pass/fail/skip counts is caught, not a "this must
+    /// always be 0 fails" gate: the remaining 2 real fails are Step 4's
+    /// (triage) job, not this runner's.
     #[test]
     fn full_suite_counts_match_the_measured_baseline() {
         let (passed, failed, skipped) = run_all(&suite_dir());
         assert_eq!(
             (passed, failed, skipped),
-            (113, 3, 23),
+            (113, 2, 23),
             "vector pass/fail/skip counts changed -- if this is an intentional fix or a new \
              vector, update the pinned baseline; if not, something regressed"
         );
