@@ -394,11 +394,40 @@ impl Field {
 }
 
 /// A closed set of named fields (constrained by its child labels).
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `fields` preserves declaration order (needed for canonical OSD
+/// rendering and `prune`'s declaration-order environment reconstruction --
+/// see `ops/mod.rs`'s module docs), but equality below deliberately treats
+/// it as an unordered set: omnist-spec's `docs/03-schema-model.md` Sec3.1
+/// states fields are an unordered set at the model layer, so two records
+/// declaring the same fields in a different order must compare equal.
+/// Confirmed empirically by this crate's own conformance self-test
+/// (`tools/conformance`, fixture
+/// `_referee-self-test/01-schema-exact-equal-different-field-order`) before
+/// this manual `PartialEq` replaced the field-order-sensitive derive.
+#[derive(Debug, Clone)]
 pub struct Record {
     fields: Vec<Field>,
     by_label: IndexMap<String, usize>,
 }
+
+impl PartialEq for Record {
+    fn eq(&self, other: &Self) -> bool {
+        if self.fields.len() != other.fields.len() {
+            return false;
+        }
+        // No duplicate labels within a record (enforced by `Record::new`),
+        // so sorting by label gives each side a canonical, comparable
+        // order regardless of declaration order.
+        let mut a: Vec<&Field> = self.fields.iter().collect();
+        let mut b: Vec<&Field> = other.fields.iter().collect();
+        a.sort_by(|x, y| x.label.cmp(&y.label));
+        b.sort_by(|x, y| x.label.cmp(&y.label));
+        a == b
+    }
+}
+
+impl Eq for Record {}
 
 impl Record {
     /// Rejects a duplicate field label, matching Python's `Record.__init__`.
@@ -795,6 +824,27 @@ mod tests {
     use super::*;
     use crate::document::{Doc, Value};
     use indexmap::IndexMap as Map;
+
+    #[test]
+    fn record_partial_eq_treats_field_order_as_insignificant_but_field_count_as_significant() {
+        let r1 = Record::new(vec![
+            Field::required("x", STRING).unwrap(),
+            Field::required("y", STRING).unwrap(),
+        ])
+        .unwrap();
+        let r2 = Record::new(vec![
+            Field::required("y", STRING).unwrap(),
+            Field::required("x", STRING).unwrap(),
+        ])
+        .unwrap();
+        assert_eq!(r1, r2, "declaration order must not affect Record equality");
+
+        let r3 = Record::new(vec![Field::required("x", STRING).unwrap()]).unwrap();
+        assert_ne!(
+            r1, r3,
+            "a different field count must never compare equal, regardless of order"
+        );
+    }
 
     fn obj(pairs: &[(&str, Value)]) -> Value {
         let mut m = Map::new();
