@@ -12,4 +12,5 @@
   - [XML](./formats/xml.md)
   - [OML](./formats/oml.md)
 - [Python divergences](./python-divergences.md)
+- [Conformance against omnist-spec](./conformance.md)
 - [Limitations & stability](./limitations.md)

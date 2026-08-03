@@ -14,5 +14,7 @@ documents one codec's specific round-trip behavior.
 
 This is the Rust port of [omnist](https://github.com/omnist-dev/omnist).
 See [Python divergences](./python-divergences.md) for where the two
-implementations differ, and [Limitations & stability](./limitations.md)
-for the current alpha-status caveats.
+implementations differ, [Conformance against
+omnist-spec](./conformance.md) for this port's real, measured pass/fail/
+skip numbers against the upstream spec, and [Limitations &
+stability](./limitations.md) for the current alpha-status caveats.
