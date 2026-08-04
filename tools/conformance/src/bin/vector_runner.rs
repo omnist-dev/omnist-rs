@@ -1020,6 +1020,23 @@ mod tests {
     }
 
     #[test]
+    fn run_parse_success_but_document_mismatch_fails() {
+        // A real parse success whose resulting document simply doesn't
+        // match `expect.document` -- no vector in the real suite happens
+        // to hit this specific combination (every real fail is a
+        // diagnostics/error-shape mismatch instead), so it's exercised
+        // directly here.
+        let v = json!({
+            "operation": "parse",
+            "input": {"format": "json", "text": "1"},
+            "expect": {"ok": true, "document": {"scalar": {"kind": "integer", "value": 2}}}
+        });
+        let r = dispatch(&v);
+        assert_eq!(r.status, Status::Fail);
+        assert_eq!(r.message, "parsed document does not match expected");
+    }
+
+    #[test]
     fn run_parse_success_when_expect_ok_false_fails() {
         let v = json!({"operation": "parse", "input": {"format": "oml", "text": "a: 1\n"}, "expect": {"ok": false}});
         assert_eq!(dispatch(&v).status, Status::Fail);
@@ -1234,6 +1251,23 @@ mod tests {
         )
         .unwrap();
         assert_eq!(main_with_dir(&tmp), 0);
+    }
+
+    #[test]
+    fn run_all_counts_and_prints_a_real_fail() {
+        // `run_all`'s own `Status::Fail` handling (the "FAIL" print label
+        // and `failed += 1`) is never exercised by the real suite, which
+        // currently has 0 real fails -- a synthetic directory with one
+        // genuinely failing vector drives it directly.
+        let tmp = std::env::temp_dir().join("vector-runner-one-fail");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(
+            tmp.join("basic.json"),
+            r#"{"vectors": [{"name": "x", "operation": "parse", "input": {"format": "json", "text": "1"}, "expect": {"ok": true, "document": {"scalar": {"kind": "integer", "value": 2}}}}]}"#,
+        )
+        .unwrap();
+        assert_eq!(run_all(&tmp), (0, 1, 0));
     }
 
     #[test]

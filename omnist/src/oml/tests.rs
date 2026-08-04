@@ -149,6 +149,26 @@ fn time_literal_with_short_fraction_zero_pads_on_read() {
     );
 }
 
+// A bare TIME literal (not DATETIME) may itself carry a UTC offset
+// (`TIME_RE` in schema.rs has its own `off` group, independent of
+// DATETIME's) -- exercises the scanner's offset-lookahead for a bare
+// TIME token specifically, and `canonicalize_time_captures`'s offset
+// branch.
+#[test]
+fn bare_time_literal_with_utc_offset_reads_as_a_genuine_temporal_leaf() {
+    let parsed = read_oml("a: 12:00:00+05:00\n").unwrap();
+    let RawNode::Edges(edges) = &parsed else {
+        panic!("expected edges, got {parsed:?}");
+    };
+    assert_eq!(
+        edges[0],
+        (
+            "a".to_string(),
+            RawNode::TemporalLeaf(crate::document::Scalar::Str("12:00:00+05:00".to_string()))
+        )
+    );
+}
+
 #[test]
 fn datetime_round_trips_with_and_without_utc_offset() {
     roundtrip_value(&obj(&[
@@ -335,6 +355,13 @@ fn genuine_temporal_leaf_writes_bare_for_date_and_datetime_too() {
     ]);
     let text = write_oml(&raw, 2).unwrap();
     assert_eq!(text, "d: 2024-01-01\ndt: 2024-01-01T12:30:00");
+    // Compact mode has its own `RawNode::TemporalLeaf` arm
+    // (`write_edges_compact`), separate from pretty mode's -- covered here
+    // too rather than only through the pretty-mode assertion above.
+    assert_eq!(
+        write_oml_compact(&raw).unwrap(),
+        "d: 2024-01-01; dt: 2024-01-01T12:30:00"
+    );
 }
 
 // A `TemporalLeaf`/`Leaf` pair holding the same `Scalar` must compare
@@ -345,6 +372,19 @@ fn temporal_leaf_and_leaf_with_the_same_scalar_are_equal() {
     let a = RawNode::Leaf(crate::document::Scalar::Str("2024-01-01".to_string()));
     let b = RawNode::TemporalLeaf(crate::document::Scalar::Str("2024-01-01".to_string()));
     assert_eq!(a, b);
+}
+
+#[test]
+fn write_temporal_leaf_falls_back_to_write_scalar_for_a_non_str_scalar() {
+    // Structurally unreachable via any real construction path (see
+    // `write_temporal_leaf`'s own doc comment -- nothing in this crate
+    // ever wraps a non-`Str` scalar in `TemporalLeaf`), exercised
+    // directly so the fallback arm is real, tested code, not a dead
+    // branch.
+    assert_eq!(
+        writer::write_temporal_leaf(&crate::document::Scalar::Int(5)),
+        "5"
+    );
 }
 
 // A schema-directed materialize upgrade to a Date-kinded field is the
@@ -996,6 +1036,17 @@ fn write_oml_compact_on_a_bare_leaf_node() {
     let raw = RawNode::Leaf(crate::document::Scalar::Int(5));
     assert_eq!(write_oml(&raw, 2).unwrap(), "5");
     assert_eq!(write_oml_compact(&raw).unwrap(), "5");
+}
+
+#[test]
+fn write_oml_on_a_bare_temporal_leaf_node() {
+    // A whole document that's a single genuinely-temporal leaf (no
+    // wrapping edges) -- `write_oml`/`write_oml_compact`'s own
+    // `RawNode::TemporalLeaf` top-level arm, distinct from the same tag
+    // appearing nested under an edge (already covered elsewhere).
+    let raw = RawNode::TemporalLeaf(crate::document::Scalar::Str("2024-01-01".to_string()));
+    assert_eq!(write_oml(&raw, 2).unwrap(), "2024-01-01");
+    assert_eq!(write_oml_compact(&raw).unwrap(), "2024-01-01");
 }
 
 #[test]
