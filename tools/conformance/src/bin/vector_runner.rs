@@ -119,7 +119,7 @@ use omnist::formats::xml::{read_xml, write_xml};
 use omnist::formats::yaml::{read_yaml, write_yaml};
 use omnist::infer::infer_with_report;
 use omnist::materialize::materialize;
-use omnist::oml::read_oml;
+use omnist::oml::{read_oml, write_oml};
 use omnist::ops::{compatible_with, equivalent, extract, is_empty, lint};
 use omnist::osd::{parse_schema, to_osd};
 use omnist::report::WriteReport;
@@ -178,16 +178,25 @@ fn skip(message: impl Into<String>) -> VResult {
 
 /// Decodes one canonical-encoding node (`{"scalar": {kind, value}}` or
 /// `{"edges": [[label, node], ...]}`) into a `RawNode`. `date`/`time`/
-/// `datetime` all decode to `Scalar::Str` -- `omnist::document::Scalar` has
-/// no temporal variant, and `materialize.rs`'s own upgrade rules confirm a
-/// materialized date/time/datetime leaf stays `Scalar::Str` (just a value
-/// that has passed an ISO-shape check), so this is the correct (not just
-/// convenient) decoding, not a simplification.
+/// `datetime` all decode to the same underlying `Scalar::Str` a
+/// `"string"`-kind value would -- `omnist::document::Scalar` has no
+/// temporal variant -- but wrapped as `RawNode::TemporalLeaf`, not plain
+/// `Leaf`, since that's exactly the provenance issue #99's OML writer
+/// needs to tell a genuinely-kinded value apart from a plain string that
+/// merely looks like one. See `vendor/omnist-spec/test-suite/formats-oml/
+/// oml.json`'s `date-shaped-string-stays-quoted-on-write` /
+/// `genuine-date-writes-bare` vector pair, which is unrepresentable
+/// without this distinction.
 fn decode_document(node: &Json) -> RawNode {
     if let Some(scalar) = node.get("scalar") {
         let kind = scalar.get("kind").and_then(Json::as_str);
         let value = scalar.get("value").unwrap_or(&Json::Null);
-        return RawNode::Leaf(decode_scalar(kind, value));
+        let decoded = decode_scalar(kind, value);
+        return if matches!(kind, Some("date") | Some("time") | Some("datetime")) {
+            RawNode::TemporalLeaf(decoded)
+        } else {
+            RawNode::Leaf(decoded)
+        };
     }
     let edges = node
         .get("edges")
@@ -527,6 +536,14 @@ fn run_write(v: &Json) -> VResult {
         "toml" => write_toml(&doc, strict, Some(&mut report)),
         "xml" => write_xml(&doc, strict, Some(&mut report)),
         "yaml" => write_yaml(&doc, strict, Some(&mut report)),
+        // OML has no `strict`/report machinery -- it's lossless for every
+        // Document, so there's never an adjustment to report (see
+        // `oml.rs`'s own module doc). `doc.to_raw()` round-trips through
+        // the arena, exercising the same `is_temporal` flag preservation
+        // (`document.rs`) the real CLI's `convert` path relies on --
+        // see omnist-rs#99, the first OML write vectors this suite has
+        // ever had.
+        "oml" => write_oml(&doc.to_raw(), 2),
         other => return fail(format!("unknown format {other:?}")),
     };
     match result {
@@ -868,35 +885,44 @@ mod tests {
     use super::*;
 
     #[test]
-    fn vector_count_is_139() {
+    fn vector_count_is_146() {
+        // 139 -> 146 via vendor/omnist-spec v0.1.0-alpha -> v0.1.1-alpha
+        // (issue #99): 6 new `formats-oml/oml.json` vectors testing a
+        // plain string that merely looks temporal-shaped staying quoted
+        // on OML write, vs. a genuinely temporal-kinded value writing
+        // bare.
         let vectors = iter_vectors(&suite_dir());
-        assert_eq!(vectors.len(), 139);
+        assert_eq!(vectors.len(), 146);
     }
 
     /// Full-suite regression guard: runs every real vector through every
     /// driver (also this file's real coverage-driving test, since
     /// `main`/`main_with_dir` itself is process-entry-point code no test
     /// calls directly). The exact counts are this step's honest,
-    /// freshly-reproduced measurement -- originally issue #82 Step 3's
-    /// report (112, 5, 22), updated to (113, 4, 22) by omnist-rs#86 (XML
-    /// interleaving fix), then (113, 3, 23) by omnist-rs#89 (JSON
-    /// temporal-write vector reclassified FAIL -> cited SKIP), then
-    /// (114, 2, 23) once #86+#89 were combined (one extra pass beyond
-    /// the naive sum), and now further updated by omnist-rs#87/#88
-    /// (legacy sexagesimal int + Norway-problem mapping-key rejection),
-    /// which also incidentally resolves
-    /// `formats-json/basic/nested-array-is-rejected` from skip to pass
-    /// via the same general `DocumentError` path-checking fix. Every
-    /// count here is freshly reproduced by running the rebased harness,
-    /// not computed by hand. Pinned so a future change that silently
-    /// regresses pass/fail/skip counts is caught, not a "this must
-    /// always be 0 fails" gate.
+    /// freshly-reproduced measurement -- history through (117, 0, 22) at
+    /// 139 vectors covered by earlier PRs (#86/#87/#88/#89, issue #82).
+    /// Now (124, 0, 22) at 146 vectors: vendor/omnist-spec bumped
+    /// v0.1.0-alpha -> v0.1.1-alpha, adding 7 new vectors total, all 7
+    /// newly passing (diffed pass-list vector-by-vector against the old
+    /// pin, not assumed) -- 6 in `formats-oml/oml.json` (issue #99's own
+    /// vectors: a plain string that merely looks temporal-shaped stays
+    /// quoted on OML write, a genuinely temporal-kinded value writes
+    /// bare) plus 1 unrelated one,
+    /// `formats-json/basic/nan-substituted-with-null-and-reported`, from
+    /// a *different* omnist-spec fix bundled into the same tag
+    /// (omnist-spec#30/#31, NaN/Infinity vector encoding) -- Rust's
+    /// `write_json` already substitutes `null` for NaN correctly, this
+    /// vector just wasn't representable/testable before that upstream
+    /// fix. Every count here is freshly reproduced by running the
+    /// harness, not computed by hand. Pinned so a future change that
+    /// silently regresses pass/fail/skip counts is caught, not a "this
+    /// must always be 0 fails" gate.
     #[test]
     fn full_suite_counts_match_the_measured_baseline() {
         let (passed, failed, skipped) = run_all(&suite_dir());
         assert_eq!(
             (passed, failed, skipped),
-            (117, 0, 22),
+            (124, 0, 22),
             "vector pass/fail/skip counts changed -- if this is an intentional fix or a new \
              vector, update the pinned baseline; if not, something regressed"
         );

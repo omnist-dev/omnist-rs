@@ -61,6 +61,35 @@ means a bare `12:00` reads as `Scalar::Str("12:00:00")`, **not**
 divergences](../python-divergences.md#bare-time-literal-round-tripping-oml-pr-11)
 for what changed from this port's earlier, stronger byte-for-byte claim.
 
+## Bare vs. quoted on write: `RawNode::TemporalLeaf`, not shape-guessing
+
+A leaf writes bare (no quotes) only when it's a
+[`RawNode::TemporalLeaf`](../../omnist/src/document.rs) -- never by
+guessing from a `Scalar::Str`'s shape (issue #99). The pre-#99 writer
+wrote *any* date/time/datetime-*shaped* string bare, regardless of
+provenance: a plain JSON string like `"2024-01-01"` got silently promoted
+to a genuine OML temporal literal on write, corrupting it on the next
+read (a different Document, per [ch.4's grammar](https://github.com/omnist-dev/omnist-spec/blob/main/docs/04-oml-grammar.md)). Confirmed live and
+fixed.
+
+`Scalar` still has no temporal variant (issue #16, closed) -- the
+provenance tag lives one level up, on `RawNode`, from exactly two real
+sources:
+
+- **OML's own bare-literal grammar.** `read_oml`'s parser tags a
+  genuinely-read bare `date`/`time`/`datetime` token as
+  `TemporalLeaf`; an ordinary quoted string (however it's shaped) stays
+  a plain `Leaf`.
+- **Schema-directed `materialize`.** Upgrading a field to a
+  Date/Time/Datetime-kinded schema produces `TemporalLeaf` too, so a
+  materialized document writes its temporal fields bare through OML.
+
+Both wrap the identical `Scalar::Str` -- the tag never changes document
+*equality* (`Doc::eq_doc`/conformance's `compare_document`): a
+`TemporalLeaf` and a `Leaf` holding the same value compare equal, since
+the tag is purely a write-hint. It's OML-write-only: JSON/YAML/TOML/XML
+never construct or consult it.
+
 ## Integer digit cap and `i64`
 
 Same 4300-digit cap (`MAX_INT_DIGITS`) as `json.rs`/`yaml.rs`/`toml.rs`, and

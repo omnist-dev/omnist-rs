@@ -166,13 +166,21 @@ fn materialize_scalar(
     path: &str,
     res: &mut ValidationResult,
 ) -> RawNode {
-    let RawNode::Leaf(value) = node else {
-        res.add(
-            path,
-            format!("expected a {} value, got an object", kind.as_str()),
-            ErrorCode::ShapeMismatch,
-        );
-        return node.clone();
+    // `RawNode::TemporalLeaf` (issue #99) is accepted as input on equal
+    // footing with `Leaf` -- e.g. re-materializing an already-upgraded
+    // document, or a document read directly from OML's own bare temporal
+    // grammar -- both hold the identical `DocScalar`, just with a
+    // writer-hint tag `materialize` doesn't need to distinguish here.
+    let value = match node {
+        RawNode::Leaf(v) | RawNode::TemporalLeaf(v) => v,
+        RawNode::Edges(_) => {
+            res.add(
+                path,
+                format!("expected a {} value, got an object", kind.as_str()),
+                ErrorCode::ShapeMismatch,
+            );
+            return node.clone();
+        }
     };
     if matches!(value, DocScalar::Null) {
         if !nullable {
@@ -181,7 +189,7 @@ fn materialize_scalar(
         return RawNode::Leaf(DocScalar::Null);
     }
     if let Some(upgraded) = try_upgrade(value, kind) {
-        return RawNode::Leaf(upgraded);
+        return wrap_upgraded(kind, upgraded);
     }
     res.add(
         path,
@@ -192,6 +200,18 @@ fn materialize_scalar(
         ErrorCode::TypeMismatch,
     );
     node.clone()
+}
+
+/// A value materialize just upgraded to `kind` is wrapped as a
+/// [`RawNode::TemporalLeaf`] when `kind` is Date/Time/Datetime -- the
+/// "schema-directed materialize" provenance source issue #99's own vector
+/// comments name, alongside OML's own bare-literal grammar
+/// (`crate::oml::parser`). Every other kind stays a plain `Leaf`.
+fn wrap_upgraded(kind: ScalarKind, value: DocScalar) -> RawNode {
+    match kind {
+        ScalarKind::Date | ScalarKind::Time | ScalarKind::Datetime => RawNode::TemporalLeaf(value),
+        _ => RawNode::Leaf(value),
+    }
 }
 
 /// Value-exact upgrade table -- `None` means the value cannot become

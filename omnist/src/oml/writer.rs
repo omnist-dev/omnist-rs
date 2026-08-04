@@ -5,14 +5,21 @@
 //!
 //! ## Temporal literals
 //!
-//! A `Scalar::Str` shaped like a valid date/time/datetime writes bare,
-//! matching the reader's own convention that a temporal literal *is* a
-//! `Scalar::Str` holding its exact spelling (`document::Scalar` has no
-//! separate temporal variant). This is the omnist-ts#52 fix:
-//! `read_oml("a: 12:00")` produces `Scalar::Str("12:00")`, and writing that
-//! value back must reproduce the bare `12:00` spelling, not `"12:00"`
-//! (which would silently turn a time into a plain string on the next
-//! read). See [`write_str_scalar`] below.
+//! A leaf writes bare (no quotes) only when it's a
+//! [`RawNode::TemporalLeaf`], never by guessing from a `Scalar::Str`'s
+//! shape -- issue #99. Shape-guessing (any date/time/datetime-*shaped*
+//! string writes bare, regardless of provenance) was the pre-#99
+//! behavior, matching the omnist-ts#52 fix's original intent
+//! (`read_oml("a: 12:00")` producing `Scalar::Str("12:00")` must write
+//! back bare, not `"12:00"`) -- but it silently over-applied: an ordinary
+//! JSON/YAML string that merely *looks* like a date got promoted to a
+//! genuine temporal literal on write, corrupting it on the next read
+//! (confirmed live, filed as #99). `RawNode::TemporalLeaf` (`document.rs`)
+//! now carries that provenance explicitly instead: `crate::oml`'s own
+//! parser tags a genuinely-read bare literal, and
+//! `crate::materialize`'s Date/Time/Datetime schema upgrades tag their
+//! result the same way. Every other `Scalar::Str`, however shaped,
+//! always quotes.
 //!
 //! `.0` on integer-valued floats: [`write_float`] renders so the value
 //! always re-tokenizes as `NUMDEC`/`NEGINF`/`NANLIT`/`POSINF` on read,
@@ -24,7 +31,6 @@
 use crate::document::{RawNode, Scalar, check_write_depth};
 use crate::error::WriteError;
 use crate::formats::string_escape::{OML_ESCAPES, write_quoted};
-use crate::schema::{is_iso_date, is_iso_datetime, is_iso_time};
 
 use super::parser::RESERVED;
 
@@ -61,6 +67,10 @@ pub(super) fn write_edges(
                 check_write_depth(node_depth + 1, "$")?;
                 lines.push(format!("{pad}{lab}: {}", write_scalar(s)));
             }
+            RawNode::TemporalLeaf(s) => {
+                check_write_depth(node_depth + 1, "$")?;
+                lines.push(format!("{pad}{lab}: {}", write_temporal_leaf(s)));
+            }
         }
     }
     Ok(lines.join("\n"))
@@ -86,6 +96,10 @@ pub(super) fn write_edges_compact(
             RawNode::Leaf(s) => {
                 check_write_depth(node_depth + 1, "$")?;
                 parts.push(format!("{lab}: {}", write_scalar(s)));
+            }
+            RawNode::TemporalLeaf(s) => {
+                check_write_depth(node_depth + 1, "$")?;
+                parts.push(format!("{lab}: {}", write_temporal_leaf(s)));
             }
         }
     }
@@ -122,15 +136,24 @@ pub(super) fn write_scalar(v: &Scalar) -> String {
         Scalar::Bool(b) => b.to_string(),
         Scalar::Int(i) => i.to_string(),
         Scalar::Float(f) => write_float(*f),
-        Scalar::Str(s) => write_str_scalar(s),
+        // Always quoted -- no shape-guessing (issue #99). A
+        // `RawNode::TemporalLeaf` is the only way to get a bare temporal
+        // spelling; see `write_temporal_leaf` below.
+        Scalar::Str(s) => write_string(s),
     }
 }
 
-fn write_str_scalar(s: &str) -> String {
-    if is_iso_datetime(s) || is_iso_date(s) || is_iso_time(s) {
-        s.to_string()
-    } else {
-        write_string(s)
+/// Writes a [`RawNode::TemporalLeaf`]'s scalar bare (no quotes). By
+/// construction (see that variant's own doc comment) this is always a
+/// `Scalar::Str` holding an already-validated date/time/datetime
+/// spelling -- nothing in this crate ever wraps a non-`Str` scalar in
+/// `TemporalLeaf`. Falls back to the ordinary [`write_scalar`] for any
+/// other variant rather than panicking, since that's still a safe,
+/// correct rendering even though it should never be reached in practice.
+pub(super) fn write_temporal_leaf(v: &Scalar) -> String {
+    match v {
+        Scalar::Str(s) => s.to_string(),
+        other => write_scalar(other),
     }
 }
 

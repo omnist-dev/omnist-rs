@@ -3,7 +3,7 @@
 This port has its own conformance-test harness (`tools/conformance/`)
 against [omnist-spec](https://github.com/omnist-dev/omnist-spec), the
 language-agnostic upstream specification. It vendors omnist-spec as a
-pinned git submodule (`vendor/omnist-spec`, currently `v0.1.0-alpha`) and
+pinned git submodule (`vendor/omnist-spec`, currently `v0.1.1-alpha`) and
 runs entirely against this crate's own library code -- it does not depend
 on the Python or TypeScript ports' implementations.
 
@@ -16,7 +16,7 @@ reporting rule:
 - **Track 1** (`vendor/omnist-spec/conformance/fixtures/`, directory-per-fixture,
   11 operations): **19 passed, 0 failed, 0 skipped**.
 - **Track 2** (`vendor/omnist-spec/test-suite/`, JSON-vector suite, 14-operation
-  vocabulary): **117 passed, 0 failed, 22 skipped** (of 139 vectors).
+  vocabulary): **124 passed, 0 failed, 22 skipped** (of 146 vectors).
 
 Zero real fails on either track as of this writing. Run it yourself:
 
@@ -72,8 +72,8 @@ not implied parity
 ## Real bugs this harness found and fixed
 
 Building this harness against the real spec (rather than trusting the
-Python/TypeScript ports as ground truth) found five real product bugs,
-all fixed before this port's `0.1.0-alpha`:
+Python/TypeScript ports as ground truth) found six real product bugs,
+all fixed across this port's `0.1.0-alpha`/`0.1.1-alpha`:
 
 - **XML reader was type-coercing leaf text** (int/float/bool) at parse
   time, contradicting the spec -- XML has no typed literals. Fixed:
@@ -90,6 +90,18 @@ all fixed before this port's `0.1.0-alpha`:
 - **OML's tokenizer wasn't canonicalizing temporal literal text** --
   missing seconds got dropped instead of filled to `:00`, and sub-second
   fractions weren't zero-padded to 6 digits; see [OML](formats/oml.md).
+- **OML's writer shape-guessed date/time/datetime from string content**
+  to decide bare-vs-quoted, since `Scalar` has no temporal variant (issue
+  #16) and thus no real provenance signal -- a plain JSON string that
+  merely looked date-shaped got silently promoted to a genuine OML
+  temporal literal on write. Found while directly verifying, not just
+  trusting, this suite's own reported numbers: the bug had a fully-green
+  117/0/22 run despite existing, because no vector at the time tested it.
+  Fixed by tagging genuine provenance (OML's own bare-literal grammar, or
+  a schema-directed `materialize` upgrade) on `RawNode` instead of
+  guessing from shape; see [OML](formats/oml.md#bare-vs-quoted-on-write-rawnodetemporalleaf-not-shape-guessing).
+  omnist-spec's own `v0.1.1-alpha` adds the 6 vectors
+  (`formats-oml/oml.json`) this fix now passes for real.
 - One harness-side false fail: a JSON temporal-write-report vector is
   structurally unreachable given this port's `any`-scoping decision (see
   [`limitations.md`](limitations.md#the-any-type-scoping-gap-deferred-not-forgotten));

@@ -443,7 +443,12 @@ fn scan_xml_into(node: &RawNode, path: &str, rep: &mut WriteReport) {
                 scan_xml_into(child, &p, rep);
             }
         }
-        RawNode::Leaf(scalar) => scan_leaf(scalar, path, rep),
+        // XML has no native temporal literals (see this module's own
+        // docs), so `TemporalLeaf` never arrives here in practice -- but
+        // if it did (e.g. a `RawNode` built by another format's writer
+        // path being fed to XML), it must still write out identically to
+        // an ordinary leaf; issue #99's tag is OML-write-only.
+        RawNode::Leaf(scalar) | RawNode::TemporalLeaf(scalar) => scan_leaf(scalar, path, rep),
     }
 }
 
@@ -510,7 +515,7 @@ fn write_element(tag: &str, content: &RawNode, level: usize, out: &mut String) {
             out.push_str(">\n");
         }
         RawNode::Edges(_) => out.push_str(" />\n"),
-        RawNode::Leaf(scalar) => {
+        RawNode::Leaf(scalar) | RawNode::TemporalLeaf(scalar) => {
             let text = xml_sanitize(&xml_text(scalar));
             if text.is_empty() {
                 out.push_str(" />\n");
