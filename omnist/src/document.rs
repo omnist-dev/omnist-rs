@@ -791,6 +791,19 @@ fn push_raw(arena: &mut Vec<Entry>, node: RawNode, depth: usize) -> Result<NodeI
 mod tests {
     use super::*;
 
+    #[test]
+    fn raw_node_leaf_and_edges_are_never_equal() {
+        // The `_ => false` catch-all in `RawNode`'s manual `PartialEq`
+        // (issue #99) -- a leaf (either variant) can never equal an
+        // internal node, regardless of the leaf's own tag.
+        let leaf = RawNode::Leaf(Scalar::Int(1));
+        let temporal = RawNode::TemporalLeaf(Scalar::Str("2024-01-01".to_string()));
+        let edges = RawNode::Edges(vec![]);
+        assert_ne!(leaf, edges);
+        assert_ne!(temporal, edges);
+        assert_ne!(edges, leaf);
+    }
+
     fn obj(pairs: &[(&str, Value)]) -> Value {
         let mut m = IndexMap::new();
         for (k, v) in pairs {
