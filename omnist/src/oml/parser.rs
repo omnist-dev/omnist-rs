@@ -59,7 +59,7 @@ impl<'a> Parser<'a> {
         } else if self.looks_like_edge() {
             RawNode::Edges(self.parse_node_edges(0)?)
         } else {
-            RawNode::Leaf(self.parse_scalar()?)
+            self.parse_scalar()?
         };
         self.skip_sep()?;
         if !matches!(self.kind, TokKind::Eof) {
@@ -168,7 +168,7 @@ impl<'a> Parser<'a> {
         if matches!(self.kind, TokKind::LBrace) {
             self.parse_brace_value(depth)
         } else {
-            Ok(RawNode::Leaf(self.parse_scalar()?))
+            self.parse_scalar()
         }
     }
 
@@ -246,16 +246,27 @@ impl<'a> Parser<'a> {
         Ok(elements)
     }
 
-    fn parse_scalar(&mut self) -> Result<Scalar, ParseError> {
+    /// Returns a [`RawNode`] leaf, not a bare [`Scalar`] -- `TokKind::
+    /// Temporal` (a genuinely bare, grammar-validated date/time/datetime
+    /// literal) becomes [`RawNode::TemporalLeaf`], distinct from
+    /// `TokKind::Str` (an ordinary quoted string that merely holds
+    /// date/time/datetime-*shaped* text), which becomes a plain
+    /// [`RawNode::Leaf`]. Both wrap the identical `Scalar::Str(s)` --
+    /// `document::Scalar` has no separate temporal variant (issue #16) --
+    /// so this distinction is exactly the provenance tag issue #99 needs
+    /// `write_oml` to see, and would be lost immediately if this returned
+    /// a bare `Scalar` for both.
+    fn parse_scalar(&mut self) -> Result<RawNode, ParseError> {
         let (kind, start, end) = self.advance()?;
         match kind {
-            TokKind::Str(s) | TokKind::Temporal(s) => Ok(Scalar::Str(s)),
-            TokKind::Int(i) => Ok(Scalar::Int(i)),
-            TokKind::Float(f) => Ok(Scalar::Float(f)),
+            TokKind::Str(s) => Ok(RawNode::Leaf(Scalar::Str(s))),
+            TokKind::Temporal(s) => Ok(RawNode::TemporalLeaf(Scalar::Str(s))),
+            TokKind::Int(i) => Ok(RawNode::Leaf(Scalar::Int(i))),
+            TokKind::Float(f) => Ok(RawNode::Leaf(Scalar::Float(f))),
             TokKind::Ident(text) => match text.as_str() {
-                "null" => Ok(Scalar::Null),
-                "true" => Ok(Scalar::Bool(true)),
-                "false" => Ok(Scalar::Bool(false)),
+                "null" => Ok(RawNode::Leaf(Scalar::Null)),
+                "true" => Ok(RawNode::Leaf(Scalar::Bool(true))),
+                "false" => Ok(RawNode::Leaf(Scalar::Bool(false))),
                 _ => Err(self.sc.error_at(
                     start,
                     format!("bare word {text:?} is not a valid value here; strings must be quoted"),

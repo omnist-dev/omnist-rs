@@ -69,7 +69,7 @@ mod writer;
 
 use parser::Parser;
 use scanner::Scanner;
-use writer::{write_edges, write_edges_compact, write_scalar};
+use writer::{write_edges, write_edges_compact, write_scalar, write_temporal_leaf};
 
 /// Parse OML source into a canonical [`RawNode`] (edge-list or leaf).
 ///
@@ -93,6 +93,7 @@ pub fn read_oml(text: &str) -> Result<RawNode, ParseError> {
 pub fn write_oml(node: &RawNode, indent: usize) -> Result<String, WriteError> {
     match node {
         RawNode::Leaf(s) => Ok(write_scalar(s)),
+        RawNode::TemporalLeaf(s) => Ok(write_temporal_leaf(s)),
         RawNode::Edges(edges) => write_edges(edges, 0, indent, 0),
     }
 }
@@ -103,6 +104,7 @@ pub fn write_oml(node: &RawNode, indent: usize) -> Result<String, WriteError> {
 pub fn write_oml_compact(node: &RawNode) -> Result<String, WriteError> {
     match node {
         RawNode::Leaf(s) => Ok(write_scalar(s)),
+        RawNode::TemporalLeaf(s) => Ok(write_temporal_leaf(s)),
         RawNode::Edges(edges) => write_edges_compact(edges, 0),
     }
 }

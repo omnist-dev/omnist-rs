@@ -262,24 +262,109 @@ fn write_oml_preserves_datetime_utc_offset_exactly() {
 }
 
 // omnist-ts#52: a bare TIME literal did not round-trip (became a quoted
-// string on write-then-read).
+// string on write-then-read). Now expressed via `RawNode::TemporalLeaf`
+// (issue #99) -- a genuinely temporal value, not a plain string that
+// merely looks like one; see `plain_string_shaped_like_a_time_stays_quoted`
+// below for the case this variant exists to distinguish from.
 #[test]
 fn bare_time_literal_round_trips_as_a_time_not_a_quoted_string() {
     let raw = RawNode::Edges(vec![(
         "a".to_string(),
-        RawNode::Leaf(crate::document::Scalar::Str("12:00".to_string())),
+        RawNode::TemporalLeaf(crate::document::Scalar::Str("12:00".to_string())),
     )]);
     let text = write_oml(&raw, 2).unwrap();
     // Must write as a bare, unquoted time literal, not `"12:00"`.
     assert_eq!(text, "a: 12:00");
-    // Reading it back canonicalizes the missing seconds (issue #90), so the
-    // parsed value is "12:00:00", not a byte-identical round trip of `raw`.
+    // Reading it back canonicalizes the missing seconds (issue #90) and
+    // is itself a genuinely-read bare literal, so the parsed value is a
+    // `TemporalLeaf("12:00:00")`, not a byte-identical round trip of `raw`.
     let expected = RawNode::Edges(vec![(
         "a".to_string(),
-        RawNode::Leaf(crate::document::Scalar::Str("12:00:00".to_string())),
+        RawNode::TemporalLeaf(crate::document::Scalar::Str("12:00:00".to_string())),
     )]);
     let parsed = read_oml(&text).unwrap();
     assert_eq!(parsed, expected);
+}
+
+// issue #99: a plain string that merely *looks* like a time must stay
+// quoted on write -- writing it bare would silently promote it to a
+// genuine temporal literal on the next read (a different Document).
+#[test]
+fn plain_string_shaped_like_a_time_stays_quoted() {
+    let raw = RawNode::Edges(vec![(
+        "a".to_string(),
+        RawNode::Leaf(crate::document::Scalar::Str("12:00:00".to_string())),
+    )]);
+    let text = write_oml(&raw, 2).unwrap();
+    assert_eq!(text, "a: \"12:00:00\"");
+    // Reading it back must reproduce the identical plain string, not a
+    // `TemporalLeaf`.
+    let parsed = read_oml(&text).unwrap();
+    assert_eq!(parsed, raw);
+}
+
+// issue #99's own repro: a JSON-shaped plain string that looks like a
+// date must not become a genuine bare temporal literal through OML.
+#[test]
+fn plain_string_shaped_like_a_date_stays_quoted() {
+    let raw = RawNode::Edges(vec![(
+        "d".to_string(),
+        RawNode::Leaf(crate::document::Scalar::Str("2024-01-01".to_string())),
+    )]);
+    let text = write_oml(&raw, 2).unwrap();
+    assert_eq!(text, "d: \"2024-01-01\"");
+    let parsed = read_oml(&text).unwrap();
+    assert_eq!(parsed, raw);
+}
+
+// The companion case: a genuinely date-kinded value (e.g. read from OML's
+// own bare grammar) writes bare, no quotes.
+#[test]
+fn genuine_temporal_leaf_writes_bare_for_date_and_datetime_too() {
+    let raw = RawNode::Edges(vec![
+        (
+            "d".to_string(),
+            RawNode::TemporalLeaf(crate::document::Scalar::Str("2024-01-01".to_string())),
+        ),
+        (
+            "dt".to_string(),
+            RawNode::TemporalLeaf(crate::document::Scalar::Str(
+                "2024-01-01T12:30:00".to_string(),
+            )),
+        ),
+    ]);
+    let text = write_oml(&raw, 2).unwrap();
+    assert_eq!(text, "d: 2024-01-01\ndt: 2024-01-01T12:30:00");
+}
+
+// A `TemporalLeaf`/`Leaf` pair holding the same `Scalar` must compare
+// equal -- the tag is a write-hint, not a value difference (issue #99's
+// manual `PartialEq`, replacing the derive).
+#[test]
+fn temporal_leaf_and_leaf_with_the_same_scalar_are_equal() {
+    let a = RawNode::Leaf(crate::document::Scalar::Str("2024-01-01".to_string()));
+    let b = RawNode::TemporalLeaf(crate::document::Scalar::Str("2024-01-01".to_string()));
+    assert_eq!(a, b);
+}
+
+// A schema-directed materialize upgrade to a Date-kinded field is the
+// other real provenance source (alongside OML's own bare-literal
+// grammar) -- confirm it also produces bare OML output, per issue #99's
+// vector comment naming this exact case.
+#[test]
+fn materialize_upgraded_date_writes_bare_through_oml() {
+    use crate::schema::{DATE, Field, Record, Ref, Schema};
+    let root = Record::new(vec![Field::required("d", DATE).unwrap()]).unwrap();
+    let mut env = IndexMap::new();
+    env.insert("Root".to_string(), root);
+    let schema = Schema::new(Ref::new("Root"), env).unwrap();
+    let input = RawNode::Edges(vec![(
+        "d".to_string(),
+        RawNode::Leaf(crate::document::Scalar::Str("2024-01-01".to_string())),
+    )]);
+    let materialized = crate::materialize::materialize(&input, Some(&schema)).unwrap();
+    let text = write_oml(&materialized, 2).unwrap();
+    assert_eq!(text, "d: 2024-01-01");
 }
 
 // omnist-ts#36-equivalent: writer escaping must be all-occurrences, not

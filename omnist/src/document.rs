@@ -138,6 +138,18 @@ struct Entry {
     /// writer that had the same reset bug because the guard lived in one
     /// place, not one shared helper called from every entry point).
     depth: usize,
+    /// Mirrors [`RawNode::TemporalLeaf`] for a leaf entry (always `false`
+    /// for `NodeData::Internal`) -- kept as a flag alongside `NodeData`
+    /// rather than doubling `NodeData` itself into a matching third
+    /// variant, so every existing `NodeData::Leaf`/`NodeData::Internal`
+    /// match in this module (equality, mutation guards, `Value`
+    /// conversion) stays exhaustive and untouched by issue #99; only
+    /// `raw_at`/`push_raw`, the `RawNode` <-> arena boundary, need to
+    /// read/set it. See issue #99's plan comment on the issue itself for
+    /// why this is intentionally *not* symmetric with `RawNode`'s own
+    /// variant-based design -- `RawNode` has no such "single choke point"
+    /// arena to hang a side flag off of, so it needs the real variant.
+    is_temporal: bool,
 }
 
 /// The shared depth guard. Every construction/mutation path that can grow
@@ -256,6 +268,18 @@ fn push(
     depth: usize,
     path: &str,
 ) -> Result<NodeId, DocumentError> {
+    push_entry(arena, data, depth, path, false)
+}
+
+/// As [`push`], but for a leaf entry mirroring [`RawNode::TemporalLeaf`]
+/// (see issue #99) -- only `push_raw` ever passes `is_temporal: true`.
+fn push_entry(
+    arena: &mut Vec<Entry>,
+    data: NodeData,
+    depth: usize,
+    path: &str,
+    is_temporal: bool,
+) -> Result<NodeId, DocumentError> {
     if arena.len() >= MAX_NODES {
         return Err(DocumentError::new(
             path,
@@ -263,7 +287,11 @@ fn push(
         ));
     }
     let id = NodeId(arena.len());
-    arena.push(Entry { data, depth });
+    arena.push(Entry {
+        data,
+        depth,
+        is_temporal,
+    });
     Ok(id)
 }
 
@@ -622,10 +650,43 @@ impl<'a> Cursor<'a> {
 /// arbitrary interleaving losslessly (per its own docs: "no adjustment ever
 /// needed"), so its reader/writer (`crate::oml`) builds/walks a `Doc`
 /// through this type instead of going through `Value`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum RawNode {
     Leaf(Scalar),
+    /// A leaf genuinely known to be date/time/datetime-kinded -- by OML's
+    /// own bare-literal grammar on read (`crate::oml`), or by a
+    /// schema-directed `crate::materialize` upgrade to a Date/Time/
+    /// Datetime-kinded field. Write-hint only, consumed solely by
+    /// `crate::oml::write_oml` (bare vs quoted) -- see issue #99. Never
+    /// constructed by JSON/YAML/TOML/XML's readers/writers, none of which
+    /// have OML's grammar-level way to know this; XML in particular has no
+    /// native temporal literals at all (see `docs/formats/xml.md`).
+    /// [`Scalar`] itself deliberately stays without a temporal variant
+    /// (issue #16, closed) -- this tag lives one level up instead.
+    TemporalLeaf(Scalar),
     Edges(Vec<(String, RawNode)>),
+}
+
+impl PartialEq for RawNode {
+    /// `TemporalLeaf` and `Leaf` holding the same [`Scalar`] compare
+    /// equal -- the tag is a writer hint, not a value difference, so two
+    /// otherwise-identical documents that differ only in whether one leaf
+    /// happens to be schema-upgraded (or was read as a bare OML temporal
+    /// literal) must still be the same Document. A derived `PartialEq`
+    /// would get this wrong (see this type's own doc comment); this
+    /// mirrors the same "a derive silently encodes an irrelevant
+    /// distinction as inequality" fix already applied to
+    /// `crate::schema::Record`'s field-order bug.
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                RawNode::Leaf(a) | RawNode::TemporalLeaf(a),
+                RawNode::Leaf(b) | RawNode::TemporalLeaf(b),
+            ) => a == b,
+            (RawNode::Edges(a), RawNode::Edges(b)) => a == b,
+            _ => false,
+        }
+    }
 }
 
 impl Doc {
@@ -648,7 +709,9 @@ impl Doc {
     }
 
     fn raw_at(&self, id: NodeId) -> RawNode {
-        match &self.entry(id).data {
+        let entry = self.entry(id);
+        match &entry.data {
+            NodeData::Leaf(s) if entry.is_temporal => RawNode::TemporalLeaf(s.clone()),
             NodeData::Leaf(s) => RawNode::Leaf(s.clone()),
             NodeData::Internal(edges) => RawNode::Edges(
                 edges
@@ -712,6 +775,7 @@ fn push_raw(arena: &mut Vec<Entry>, node: RawNode, depth: usize) -> Result<NodeI
     check_write_depth(depth, "$")?;
     match node {
         RawNode::Leaf(s) => push(arena, NodeData::Leaf(s), depth, "$"),
+        RawNode::TemporalLeaf(s) => push_entry(arena, NodeData::Leaf(s), depth, "$", true),
         RawNode::Edges(edges) => {
             let mut out = Vec::with_capacity(edges.len());
             for (label, child) in edges {
