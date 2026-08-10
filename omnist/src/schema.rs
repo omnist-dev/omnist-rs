@@ -1576,10 +1576,7 @@ mod tests {
             value_kind_name(&DocScalar::Date("2024-01-01".into())),
             "date"
         );
-        assert_eq!(
-            value_kind_name(&DocScalar::Time("12:00:00".into())),
-            "time"
-        );
+        assert_eq!(value_kind_name(&DocScalar::Time("12:00:00".into())), "time");
         assert_eq!(
             value_kind_name(&DocScalar::Datetime("2024-01-01T12:00:00".into())),
             "datetime"

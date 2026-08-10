@@ -103,7 +103,10 @@ fn already_typed_date_time_and_datetime_re_materialize_as_themselves() {
         ("b", leaf(DocScalar::Bool(true))),
         ("d", leaf(DocScalar::Date("2024-01-01".into()))),
         ("t", leaf(DocScalar::Time("12:30:00".into()))),
-        ("dt", leaf(DocScalar::Datetime("2024-01-01T12:30:00".into()))),
+        (
+            "dt",
+            leaf(DocScalar::Datetime("2024-01-01T12:30:00".into())),
+        ),
     ]);
     let out = materialize(&node, Some(&schema)).unwrap();
     let RawNode::Edges(out_edges) = out else {

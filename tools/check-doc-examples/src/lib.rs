@@ -9,6 +9,22 @@
 //! `tools/check_doc_examples.ts` (see that repo's own test suite for the
 //! precedent this module's tests follow).
 //!
+//! **`docs/api.md` signature-drift check (issue #108).** `api.md`'s
+//! signature blocks are all `doc-illustrative` (not runnable, so nothing
+//! above catches one going stale), and it *did* go stale silently: it
+//! still documented `Scalar::Int(i64)` and a 5-variant `Scalar` enum for
+//! two releases after #104 (`BigInt`) and #105 (`Date`/`Time`/`Datetime`)
+//! landed, because neither PR touched it. `run` (and this crate's own test
+//! suite, via `the_real_docs_api_md_has_no_stale_items_against_the_real_crate`)
+//! now also extracts every `pub fn`/`pub struct`/`pub enum`/`pub const`/
+//! `pub type` name declared in an `api.md` Rust block
+//! (`extract_declared_item_names`) and fails if any no longer exists as a
+//! real `pub` item anywhere under `omnist/src`
+//! (`stale_api_md_items`) -- catching a renamed/removed item, though not a
+//! changed signature for a name that still exists. This runs on *every*
+//! invocation, not gated on api.md itself having changed, since the
+//! failure mode is exactly "an unrelated change made this stale."
+//!
 //! Usage: `check-doc-examples [--base-ref origin/master]`
 
 use std::collections::BTreeSet;
@@ -171,6 +187,23 @@ pub fn run(cwd: &Path, base_ref: &str) -> i32 {
         }
     }
 
+    // docs/api.md's mechanical signature-drift check (issue #108): run on
+    // every invocation, not just when api.md itself changed in this diff --
+    // a signature can go stale from an *unrelated* change (e.g. a variant
+    // renamed elsewhere in the crate with no corresponding api.md edit),
+    // which a changed-lines-only check would never catch.
+    let api_md = cwd.join("docs/api.md");
+    if api_md.exists() {
+        let text = fs::read_to_string(&api_md).unwrap_or_default();
+        let src_dir = cwd.join("omnist/src");
+        for name in stale_api_md_items(&text, &src_dir) {
+            problems.push(format!(
+                "docs/api.md: item {name:?} is documented but no longer exists \
+                 as a `pub` item anywhere under omnist/src -- update or remove it"
+            ));
+        }
+    }
+
     if !problems.is_empty() {
         println!("Doc-example coverage check failed:\n");
         for p in &problems {
@@ -186,6 +219,95 @@ pub fn run(cwd: &Path, base_ref: &str) -> i32 {
 
     println!("Doc-example coverage check passed.");
     0
+}
+
+/// Extracts every top-level `pub fn`/`pub struct`/`pub enum`/`pub const`/
+/// `pub type` item name declared inside a fenced ```` ```rust ```` block in
+/// `text` (ignores blocks in other languages -- `docs/api.md` is the only
+/// caller today, and every signature block there is Rust). A crude,
+/// line-oriented parse (no real Rust parser), but that's the point: it only
+/// needs to catch the exact failure mode issue #108 found (a name that no
+/// longer exists in the real crate at all, e.g. a removed variant), not
+/// verify full signatures.
+pub fn extract_declared_item_names(text: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut in_rust_block = false;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if let Some(lang) = trimmed.strip_prefix("```") {
+            in_rust_block = lang.trim() == "rust";
+            continue;
+        }
+        if !in_rust_block {
+            continue;
+        }
+        for kw in [
+            "pub fn ",
+            "pub struct ",
+            "pub enum ",
+            "pub const ",
+            "pub type ",
+        ] {
+            if let Some(rest) = trimmed.strip_prefix(kw) {
+                let name: String = rest
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect();
+                if !name.is_empty() {
+                    names.push(name);
+                }
+            }
+        }
+    }
+    names
+}
+
+/// Every declared item name from `extract_declared_item_names` that has no
+/// matching `pub fn NAME`/`pub struct NAME`/`pub enum NAME`/`pub const
+/// NAME`/`pub type NAME` (as a whitespace-delimited word, not just a
+/// substring -- so e.g. `NAME2` doesn't falsely satisfy a search for
+/// `NAME`) anywhere in `*.rs` under `src_dir`. Empty means every name in
+/// `text` is still real. This is the mechanical half of issue #108's
+/// safeguard: it catches a renamed/removed item (the exact staleness
+/// `docs/api.md` had drifted into after #104/#105), though not a changed
+/// signature for a name that still exists -- see
+/// `docs/workflow-playbook.md`'s "doc updates ship with the change" rule
+/// for the other half.
+pub fn stale_api_md_items(text: &str, src_dir: &Path) -> Vec<String> {
+    let mut source = String::new();
+    for entry in walk_rs_files(src_dir) {
+        source.push_str(&fs::read_to_string(&entry).unwrap_or_default());
+        source.push('\n');
+    }
+    extract_declared_item_names(text)
+        .into_iter()
+        .filter(|name| {
+            let patterns = [
+                format!("pub fn {name}"),
+                format!("pub struct {name}"),
+                format!("pub enum {name}"),
+                format!("pub const {name}"),
+                format!("pub type {name}"),
+            ];
+            !patterns.iter().any(|p| source.contains(p.as_str()))
+        })
+        .collect()
+}
+
+fn walk_rs_files(dir: &Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    let Ok(entries) = fs::read_dir(dir) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            out.extend(walk_rs_files(&path));
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            out.push(path);
+        }
+    }
+    out
 }
 
 /// Parses `--base-ref <ref>` out of `argv`, defaulting to `origin/master`.
@@ -269,6 +391,42 @@ mod tests {
     fn fails_on_a_new_unmarked_block() {
         let repo = Repo::new();
         repo.append_and_commit("\n```python\nprint(1)\n```\n", "add unmarked block");
+        assert_eq!(repo.run_check(), 1);
+    }
+
+    #[test]
+    fn run_passes_when_api_md_has_no_stale_items() {
+        let repo = Repo::new();
+        fs::create_dir_all(repo.path().join("omnist/src")).unwrap();
+        fs::write(
+            repo.path().join("omnist/src/lib.rs"),
+            "pub fn still_here() {}\n",
+        )
+        .unwrap();
+        fs::write(
+            repo.path().join("docs/api.md"),
+            "```rust\npub fn still_here() -> ();\n```\n<!-- doc-illustrative -->\n",
+        )
+        .unwrap();
+        git(repo.path(), &["add", "-A"]);
+        git(repo.path(), &["commit", "-q", "-m", "add api.md"]);
+        repo.mark_origin_at_head();
+        assert_eq!(repo.run_check(), 0);
+    }
+
+    #[test]
+    fn run_fails_when_api_md_documents_a_removed_item() {
+        let repo = Repo::new();
+        fs::create_dir_all(repo.path().join("omnist/src")).unwrap();
+        fs::write(repo.path().join("omnist/src/lib.rs"), "// nothing here\n").unwrap();
+        fs::write(
+            repo.path().join("docs/api.md"),
+            "```rust\npub struct LongGone;\n```\n<!-- doc-illustrative -->\n",
+        )
+        .unwrap();
+        git(repo.path(), &["add", "-A"]);
+        git(repo.path(), &["commit", "-q", "-m", "add stale api.md"]);
+        repo.mark_origin_at_head();
         assert_eq!(repo.run_check(), 1);
     }
 
@@ -427,5 +585,105 @@ mod tests {
         assert_eq!(parse_plus_side("-1,2 +3,4 @@"), (3, 4));
         assert_eq!(parse_plus_side("-1 +3 @@"), (3, 1));
         assert_eq!(parse_plus_side("-1 +3"), (3, 1));
+    }
+
+    #[test]
+    fn extract_declared_item_names_finds_every_kind_only_inside_rust_blocks() {
+        let text = "\
+```rust
+pub fn read_json(text: &str) -> Result<Doc, OmnistError>;
+pub struct Doc { /* private */ }
+pub enum Scalar { Null }
+pub const MAX_DEPTH: usize = 200;
+pub type ReadFn = dyn Fn() -> ();
+```
+```python
+pub fn not_rust() {}
+```
+plain text pub fn also_not_in_a_block
+";
+        let names = extract_declared_item_names(text);
+        assert_eq!(
+            names,
+            vec!["read_json", "Doc", "Scalar", "MAX_DEPTH", "ReadFn"]
+        );
+    }
+
+    #[test]
+    fn stale_api_md_items_reports_only_names_absent_from_source() {
+        let dir = TempDir::new().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir(&src).unwrap();
+        fs::write(src.join("lib.rs"), "pub fn still_here() {}\n").unwrap();
+
+        let text = "\
+```rust
+pub fn still_here() -> ();
+pub struct LongGone;
+```
+";
+        assert_eq!(stale_api_md_items(text, &src), vec!["LongGone"]);
+    }
+
+    #[test]
+    fn stale_api_md_items_is_empty_when_every_declared_name_exists() {
+        let dir = TempDir::new().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir(&src).unwrap();
+        fs::write(
+            src.join("lib.rs"),
+            "pub struct Doc;\npub fn read_json() {}\n",
+        )
+        .unwrap();
+
+        let text = "\
+```rust
+pub struct Doc;
+pub fn read_json() -> ();
+```
+";
+        assert!(stale_api_md_items(text, &src).is_empty());
+    }
+
+    #[test]
+    fn walk_rs_files_returns_empty_for_a_nonexistent_directory() {
+        let dir = TempDir::new().unwrap();
+        assert!(walk_rs_files(&dir.path().join("does-not-exist")).is_empty());
+    }
+
+    #[test]
+    fn walk_rs_files_recurses_into_subdirectories() {
+        let dir = TempDir::new().unwrap();
+        fs::create_dir_all(dir.path().join("sub")).unwrap();
+        fs::write(dir.path().join("a.rs"), "").unwrap();
+        fs::write(dir.path().join("sub/b.rs"), "").unwrap();
+        fs::write(dir.path().join("c.txt"), "").unwrap();
+        let mut found: Vec<String> = walk_rs_files(dir.path())
+            .into_iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        found.sort();
+        assert_eq!(found, vec!["a.rs", "b.rs"]);
+    }
+
+    #[test]
+    fn the_real_docs_api_md_has_no_stale_items_against_the_real_crate() {
+        // The actual regression test for issue #108: this is the exact
+        // check `run` performs against the real `docs/api.md` and
+        // `omnist/src`, not a synthetic fixture -- if this fails, api.md
+        // itself is stale, not this test.
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let repo_root = manifest_dir
+            .parent()
+            .and_then(Path::parent)
+            .expect("tools/check-doc-examples is two levels under the repo root");
+        let api_md = repo_root.join("docs/api.md");
+        let text = fs::read_to_string(&api_md).expect("docs/api.md must exist");
+        let src_dir = repo_root.join("omnist/src");
+        let stale = stale_api_md_items(&text, &src_dir);
+        assert!(
+            stale.is_empty(),
+            "docs/api.md documents items no longer in the crate: {stale:?}"
+        );
     }
 }
