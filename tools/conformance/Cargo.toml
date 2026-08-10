@@ -1,6 +1,6 @@
 [package]
 name = "conformance"
-version = "0.1.1-alpha"
+version = "0.1.2-alpha"
 edition = "2024"
 description = "omnist-rs's own conformance-test harness against omnist-spec (issue #82): referee + Track 1 fixture runner + Track 2 vector runner, consuming the pinned vendor/omnist-spec submodule directly, never depending on Python's or TypeScript's implementation."
 license = "Apache-2.0"
@@ -23,5 +23,11 @@ name = "vector_runner"
 path = "src/bin/vector_runner.rs"
 
 [dependencies]
+num-bigint = "0.4"
 omnist = { path = "../../omnist" }
-serde_json = "1"
+# arbitrary_precision: a vector's integer-kind value can legitimately be a
+# bare JSON number literal beyond i64/f64 range (issue #104's own
+# arbitrary-precision-integer vectors) -- without this feature, serde_json
+# silently loses precision decoding such a literal into its default
+# f64-backed Number, defeating the vector's own point.
+serde_json = { version = "1", features = ["arbitrary_precision"] }

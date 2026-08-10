@@ -62,6 +62,7 @@
 use crate::document::{RawNode, Scalar as DocScalar};
 use crate::error::MaterializeError;
 use crate::schema::{ErrorCode, FieldType, Resolved, ScalarKind, Schema, ValidationResult};
+use num_traits::{FromPrimitive, ToPrimitive};
 
 /// A copy of `node` with leaf values upgraded to match `schema`, guaranteed
 /// to conform to it -- or every reason it can't, collected into one
@@ -222,15 +223,28 @@ fn try_upgrade(value: &DocScalar, kind: ScalarKind) -> Option<DocScalar> {
         (ScalarKind::Boolean, DocScalar::Bool(_)) => Some(value.clone()),
         (ScalarKind::Integer, DocScalar::Int(_)) => Some(value.clone()),
         (ScalarKind::Integer, DocScalar::Float(f)) => {
-            if f.is_finite() && f.fract() == 0.0 && *f >= i64::MIN as f64 && *f <= i64::MAX as f64 {
-                Some(DocScalar::Int(*f as i64))
+            // Arbitrary-precision (issue #104): no upper/lower bound to
+            // check anymore -- `BigInt` has no range limit, so any finite
+            // whole-number float upgrades. `BigInt::from_f64` decomposes
+            // the float's exact mantissa*2^exponent value (well-defined
+            // for any finite f64, not an approximation), consistent with
+            // `f.fract() == 0.0` already having confirmed there's no
+            // fractional part to lose.
+            if f.is_finite() && f.fract() == 0.0 {
+                num_bigint::BigInt::from_f64(*f).map(DocScalar::Int)
             } else {
                 None
             }
         }
         // "number" always ends up a Float, even if it arrived as an Int --
         // matches the Python reference's unconditional `float(value)`.
-        (ScalarKind::Number, DocScalar::Int(i)) => Some(DocScalar::Float(*i as f64)),
+        // `BigInt::to_f64` saturates to +/-infinity for a magnitude
+        // beyond f64's finite range rather than failing -- matches this
+        // codebase's existing Float model, which already renders
+        // `inf`/`-inf` as first-class values (see `formats::float_fmt`).
+        (ScalarKind::Number, DocScalar::Int(i)) => {
+            Some(DocScalar::Float(i.to_f64().unwrap_or(f64::INFINITY)))
+        }
         (ScalarKind::Number, DocScalar::Float(_)) => Some(value.clone()),
         (ScalarKind::Date, DocScalar::Str(s)) if crate::schema::is_iso_date(s) => {
             Some(value.clone())

@@ -40,29 +40,30 @@ Closing this gap is 1.0-gating work, not a bug to fix incrementally --
 see the sibling `omnist` project's own `any`-openness decision, which this
 port's scoping deliberately mirrors rather than resolves independently.
 
-## Representational limits from `Scalar::Int` being `i64`
+## `Scalar::Int` is arbitrary-precision (issue #104)
 
-Every format codec shares one representational ceiling this port's Python
-and TypeScript siblings don't have: `omnist::document::Scalar::Int` is a
-plain `i64` (max ~19 significant decimal digits), not an arbitrary-
-precision integer. Each format's own page documents the specific
-consequence:
+`omnist::document::Scalar::Int` and `Value::Int` are backed by
+`num_bigint::BigInt`, not a fixed-width integer -- matching omnist-spec
+[section 2.2](https://github.com/omnist-dev/omnist-spec/blob/main/docs/02-document-model.md#22-values)'s
+requirement that `integer` be arbitrary-precision, and Python's/Go's own
+representations (`int`, `*big.Int`). This was previously `i64` (max ~19
+significant decimal digits) -- a real spec-conformance bug, not a
+disclosed permitted variation, since a 20+ digit literal under the shared
+4,300-digit security cap was rejected outright with no
+`declared_max_int_digits` override in play (omnist-spec ledger entry D-9).
+Fixed; see each format's own page for anything still worth knowing:
 
-- [formats/json.md](formats/json.md), [formats/yaml.md](formats/yaml.md) --
-  a decimal integer literal over 19 digits (but under the shared
-  4300-digit security cap) is a `ParseError` ("out of range for a 64-bit
-  integer"), where Python holds it as an exact arbitrary-precision `int`.
-- [formats/toml.md](formats/toml.md) -- the same cap is applied uniformly
-  to hex/octal/binary literals too, a disclosed divergence from Python
-  (which exempts those radixes from its digit-limit guard entirely).
-- [formats/xml.md](formats/xml.md) -- an over-`i64` numeral falls through
-  to `Scalar::Float` instead of erroring, mirroring Python's own
-  int-then-float coercion fallback, just with a narrower `Scalar::Int`.
-
-None of this is a bug: it is the direct, disclosed consequence of issue
-#4's Document-model architecture decision (`Scalar` has exactly five
-variants, `Int` is `i64`), applied consistently across every codec rather
-than special-cased away.
+- [formats/toml.md](formats/toml.md) -- **one real, external divergence
+  remains**: `toml_edit`, the crate this port's TOML codec is built on,
+  has its own `i64`-backed integer type (the TOML 1.0 format spec itself
+  documents 64-bit signed integers), so a >19-digit integer literal in
+  TOML *source text* is still rejected -- by `toml_edit`'s own parser,
+  before this port's `Scalar` is ever involved. Writing an
+  arbitrary-precision `Scalar::Int` *to* TOML still succeeds (this
+  codec's writer renders integers as plain digit text, not through
+  `toml_edit`'s typed API), so the asymmetry is read-side only: such a
+  value round-trips out but not back in through TOML specifically. Every
+  other format (JSON, YAML, OML) has no such ceiling.
 
 ## No native temporal `Scalar` variant
 

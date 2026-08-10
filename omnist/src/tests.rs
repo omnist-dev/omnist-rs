@@ -11,7 +11,7 @@ use super::*;
 
 #[test]
 fn version_matches_cargo_toml() {
-    assert_eq!(VERSION, "0.1.1-alpha");
+    assert_eq!(VERSION, "0.1.2-alpha");
 }
 
 // -- cross-op characterization: infer + materialize (issue #14) ------------
@@ -36,7 +36,7 @@ fn materialize_accepts_infers_own_source_data() {
     let samples = vec![
         document::Doc::of(&obj(&[
             ("name", Value::Str("alice".into())),
-            ("age", Value::Int(30)),
+            ("age", Value::Int((30).into())),
             (
                 "address",
                 obj(&[
@@ -89,7 +89,7 @@ fn materialize_of_infer_upgrades_an_integer_number_mix_to_number() {
     }
 
     let samples = vec![
-        document::Doc::of(&obj(&[("price", Value::Int(3))])).unwrap(),
+        document::Doc::of(&obj(&[("price", Value::Int((3).into()))])).unwrap(),
         document::Doc::of(&obj(&[("price", Value::Float(3.5))])).unwrap(),
     ];
     let schema = infer(&samples, "Root").unwrap();

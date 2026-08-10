@@ -81,7 +81,7 @@ fn array_field_min_reflects_the_smallest_sample_count() {
 #[test]
 fn integer_and_number_samples_collapse_to_number() {
     let samples = vec![
-        doc(obj(&[("x", Value::Int(1))])),
+        doc(obj(&[("x", Value::Int((1).into()))])),
         doc(obj(&[("x", Value::Float(1.5))])),
     ];
     let schema = infer(&samples, "Root").unwrap();
@@ -96,8 +96,8 @@ fn integer_and_number_samples_collapse_to_number() {
 #[test]
 fn all_integer_samples_stay_integer() {
     let samples = vec![
-        doc(obj(&[("x", Value::Int(1))])),
-        doc(obj(&[("x", Value::Int(2))])),
+        doc(obj(&[("x", Value::Int((1).into()))])),
+        doc(obj(&[("x", Value::Int((2).into()))])),
     ];
     let schema = infer(&samples, "Root").unwrap();
     let f = field(schema.env(), "Root", "x");
@@ -111,7 +111,7 @@ fn all_integer_samples_stay_integer() {
 #[test]
 fn null_sample_makes_the_scalar_nullable() {
     let samples = vec![
-        doc(obj(&[("x", Value::Int(1))])),
+        doc(obj(&[("x", Value::Int((1).into()))])),
         doc(obj(&[("x", Value::Null)])),
     ];
     let schema = infer(&samples, "Root").unwrap();
@@ -168,8 +168,8 @@ fn duplicate_generated_names_are_disambiguated() {
     // Two different labels that both identifier-normalize to "Item" force
     // a numeric suffix on the second.
     let samples = vec![doc(obj(&[
-        ("item", obj(&[("a", Value::Int(1))])),
-        ("Item", obj(&[("b", Value::Int(1))])),
+        ("item", obj(&[("a", Value::Int((1).into()))])),
+        ("Item", obj(&[("b", Value::Int((1).into()))])),
     ]))];
     let schema = infer(&samples, "Root").unwrap();
     let names: Vec<&String> = schema.env().keys().collect();
@@ -199,8 +199,8 @@ fn disagreeing_scalar_shapes_raise_a_schema_error() {
 #[test]
 fn mixing_objects_and_scalars_under_one_label_is_a_schema_error() {
     let samples = vec![
-        doc(obj(&[("x", obj(&[("a", Value::Int(1))]))])),
-        doc(obj(&[("x", Value::Int(1))])),
+        doc(obj(&[("x", obj(&[("a", Value::Int((1).into()))]))])),
+        doc(obj(&[("x", Value::Int((1).into()))])),
     ];
     let err = infer(&samples, "Root").unwrap_err();
     assert!(err.to_string().contains("mixes objects and values"));
@@ -224,8 +224,8 @@ fn disagreeing_scalar_shapes_error_does_not_mention_any_when_allow_any_is_false(
 #[test]
 fn allow_any_opens_a_mixed_object_and_scalar_label_as_any() {
     let samples = vec![
-        doc(obj(&[("x", obj(&[("a", Value::Int(1))]))])),
-        doc(obj(&[("x", Value::Int(1))])),
+        doc(obj(&[("x", obj(&[("a", Value::Int((1).into()))]))])),
+        doc(obj(&[("x", Value::Int((1).into()))])),
     ];
     let (schema, fallbacks) = infer_with_report(&samples, "Root", true).unwrap();
     let f = field(schema.env(), "Root", "x");
@@ -278,7 +278,7 @@ fn zero_samples_is_a_schema_error() {
 
 #[test]
 fn a_bare_scalar_sample_at_the_root_is_a_schema_error() {
-    let samples = vec![doc(Value::Int(1))];
+    let samples = vec![doc(Value::Int((1).into()))];
     let err = infer(&samples, "Root").unwrap_err();
     assert!(err.to_string().contains("object (record) samples"));
 }
@@ -329,7 +329,7 @@ fn materialize_accepts_a_schemas_own_inferred_source_data() {
     let samples = vec![
         doc(obj(&[
             ("name", Value::Str("Ada".into())),
-            ("age", Value::Int(36)),
+            ("age", Value::Int((36).into())),
             ("address", obj(&[("city", Value::Str("London".into()))])),
             (
                 "tag",

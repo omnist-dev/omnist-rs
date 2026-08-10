@@ -47,7 +47,7 @@ use crate::WriteError;
 use crate::document::{Doc, Value};
 use crate::error::{OmnistError, ParseError};
 use crate::formats::float_fmt;
-use crate::formats::int_cap::{MAX_INT_DIGITS, out_of_range_message, over_cap_message};
+use crate::formats::int_cap::{MAX_INT_DIGITS, over_cap_message};
 use crate::formats::string_escape::{JSON_ESCAPES, write_quoted};
 use crate::formats::textpos::line_col_bytes;
 use crate::report::{Severity, WriteReport};
@@ -625,10 +625,13 @@ impl<'a> Parser<'a> {
             if digits.len() > MAX_INT_DIGITS {
                 return Err(self.error_at(start, over_cap_message("", digits.len())));
             }
-            match text.parse::<i64>() {
-                Ok(v) => Ok(Value::Int(v)),
-                Err(_) => Err(self.error_at(start, out_of_range_message("", text))),
-            }
+            // Arbitrary-precision (issue #104): the scanner only emits
+            // number-shaped ASCII-digit text (with an optional leading
+            // `-`), and BigInt::parse_bytes always succeeds on that shape.
+            let v = num_bigint::BigInt::parse_bytes(text.as_bytes(), 10).expect(
+                "scanner only emits digit-shaped text, which BigInt::parse_bytes always parses",
+            );
+            Ok(Value::Int(v))
         }
     }
 }
@@ -649,7 +652,10 @@ mod tests {
     fn reads_object_with_scalars() {
         let doc = read_json(r#"{"a": 1, "b": "s", "c": true, "d": null, "e": 1.5}"#).unwrap();
         let root = doc.root();
-        assert_eq!(*root.get_one("a").unwrap().value().unwrap(), Scalar::Int(1));
+        assert_eq!(
+            *root.get_one("a").unwrap().value().unwrap(),
+            Scalar::Int((1).into())
+        );
         assert_eq!(
             *root.get_one("b").unwrap().value().unwrap(),
             Scalar::Str("s".to_string())
@@ -680,8 +686,8 @@ mod tests {
         let root = doc.root();
         let ms = root.get("m");
         assert_eq!(ms.len(), 3);
-        assert_eq!(*ms[0].value().unwrap(), Scalar::Int(1));
-        assert_eq!(*ms[2].value().unwrap(), Scalar::Int(3));
+        assert_eq!(*ms[0].value().unwrap(), Scalar::Int((1).into()));
+        assert_eq!(*ms[2].value().unwrap(), Scalar::Int((3).into()));
     }
 
     #[test]
@@ -696,7 +702,10 @@ mod tests {
         let root = doc.root();
         let a = root.get_one("a").unwrap();
         let b = a.get_one("b").unwrap();
-        assert_eq!(*b.get_one("c").unwrap().value().unwrap(), Scalar::Int(1));
+        assert_eq!(
+            *b.get_one("c").unwrap().value().unwrap(),
+            Scalar::Int((1).into())
+        );
     }
 
     #[test]
@@ -742,7 +751,10 @@ mod tests {
         let doc = read_json(r#"{"a": 1, "b": 2, "a": 3}"#).unwrap();
         let root = doc.root();
         assert_eq!(root.labels(), vec!["a".to_string(), "b".to_string()]);
-        assert_eq!(*root.get_one("a").unwrap().value().unwrap(), Scalar::Int(3));
+        assert_eq!(
+            *root.get_one("a").unwrap().value().unwrap(),
+            Scalar::Int((3).into())
+        );
     }
 
     #[test]
@@ -806,14 +818,18 @@ mod tests {
     }
 
     #[test]
-    fn integer_literal_under_digit_cap_but_over_i64_range_is_out_of_range_error() {
+    fn integer_literal_under_digit_cap_but_over_i64_range_parses() {
         // 20 nines: over i64::MAX's 19 digits, comfortably under the
-        // 4300-digit cap -- exercises the *out-of-range* branch, not the
-        // digit-cap branch (see this module's doc comment on why the cap
-        // is unreachable via i64 alone for such a literal).
+        // 4300-digit cap -- issue #104: `Scalar::Int` is arbitrary-precision
+        // (`BigInt`), so this is no longer an out-of-range error, it's a
+        // real, correctly-parsed value.
         let text = format!(r#"{{"a": {}}}"#, "9".repeat(20));
-        let err = read_json(&text).unwrap_err();
-        assert!(matches!(err, OmnistError::Parse(_)), "got {err:?}");
+        let doc = read_json(&text).unwrap();
+        let value = doc.root().child("a").unwrap().value().unwrap();
+        assert_eq!(
+            value,
+            &Scalar::Int(num_bigint::BigInt::parse_bytes(b"99999999999999999999", 10).unwrap())
+        );
     }
 
     #[test]
@@ -827,16 +843,17 @@ mod tests {
     }
 
     #[test]
-    fn integer_literal_exactly_at_digit_cap_is_out_of_range_not_digit_cap_error() {
-        // At exactly 4300 digits it's still an i64 range error (this port's
-        // i64-based Scalar can't hold it either way), not the digit-cap
-        // message -- confirms the cap boundary is `> MAX_INT_DIGITS`.
+    fn integer_literal_exactly_at_digit_cap_parses_not_digit_cap_error() {
+        // At exactly 4300 digits: under arbitrary-precision (issue #104)
+        // this is a real, successfully-parsed value -- confirms the cap
+        // boundary is `> MAX_INT_DIGITS`, not `>=`.
         let text = format!(r#"{{"a": {}}}"#, "9".repeat(MAX_INT_DIGITS));
-        let err = read_json(&text).unwrap_err();
+        let doc = read_json(&text).unwrap();
+        let value = doc.root().child("a").unwrap().value().unwrap();
         assert!(
-            matches!(&err, OmnistError::Parse(e) if e.message.contains("out of range")),
-            "got {err:?}"
-        )
+            matches!(value, Scalar::Int(i) if i.to_string().len() == MAX_INT_DIGITS),
+            "got {value:?}"
+        );
     }
 
     #[test]
@@ -1064,7 +1081,7 @@ mod tests {
         let v = obj(vec![
             ("null", Value::Null),
             ("bool", Value::Bool(true)),
-            ("int", Value::Int(42)),
+            ("int", Value::Int((42).into())),
             ("float", Value::Float(1.5)),
             ("str", Value::Str("hi".to_string())),
         ]);
@@ -1111,7 +1128,7 @@ mod tests {
     fn writes_repeated_labels_as_a_json_array() {
         let doc = doc_of(obj(vec![(
             "m",
-            Value::Array(vec![Value::Int(1), Value::Int(2)]),
+            Value::Array(vec![Value::Int((1).into()), Value::Int((2).into())]),
         )]));
         let text = write_json(&doc, None, false, None).unwrap();
         assert_eq!(text, r#"{"m": [1, 2]}"#);
@@ -1119,14 +1136,17 @@ mod tests {
 
     #[test]
     fn writes_compact_with_comma_space_separators() {
-        let doc = doc_of(obj(vec![("a", Value::Int(1)), ("b", Value::Int(2))]));
+        let doc = doc_of(obj(vec![
+            ("a", Value::Int((1).into())),
+            ("b", Value::Int((2).into())),
+        ]));
         let text = write_json(&doc, None, false, None).unwrap();
         assert_eq!(text, r#"{"a": 1, "b": 2}"#);
     }
 
     #[test]
     fn writes_indented_multiline() {
-        let doc = doc_of(obj(vec![("a", Value::Int(1))]));
+        let doc = doc_of(obj(vec![("a", Value::Int((1).into()))]));
         let text = write_json(&doc, Some(2), false, None).unwrap();
         assert_eq!(text, "{\n  \"a\": 1\n}");
     }
@@ -1144,7 +1164,10 @@ mod tests {
         // (see `document.rs`'s `child_specs`) -- the label simply doesn't
         // appear in the built `Doc`, so it can't round-trip as `[]`. This
         // is a Document-model property, not something this codec controls.
-        let doc = doc_of(obj(vec![("a", Value::Array(vec![])), ("b", Value::Int(1))]));
+        let doc = doc_of(obj(vec![
+            ("a", Value::Array(vec![])),
+            ("b", Value::Int((1).into())),
+        ]));
         let text = write_json(&doc, None, false, None).unwrap();
         assert_eq!(text, r#"{"b": 1}"#);
     }
@@ -1174,7 +1197,7 @@ mod tests {
 
     #[test]
     fn strict_write_with_no_adjustments_succeeds() {
-        let doc = doc_of(obj(vec![("a", Value::Int(1))]));
+        let doc = doc_of(obj(vec![("a", Value::Int((1).into()))]));
         let text = write_json(&doc, None, true, None).unwrap();
         assert_eq!(text, r#"{"a": 1}"#);
     }
@@ -1252,7 +1275,7 @@ mod tests {
         // Doc::of already rejects nesting past MAX_DEPTH at construction
         // time (see this module's doc comment) -- confirms write_json never
         // even sees an over-deep Doc to begin with.
-        let mut v = Value::Int(0);
+        let mut v = Value::Int((0).into());
         for _ in 0..=crate::document::MAX_DEPTH {
             v = obj(vec![("a", v)]);
         }
@@ -1266,11 +1289,15 @@ mod tests {
         // (see the PR description) -- this test pins the Rust side of that
         // comparison.
         let doc = doc_of(obj(vec![
-            ("a", Value::Int(1)),
+            ("a", Value::Int((1).into())),
             ("b", Value::Str("x".to_string())),
             (
                 "c",
-                Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+                Value::Array(vec![
+                    Value::Int((1).into()),
+                    Value::Int((2).into()),
+                    Value::Int((3).into()),
+                ]),
             ),
         ]));
         let text = write_json(&doc, None, false, None).unwrap();

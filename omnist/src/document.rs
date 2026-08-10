@@ -56,11 +56,19 @@ pub const MAX_NODES: usize = 1_000_000;
 pub struct NodeId(usize);
 
 /// A leaf value.
+///
+/// `Int` is arbitrary-precision (`BigInt`), not a fixed-width integer --
+/// omnist-spec §2.2 defines `integer` as arbitrary-precision, bounded only
+/// by the shared digit-count cap (`MAX_INT_DIGITS`), the same way Python's
+/// native `int` and Go's `*big.Int` already are (issue #104; previously
+/// `i64`, which silently rejected any literal past ~19 digits -- a
+/// spec-conformance bug, not a permitted narrower-limit variation, since no
+/// digit-count override was in play).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Scalar {
     Null,
     Bool(bool),
-    Int(i64),
+    Int(num_bigint::BigInt),
     Float(f64),
     Str(String),
 }
@@ -86,7 +94,7 @@ impl fmt::Display for Scalar {
 pub enum Value {
     Null,
     Bool(bool),
-    Int(i64),
+    Int(num_bigint::BigInt),
     Float(f64),
     Str(String),
     Array(Vec<Value>),
@@ -254,7 +262,7 @@ fn build_node(
         // to justify, since those two variants are already handled above.
         Value::Null => push(arena, NodeData::Leaf(Scalar::Null), depth, path),
         Value::Bool(b) => push(arena, NodeData::Leaf(Scalar::Bool(*b)), depth, path),
-        Value::Int(i) => push(arena, NodeData::Leaf(Scalar::Int(*i)), depth, path),
+        Value::Int(i) => push(arena, NodeData::Leaf(Scalar::Int(i.clone())), depth, path),
         Value::Float(x) => push(arena, NodeData::Leaf(Scalar::Float(*x)), depth, path),
         Value::Str(s) => push(arena, NodeData::Leaf(Scalar::Str(s.clone())), depth, path),
     }
@@ -796,7 +804,7 @@ mod tests {
         // The `_ => false` catch-all in `RawNode`'s manual `PartialEq`
         // (issue #99) -- a leaf (either variant) can never equal an
         // internal node, regardless of the leaf's own tag.
-        let leaf = RawNode::Leaf(Scalar::Int(1));
+        let leaf = RawNode::Leaf(Scalar::Int((1).into()));
         let temporal = RawNode::TemporalLeaf(Scalar::Str("2024-01-01".to_string()));
         let edges = RawNode::Edges(vec![]);
         assert_ne!(leaf, edges);
@@ -816,7 +824,7 @@ mod tests {
     /// `build_node`'s depth arithmetic, the leaf ends up at depth `levels`
     /// (each object level adds exactly 1 -- no array involved).
     fn nest(levels: usize) -> Value {
-        let mut v = Value::Int(0);
+        let mut v = Value::Int((0).into());
         for _ in 0..levels {
             v = obj(&[("a", v)]);
         }
@@ -827,15 +835,15 @@ mod tests {
 
     #[test]
     fn constructs_a_scalar_leaf() {
-        let doc = Doc::of(&Value::Int(42)).unwrap();
+        let doc = Doc::of(&Value::Int((42).into())).unwrap();
         let root = doc.root();
         assert!(root.is_leaf());
-        assert_eq!(root.value().unwrap(), &Scalar::Int(42));
+        assert_eq!(root.value().unwrap(), &Scalar::Int((42).into()));
     }
 
     #[test]
     fn constructs_an_object_as_ordered_edges() {
-        let v = obj(&[("b", Value::Int(1)), ("a", Value::Int(2))]);
+        let v = obj(&[("b", Value::Int((1).into())), ("a", Value::Int((2).into()))]);
         let doc = Doc::of(&v).unwrap();
         let root = doc.root();
         assert!(!root.is_leaf());
@@ -849,7 +857,11 @@ mod tests {
     fn a_list_value_expands_into_repeated_edges() {
         let v = obj(&[(
             "member",
-            Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+            Value::Array(vec![
+                Value::Int((1).into()),
+                Value::Int((2).into()),
+                Value::Int((3).into()),
+            ]),
         )]);
         let doc = Doc::of(&v).unwrap();
         let root = doc.root();
@@ -858,20 +870,27 @@ mod tests {
         let vals: Vec<&Scalar> = members.iter().map(|c| c.value().unwrap()).collect();
         assert_eq!(
             vals,
-            vec![&Scalar::Int(1), &Scalar::Int(2), &Scalar::Int(3)]
+            vec![
+                &Scalar::Int((1).into()),
+                &Scalar::Int((2).into()),
+                &Scalar::Int((3).into())
+            ]
         );
     }
 
     #[test]
     fn a_bare_top_level_array_is_rejected() {
-        let err = Doc::of(&Value::Array(vec![Value::Int(1)])).unwrap_err();
+        let err = Doc::of(&Value::Array(vec![Value::Int((1).into())])).unwrap_err();
         assert!(err.message.contains("bare array"));
         assert_eq!(err.path, "$");
     }
 
     #[test]
     fn an_array_of_arrays_is_rejected() {
-        let v = obj(&[("a", Value::Array(vec![Value::Array(vec![Value::Int(1)])]))]);
+        let v = obj(&[(
+            "a",
+            Value::Array(vec![Value::Array(vec![Value::Int((1).into())])]),
+        )]);
         let err = Doc::of(&v).unwrap_err();
         assert!(err.message.contains("array of arrays"));
         assert_eq!(err.path, "$.a[0]");
@@ -904,7 +923,7 @@ mod tests {
     // its own node).
 
     fn wide(n: usize) -> Value {
-        obj(&[("a", Value::Array(vec![Value::Int(0); n]))])
+        obj(&[("a", Value::Array(vec![Value::Int((0).into()); n]))])
     }
 
     #[test]
@@ -928,8 +947,8 @@ mod tests {
         // itself costs an extra level, mirroring Python's `_children`
         // (see the module doc comment / build_node's `depth + 1` for the
         // list branch on top of the caller's own `depth + 1`).
-        let direct = obj(&[("a", Value::Int(1))]);
-        let via_array = obj(&[("a", Value::Array(vec![Value::Int(1)]))]);
+        let direct = obj(&[("a", Value::Int((1).into()))]);
+        let via_array = obj(&[("a", Value::Array(vec![Value::Int((1).into())]))]);
         let doc_direct = Doc::of(&direct).unwrap();
         let doc_array = Doc::of(&via_array).unwrap();
         let leaf_direct = doc_direct.root().child("a").unwrap();
@@ -947,7 +966,7 @@ mod tests {
 
         // Doc::add, attaching at the root (depth 0): the pushed subtree's
         // own internal depth is what must exceed MAX_DEPTH.
-        let mut doc = Doc::of(&obj(&[("seed", Value::Int(0))])).unwrap();
+        let mut doc = Doc::of(&obj(&[("seed", Value::Int((0).into()))])).unwrap();
         let root_id = doc.root().id();
         let root_path = doc.root().path.clone();
         assert!(
@@ -956,7 +975,7 @@ mod tests {
         );
 
         // Doc::set: same guard, different mutating call site.
-        let mut doc2 = Doc::of(&obj(&[("seed", Value::Int(0))])).unwrap();
+        let mut doc2 = Doc::of(&obj(&[("seed", Value::Int((0).into()))])).unwrap();
         let root_id2 = doc2.root().id();
         let root_path2 = doc2.root().path.clone();
         assert!(
@@ -1006,20 +1025,26 @@ mod tests {
         // key can't repeat) -- "z" appears twice because its value is a
         // 2-item array, not because the object has two "z" entries.
         let v = obj(&[
-            ("z", Value::Array(vec![Value::Int(1), Value::Int(3)])),
-            ("a", Value::Int(2)),
-            ("m", Value::Int(4)),
+            (
+                "z",
+                Value::Array(vec![Value::Int((1).into()), Value::Int((3).into())]),
+            ),
+            ("a", Value::Int((2).into())),
+            ("m", Value::Int((4).into())),
         ]);
         let doc = Doc::of(&v).unwrap();
         let root = doc.root();
         assert_eq!(root.labels(), vec!["z", "a", "m"]);
         let z_vals: Vec<&Scalar> = root.get("z").iter().map(|c| c.value().unwrap()).collect();
-        assert_eq!(z_vals, vec![&Scalar::Int(1), &Scalar::Int(3)]);
+        assert_eq!(
+            z_vals,
+            vec![&Scalar::Int((1).into()), &Scalar::Int((3).into())]
+        );
     }
 
     #[test]
     fn labels_and_count_on_a_leaf_are_empty() {
-        let doc = Doc::of(&Value::Int(1)).unwrap();
+        let doc = Doc::of(&Value::Int((1).into())).unwrap();
         let root = doc.root();
         assert!(root.labels().is_empty());
         assert_eq!(root.count("anything"), 0);
@@ -1028,14 +1053,20 @@ mod tests {
     #[test]
     fn to_grouped_preserves_first_seen_key_order() {
         let v = obj(&[
-            ("z", Value::Array(vec![Value::Int(1), Value::Int(3)])),
-            ("a", Value::Int(2)),
+            (
+                "z",
+                Value::Array(vec![Value::Int((1).into()), Value::Int((3).into())]),
+            ),
+            ("a", Value::Int((2).into())),
         ]);
         let doc = Doc::of(&v).unwrap();
         let grouped = doc.to_grouped();
         let expected = obj(&[
-            ("z", Value::Array(vec![Value::Int(1), Value::Int(3)])),
-            ("a", Value::Int(2)),
+            (
+                "z",
+                Value::Array(vec![Value::Int((1).into()), Value::Int((3).into())]),
+            ),
+            ("a", Value::Int((2).into())),
         ]);
         assert_eq!(grouped, expected);
         // `assert_eq!` above is order-insensitive (`IndexMap`'s `PartialEq`
@@ -1051,7 +1082,7 @@ mod tests {
 
     #[test]
     fn value_as_object_is_none_for_a_non_object() {
-        assert!(Value::Int(1).as_object().is_none());
+        assert!(Value::Int((1).into()).as_object().is_none());
     }
 
     // -- mutation semantics: add / set / remove / count / get -----------
@@ -1061,8 +1092,10 @@ mod tests {
         let mut doc = Doc::of(&obj(&[])).unwrap();
         let root_id = doc.root().id();
         let root_path = doc.root().path.clone();
-        doc.add(root_id, &root_path, "x", &Value::Int(1)).unwrap();
-        doc.add(root_id, &root_path, "x", &Value::Int(2)).unwrap();
+        doc.add(root_id, &root_path, "x", &Value::Int((1).into()))
+            .unwrap();
+        doc.add(root_id, &root_path, "x", &Value::Int((2).into()))
+            .unwrap();
         let root = doc.root();
         assert_eq!(root.count("x"), 2);
         assert!(root.get_one("x").is_err());
@@ -1071,26 +1104,31 @@ mod tests {
     #[test]
     fn set_replaces_all_occurrences_at_first_position() {
         let mut doc = Doc::of(&obj(&[
-            ("x", Value::Int(1)),
-            ("y", Value::Int(9)),
-            ("x", Value::Int(2)),
+            ("x", Value::Int((1).into())),
+            ("y", Value::Int((9).into())),
+            ("x", Value::Int((2).into())),
         ]))
         .unwrap();
         let root_id = doc.root().id();
         let root_path = doc.root().path.clone();
-        doc.set(root_id, &root_path, "x", &Value::Int(100)).unwrap();
+        doc.set(root_id, &root_path, "x", &Value::Int((100).into()))
+            .unwrap();
         let root = doc.root();
         let labels: Vec<String> = root.edges().unwrap().into_iter().map(|(l, _)| l).collect();
         assert_eq!(labels, vec!["x", "y"]);
         assert_eq!(
             root.get_one("x").unwrap().value().unwrap(),
-            &Scalar::Int(100)
+            &Scalar::Int((100).into())
         );
     }
 
     #[test]
     fn remove_drops_every_edge_with_that_label() {
-        let mut doc = Doc::of(&obj(&[("x", Value::Int(1)), ("x", Value::Int(2))])).unwrap();
+        let mut doc = Doc::of(&obj(&[
+            ("x", Value::Int((1).into())),
+            ("x", Value::Int((2).into())),
+        ]))
+        .unwrap();
         let root_id = doc.root().id();
         let root_path = doc.root().path.clone();
         doc.remove(root_id, &root_path, "x").unwrap();
@@ -1103,7 +1141,7 @@ mod tests {
         // gate through `require_internal` first, so this helper's `Leaf`
         // arm is unreachable via the public API -- call it directly to
         // prove the arm itself is correct (see its doc comment).
-        let mut doc = Doc::of(&Value::Int(1)).unwrap();
+        let mut doc = Doc::of(&Value::Int((1).into())).unwrap();
         let root_id = doc.root().id();
         let err = doc.internal_edges_mut(root_id, "$", "poke").unwrap_err();
         assert_eq!(err.path, "$");
@@ -1112,23 +1150,29 @@ mod tests {
 
     #[test]
     fn mutation_on_a_leaf_is_rejected() {
-        let mut doc = Doc::of(&Value::Int(1)).unwrap();
+        let mut doc = Doc::of(&Value::Int((1).into())).unwrap();
         let root_id = doc.root().id();
         let root_path = doc.root().path.clone();
-        assert!(doc.add(root_id, &root_path, "x", &Value::Int(1)).is_err());
-        assert!(doc.set(root_id, &root_path, "x", &Value::Int(1)).is_err());
+        assert!(
+            doc.add(root_id, &root_path, "x", &Value::Int((1).into()))
+                .is_err()
+        );
+        assert!(
+            doc.set(root_id, &root_path, "x", &Value::Int((1).into()))
+                .is_err()
+        );
         assert!(doc.remove(root_id, &root_path, "x").is_err());
     }
 
     #[test]
     fn value_on_an_internal_node_is_rejected() {
-        let doc = Doc::of(&obj(&[("x", Value::Int(1))])).unwrap();
+        let doc = Doc::of(&obj(&[("x", Value::Int((1).into()))])).unwrap();
         assert!(doc.root().value().is_err());
     }
 
     #[test]
     fn edges_on_a_leaf_is_rejected() {
-        let doc = Doc::of(&Value::Int(1)).unwrap();
+        let doc = Doc::of(&Value::Int((1).into())).unwrap();
         assert!(doc.root().edges().is_err());
     }
 
@@ -1136,7 +1180,7 @@ mod tests {
     fn raw_edges_on_a_leaf_is_rejected() {
         // Mirrors `edges_on_a_leaf_is_rejected` for the lazy-path variant
         // `edges()` piggybacks its own path-numbering on -- see issue #44.
-        let doc = Doc::of(&Value::Int(1)).unwrap();
+        let doc = Doc::of(&Value::Int((1).into())).unwrap();
         assert!(doc.root().raw_edges().is_err());
     }
 
@@ -1144,7 +1188,10 @@ mod tests {
 
     #[test]
     fn to_data_round_trips_structure() {
-        let v = obj(&[("a", Value::Int(1)), ("b", Value::Str("hi".to_string()))]);
+        let v = obj(&[
+            ("a", Value::Int((1).into())),
+            ("b", Value::Str("hi".to_string())),
+        ]);
         let doc = Doc::of(&v).unwrap();
         assert_eq!(doc.to_data(), v);
     }
@@ -1157,7 +1204,7 @@ mod tests {
         let v = obj(&[
             ("n", Value::Null),
             ("b", Value::Bool(true)),
-            ("i", Value::Int(7)),
+            ("i", Value::Int((7).into())),
             ("f", Value::Float(1.5)),
             ("s", Value::Str("hi".to_string())),
         ]);
@@ -1172,7 +1219,7 @@ mod tests {
         // the `path["key"]` form, not `path.key`.
         let v = obj(&[(
             "1bad",
-            Value::Array(vec![Value::Array(vec![Value::Int(1)])]),
+            Value::Array(vec![Value::Array(vec![Value::Int((1).into())])]),
         )]);
         let err = Doc::of(&v).unwrap_err();
         assert_eq!(err.path, "$[\"1bad\"][0]");
@@ -1180,9 +1227,9 @@ mod tests {
 
     #[test]
     fn eq_doc_compares_structurally() {
-        let a = Doc::of(&obj(&[("a", Value::Int(1))])).unwrap();
-        let b = Doc::of(&obj(&[("a", Value::Int(1))])).unwrap();
-        let c = Doc::of(&obj(&[("a", Value::Int(2))])).unwrap();
+        let a = Doc::of(&obj(&[("a", Value::Int((1).into()))])).unwrap();
+        let b = Doc::of(&obj(&[("a", Value::Int((1).into()))])).unwrap();
+        let c = Doc::of(&obj(&[("a", Value::Int((2).into()))])).unwrap();
         assert!(a.eq_doc(&b));
         assert!(!a.eq_doc(&c));
     }
@@ -1191,8 +1238,8 @@ mod tests {
     fn eq_doc_is_false_when_shapes_differ() {
         // A leaf is never equal to an internal node, regardless of
         // content -- exercises `node_eq`'s (Leaf, Internal) mismatch arm.
-        let leaf = Doc::of(&Value::Int(1)).unwrap();
-        let internal = Doc::of(&obj(&[("a", Value::Int(1))])).unwrap();
+        let leaf = Doc::of(&Value::Int((1).into())).unwrap();
+        let internal = Doc::of(&obj(&[("a", Value::Int((1).into()))])).unwrap();
         assert!(!leaf.eq_doc(&internal));
         assert!(!internal.eq_doc(&leaf));
     }
@@ -1201,7 +1248,7 @@ mod tests {
     fn scalar_display_covers_every_variant() {
         assert_eq!(Scalar::Null.to_string(), "null");
         assert_eq!(Scalar::Bool(true).to_string(), "true");
-        assert_eq!(Scalar::Int(1).to_string(), "1");
+        assert_eq!(Scalar::Int((1).into()).to_string(), "1");
         assert_eq!(Scalar::Float(1.5).to_string(), "1.5");
         assert_eq!(Scalar::Str("x".to_string()).to_string(), "\"x\"");
     }
@@ -1214,9 +1261,9 @@ mod tests {
         // exactly the shape `Value`/`IndexMap` cannot represent, which is
         // why the OML codec goes through RawNode instead.
         let raw = RawNode::Edges(vec![
-            ("b".to_string(), RawNode::Leaf(Scalar::Int(1))),
-            ("c".to_string(), RawNode::Leaf(Scalar::Int(2))),
-            ("b".to_string(), RawNode::Leaf(Scalar::Int(3))),
+            ("b".to_string(), RawNode::Leaf(Scalar::Int((1).into()))),
+            ("c".to_string(), RawNode::Leaf(Scalar::Int((2).into()))),
+            ("b".to_string(), RawNode::Leaf(Scalar::Int((3).into()))),
         ]);
         let doc = Doc::from_raw(raw.clone()).unwrap();
         assert_eq!(doc.to_raw(), raw);
@@ -1241,7 +1288,7 @@ mod tests {
     #[test]
     fn from_raw_enforces_the_depth_guard() {
         fn nest_raw(levels: usize) -> RawNode {
-            let mut n = RawNode::Leaf(Scalar::Int(0));
+            let mut n = RawNode::Leaf(Scalar::Int((0).into()));
             for _ in 0..levels {
                 n = RawNode::Edges(vec![("a".to_string(), n)]);
             }

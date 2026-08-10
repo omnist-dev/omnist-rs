@@ -40,9 +40,9 @@ fn string_with_escapes_round_trips() {
 #[test]
 fn integer_round_trips_positive_and_negative() {
     roundtrip_value(&obj(&[
-        ("a", Value::Int(42)),
-        ("b", Value::Int(-42)),
-        ("c", Value::Int(0)),
+        ("a", Value::Int((42).into())),
+        ("b", Value::Int((-42).into())),
+        ("c", Value::Int((0).into())),
     ]));
 }
 
@@ -182,7 +182,7 @@ fn datetime_round_trips_with_and_without_utc_offset() {
 fn nested_object_round_trips() {
     roundtrip_value(&obj(&[(
         "a",
-        obj(&[("b", Value::Int(1)), ("c", Value::Str("x".into()))]),
+        obj(&[("b", Value::Int((1).into())), ("c", Value::Str("x".into()))]),
     )]));
 }
 
@@ -205,7 +205,7 @@ fn empty_document_round_trips() {
 
 #[test]
 fn bare_top_level_scalar_round_trips() {
-    let doc = Doc::of(&Value::Int(7)).unwrap();
+    let doc = Doc::of(&Value::Int((7).into())).unwrap();
     let text = write_oml(&doc.to_raw(), 2).unwrap();
     assert_eq!(text, "7");
     let parsed = Doc::from_raw(read_oml(&text).unwrap()).unwrap();
@@ -219,15 +219,15 @@ fn interleaved_repeated_labels_round_trip_exactly_via_raw_node() {
     let raw = RawNode::Edges(vec![
         (
             "b".to_string(),
-            RawNode::Leaf(crate::document::Scalar::Int(1)),
+            RawNode::Leaf(crate::document::Scalar::Int((1).into())),
         ),
         (
             "c".to_string(),
-            RawNode::Leaf(crate::document::Scalar::Int(2)),
+            RawNode::Leaf(crate::document::Scalar::Int((2).into())),
         ),
         (
             "b".to_string(),
-            RawNode::Leaf(crate::document::Scalar::Int(3)),
+            RawNode::Leaf(crate::document::Scalar::Int((3).into())),
         ),
     ]);
     let text = write_oml(&raw, 2).unwrap();
@@ -242,7 +242,7 @@ fn interleaved_repeated_labels_round_trip_exactly_via_raw_node() {
 #[test]
 fn write_oml_calls_the_shared_depth_guard() {
     fn nest_raw(levels: usize) -> RawNode {
-        let mut n = RawNode::Leaf(crate::document::Scalar::Int(0));
+        let mut n = RawNode::Leaf(crate::document::Scalar::Int((0).into()));
         for _ in 0..levels {
             n = RawNode::Edges(vec![("a".to_string(), n)]);
         }
@@ -382,7 +382,7 @@ fn write_temporal_leaf_falls_back_to_write_scalar_for_a_non_str_scalar() {
     // directly so the fallback arm is real, tested code, not a dead
     // branch.
     assert_eq!(
-        writer::write_temporal_leaf(&crate::document::Scalar::Int(5)),
+        writer::write_temporal_leaf(&crate::document::Scalar::Int((5).into())),
         "5"
     );
 }
@@ -507,7 +507,7 @@ fn capitalized_reserved_words_are_bare_idents_not_keywords() {
 #[test]
 fn quoted_reserved_words_are_valid_labels_and_round_trip() {
     for label in ["nan", "inf", "-inf", "null", "true", "false"] {
-        roundtrip_value(&obj(&[(label, Value::Int(1))]));
+        roundtrip_value(&obj(&[(label, Value::Int((1).into()))]));
     }
 }
 
@@ -588,14 +588,18 @@ fn integer_digit_cap_is_enforced() {
 }
 
 #[test]
-fn integer_at_the_digit_cap_boundary_is_accepted_by_the_scanner_even_if_i64_overflows() {
-    // Exactly MAX_INT_DIGITS digits passes the cap check; i64 can't hold a
-    // 4300-digit number, so this is a distinct, later error -- proving the
-    // cap and the i64-range check are two separate failure modes.
+fn integer_at_the_digit_cap_boundary_parses() {
+    // Exactly MAX_INT_DIGITS digits passes the cap check, and (issue #104)
+    // `Scalar::Int` is arbitrary-precision, so this is now a real,
+    // successfully-parsed value, not an i64-range error.
     let digits = "1".repeat(MAX_INT_DIGITS);
     let src = format!("a: {digits}");
-    let err = read_oml(&src).unwrap_err();
-    assert!(err.message.contains("out of range"));
+    let parsed = Doc::from_raw(read_oml(&src).unwrap()).unwrap();
+    let value = parsed.root().child("a").unwrap().value().unwrap();
+    assert!(
+        matches!(value, crate::document::Scalar::Int(i) if i.to_string().len() == MAX_INT_DIGITS),
+        "got {value:?}"
+    );
 }
 
 #[test]
@@ -611,9 +615,17 @@ fn integer_cap_does_not_false_positive_on_a_long_identifier() {
 }
 
 #[test]
-fn out_of_range_integer_reports_a_clear_error() {
-    let err = read_oml("a: 99999999999999999999").unwrap_err();
-    assert!(err.message.contains("out of range"));
+fn beyond_i64_integer_parses_arbitrary_precision() {
+    // Issue #104: no i64 ceiling anymore -- a 20-digit literal is a real,
+    // correctly-parsed value.
+    let parsed = Doc::from_raw(read_oml("a: 99999999999999999999").unwrap()).unwrap();
+    let value = parsed.root().child("a").unwrap().value().unwrap();
+    assert_eq!(
+        value,
+        &crate::document::Scalar::Int(
+            num_bigint::BigInt::parse_bytes(b"99999999999999999999", 10).unwrap()
+        )
+    );
 }
 
 #[test]
@@ -715,11 +727,11 @@ fn write_oml_compact_joins_edges_with_semicolons() {
     let raw = RawNode::Edges(vec![
         (
             "a".to_string(),
-            RawNode::Leaf(crate::document::Scalar::Int(1)),
+            RawNode::Leaf(crate::document::Scalar::Int((1).into())),
         ),
         (
             "b".to_string(),
-            RawNode::Leaf(crate::document::Scalar::Int(2)),
+            RawNode::Leaf(crate::document::Scalar::Int((2).into())),
         ),
     ]);
     assert_eq!(write_oml_compact(&raw).unwrap(), "a: 1; b: 2");
@@ -731,7 +743,7 @@ fn write_oml_pretty_indents_nested_objects() {
         "a".to_string(),
         RawNode::Edges(vec![(
             "b".to_string(),
-            RawNode::Leaf(crate::document::Scalar::Int(1)),
+            RawNode::Leaf(crate::document::Scalar::Int((1).into())),
         )]),
     )]);
     assert_eq!(write_oml(&raw, 2).unwrap(), "a: {\n  b: 1\n}");
@@ -749,15 +761,15 @@ fn labels_needing_quotes_are_quoted_on_write() {
     let raw = RawNode::Edges(vec![
         (
             "has space".to_string(),
-            RawNode::Leaf(crate::document::Scalar::Int(1)),
+            RawNode::Leaf(crate::document::Scalar::Int((1).into())),
         ),
         (
             "null".to_string(),
-            RawNode::Leaf(crate::document::Scalar::Int(2)),
+            RawNode::Leaf(crate::document::Scalar::Int((2).into())),
         ),
         (
             "1leading".to_string(),
-            RawNode::Leaf(crate::document::Scalar::Int(3)),
+            RawNode::Leaf(crate::document::Scalar::Int((3).into())),
         ),
     ]);
     let text = write_oml(&raw, 2).unwrap();
@@ -770,7 +782,7 @@ fn labels_needing_quotes_are_quoted_on_write() {
 fn bare_identifier_label_is_written_unquoted() {
     let raw = RawNode::Edges(vec![(
         "under_score-and-dash".to_string(),
-        RawNode::Leaf(crate::document::Scalar::Int(1)),
+        RawNode::Leaf(crate::document::Scalar::Int((1).into())),
     )]);
     assert_eq!(write_oml(&raw, 2).unwrap(), "under_score-and-dash: 1");
 }
@@ -837,7 +849,7 @@ fn multibyte_content_inside_a_comment_does_not_corrupt_subsequent_scanning() {
         RawNode::Edges(edges) => {
             assert_eq!(
                 edges,
-                vec![("a".to_string(), RawNode::Leaf(Scalar::Int(1)))]
+                vec![("a".to_string(), RawNode::Leaf(Scalar::Int((1).into())))]
             );
         }
         other => panic!("expected edges, got {other:?}"),
@@ -900,14 +912,14 @@ fn array_of_brace_subtrees_round_trips() {
             "item".to_string(),
             RawNode::Edges(vec![(
                 "v".to_string(),
-                RawNode::Leaf(crate::document::Scalar::Int(1)),
+                RawNode::Leaf(crate::document::Scalar::Int((1).into())),
             )]),
         ),
         (
             "item".to_string(),
             RawNode::Edges(vec![(
                 "v".to_string(),
-                RawNode::Leaf(crate::document::Scalar::Int(2)),
+                RawNode::Leaf(crate::document::Scalar::Int((2).into())),
             )]),
         ),
     ]);
@@ -1001,7 +1013,7 @@ fn four_digits_not_followed_by_dash_is_a_plain_integer() {
         RawNode::Edges(edges) => {
             assert_eq!(
                 edges[0].1,
-                RawNode::Leaf(crate::document::Scalar::Int(1234))
+                RawNode::Leaf(crate::document::Scalar::Int((1234).into()))
             );
         }
         other => panic!("expected edges, got {other:?}"),
@@ -1023,7 +1035,10 @@ fn two_digit_integer_is_not_mistaken_for_a_time() {
     let node = read_oml("a: 12").unwrap();
     match node {
         RawNode::Edges(edges) => {
-            assert_eq!(edges[0].1, RawNode::Leaf(crate::document::Scalar::Int(12)));
+            assert_eq!(
+                edges[0].1,
+                RawNode::Leaf(crate::document::Scalar::Int((12).into()))
+            );
         }
         other => panic!("expected edges, got {other:?}"),
     }
@@ -1033,7 +1048,7 @@ fn two_digit_integer_is_not_mistaken_for_a_time() {
 
 #[test]
 fn write_oml_compact_on_a_bare_leaf_node() {
-    let raw = RawNode::Leaf(crate::document::Scalar::Int(5));
+    let raw = RawNode::Leaf(crate::document::Scalar::Int((5).into()));
     assert_eq!(write_oml(&raw, 2).unwrap(), "5");
     assert_eq!(write_oml_compact(&raw).unwrap(), "5");
 }
@@ -1054,11 +1069,11 @@ fn write_oml_pretty_on_multiple_top_level_edges() {
     let raw = RawNode::Edges(vec![
         (
             "a".to_string(),
-            RawNode::Leaf(crate::document::Scalar::Int(1)),
+            RawNode::Leaf(crate::document::Scalar::Int((1).into())),
         ),
         (
             "b".to_string(),
-            RawNode::Leaf(crate::document::Scalar::Int(2)),
+            RawNode::Leaf(crate::document::Scalar::Int((2).into())),
         ),
     ]);
     assert_eq!(write_oml(&raw, 2).unwrap(), "a: 1\nb: 2");
@@ -1178,7 +1193,10 @@ fn quoted_string_label_at_the_top_level_is_recognized_as_an_edge() {
     match node {
         RawNode::Edges(edges) => {
             assert_eq!(edges[0].0, "a b");
-            assert_eq!(edges[0].1, RawNode::Leaf(crate::document::Scalar::Int(1)));
+            assert_eq!(
+                edges[0].1,
+                RawNode::Leaf(crate::document::Scalar::Int((1).into()))
+            );
         }
         other => panic!("expected edges, got {other:?}"),
     }
@@ -1221,7 +1239,7 @@ fn capitalized_null_true_false_is_a_bare_ident_not_the_keyword() {
     for word in ["Null", "True", "False", "NULL", "TRUE", "FALSE"] {
         let raw = RawNode::Edges(vec![(
             word.to_string(),
-            RawNode::Leaf(crate::document::Scalar::Int(1)),
+            RawNode::Leaf(crate::document::Scalar::Int((1).into())),
         )]);
         let text = write_oml(&raw, 2).unwrap();
         assert_eq!(
@@ -1253,7 +1271,7 @@ fn capitalized_nan_inf_is_a_bare_ident_not_the_keyword() {
     for word in ["NAN", "INF", "NaN", "Inf"] {
         let raw = RawNode::Edges(vec![(
             word.to_string(),
-            RawNode::Leaf(crate::document::Scalar::Int(1)),
+            RawNode::Leaf(crate::document::Scalar::Int((1).into())),
         )]);
         let text = write_oml(&raw, 2).unwrap();
         assert_eq!(
@@ -1325,7 +1343,7 @@ fn quoted_reserved_spelling_is_a_valid_label_and_round_trips() {
     for word in ["null", "true", "false", "nan", "inf", "-inf"] {
         let raw = RawNode::Edges(vec![(
             word.to_string(),
-            RawNode::Leaf(crate::document::Scalar::Int(1)),
+            RawNode::Leaf(crate::document::Scalar::Int((1).into())),
         )]);
         let text = write_oml(&raw, 2).unwrap();
         // None of these are valid bare labels (either RESERVED, or -- for

@@ -62,7 +62,7 @@
 //! schema in stage 2."), [`read_xml`] builds every leaf as `Scalar::Str`
 //! unconditionally, with no int/float/bool inference at parse time --
 //! confirmed against a live `~/dev/venvs/omnist` `read_xml`: `<m>1</m>`
-//! reads as `Scalar::Str("1")`, never `Scalar::Int(1)`.
+//! reads as `Scalar::Str("1")`, never `Scalar::Int((1).into())`.
 //!
 //! An earlier version of this module ported a `coerce()` helper that
 //! type-inferred leaf text (bool/int/float) at parse time, contradicting
