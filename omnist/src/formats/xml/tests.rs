@@ -13,7 +13,7 @@ fn leaf_str(s: &str) -> RawNode {
 /// produces `Scalar::Int` -- every leaf it builds is a `Scalar::Str`). Kept
 /// for constructing `Doc`s to feed into `write_xml`/`check_xml`.
 fn leaf_int(i: i64) -> RawNode {
-    RawNode::Leaf(Scalar::Int(i))
+    RawNode::Leaf(Scalar::Int(i.into()))
 }
 
 // ------------------------------------------------------------ reader: basics
@@ -316,7 +316,7 @@ fn depth_at_the_boundary_is_accepted() {
 
 #[test]
 fn write_requires_exactly_one_top_level_edge() {
-    let doc = Doc::of(&crate::document::Value::Int(5)).unwrap();
+    let doc = Doc::of(&crate::document::Value::Int((5).into())).unwrap();
     let err = write_xml(&doc, false, None).unwrap_err();
     assert!(err.to_string().contains("exactly one document element"));
     assert!(err.report().is_none());
@@ -332,7 +332,7 @@ fn write_rejects_a_multi_edge_root() {
 
 #[test]
 fn write_requires_exactly_one_top_level_edge_even_with_a_report_supplied() {
-    let doc = Doc::of(&crate::document::Value::Int(5)).unwrap();
+    let doc = Doc::of(&crate::document::Value::Int((5).into())).unwrap();
     let mut rep = crate::report::WriteReport::new();
     let err = write_xml(&doc, false, Some(&mut rep)).unwrap_err();
     assert!(err.to_string().contains("exactly one document element"));

@@ -220,12 +220,20 @@ fn decode_scalar(kind: Option<&str>, value: &Json) -> Scalar {
         None => Scalar::Null,
         Some("boolean") => Scalar::Bool(value.as_bool().expect("boolean-kind value is a bool")),
         Some("integer") => {
-            let n = if let Some(s) = value.as_str() {
-                s.parse::<i64>().expect("integer-kind string value parses")
-            } else {
-                value.as_i64().expect("integer-kind value is an i64")
-            };
-            Scalar::Int(n)
+            // A vector's integer-kind value may be a quoted string or a
+            // bare JSON number literal beyond i64 range (issue #104's
+            // arbitrary-precision vectors) -- `Number::to_string()` under
+            // `arbitrary_precision` (this crate's Cargo.toml) preserves
+            // the exact source digits either way, so both forms funnel
+            // through the same `BigInt` parse.
+            let text = value
+                .as_str()
+                .map(str::to_string)
+                .or_else(|| value.as_number().map(|n| n.to_string()))
+                .expect("integer-kind value is a string or a number");
+            num_bigint::BigInt::parse_bytes(text.as_bytes(), 10)
+                .map(Scalar::Int)
+                .expect("integer-kind value parses as a decimal integer")
         }
         Some("number") => {
             let n = if let Some(s) = value.as_str() {
@@ -885,44 +893,43 @@ mod tests {
     use super::*;
 
     #[test]
-    fn vector_count_is_146() {
-        // 139 -> 146 via vendor/omnist-spec v0.1.0-alpha -> v0.1.1-alpha
-        // (issue #99): 6 new `formats-oml/oml.json` vectors testing a
-        // plain string that merely looks temporal-shaped staying quoted
-        // on OML write, vs. a genuinely temporal-kinded value writing
-        // bare.
+    fn vector_count_is_152() {
+        // 146 -> 152 via vendor/omnist-spec v0.1.1-alpha -> commit f93c569
+        // (issue #104: arbitrary-precision `Scalar::Int`). The submodule
+        // pin bump brings in several bundled, otherwise-unrelated
+        // omnist-spec changes past the D-9 vector this issue actually
+        // needed (`git diff <old-pin> f93c569 --stat -- test-suite/`
+        // shows `document-model/limits.json`, `extract/extract.json`,
+        // `formats-json/json.json`, `infer/infer.json`, and
+        // `osd-grammar/grammar.json` all changed) -- not decomposed
+        // vector-by-vector here since several are genuinely unrelated to
+        // this fix, matching this file's own precedent (issue #99's pin
+        // bump bundled an unrelated NaN/Infinity vector the same way).
         let vectors = iter_vectors(&suite_dir());
-        assert_eq!(vectors.len(), 146);
+        assert_eq!(vectors.len(), 152);
     }
 
     /// Full-suite regression guard: runs every real vector through every
     /// driver (also this file's real coverage-driving test, since
     /// `main`/`main_with_dir` itself is process-entry-point code no test
     /// calls directly). The exact counts are this step's honest,
-    /// freshly-reproduced measurement -- history through (117, 0, 22) at
-    /// 139 vectors covered by earlier PRs (#86/#87/#88/#89, issue #82).
-    /// Now (124, 0, 22) at 146 vectors: vendor/omnist-spec bumped
-    /// v0.1.0-alpha -> v0.1.1-alpha, adding 7 new vectors total, all 7
-    /// newly passing (diffed pass-list vector-by-vector against the old
-    /// pin, not assumed) -- 6 in `formats-oml/oml.json` (issue #99's own
-    /// vectors: a plain string that merely looks temporal-shaped stays
-    /// quoted on OML write, a genuinely temporal-kinded value writes
-    /// bare) plus 1 unrelated one,
-    /// `formats-json/basic/nan-substituted-with-null-and-reported`, from
-    /// a *different* omnist-spec fix bundled into the same tag
-    /// (omnist-spec#30/#31, NaN/Infinity vector encoding) -- Rust's
-    /// `write_json` already substitutes `null` for NaN correctly, this
-    /// vector just wasn't representable/testable before that upstream
-    /// fix. Every count here is freshly reproduced by running the
-    /// harness, not computed by hand. Pinned so a future change that
-    /// silently regresses pass/fail/skip counts is caught, not a "this
-    /// must always be 0 fails" gate.
+    /// freshly-reproduced measurement -- history through (124, 0, 22) at
+    /// 146 vectors (issue #99). Now (129, 0, 23) at 152 vectors after
+    /// issue #104 (`Scalar::Int`/`Value::Int` arbitrary-precision via
+    /// `num_bigint::BigInt`) plus the bundled unrelated spec changes
+    /// noted on `vector_count_is_152` above. Confirmed the vector this
+    /// issue actually targets passes for real, not assumed:
+    /// `document-model/limits/integer-beyond-fixed-width-still-parses-under-default-limit`
+    /// is a real `[PASS]` in a fresh run. Every count here is freshly
+    /// reproduced by running the harness, not computed by hand. Pinned
+    /// so a future change that silently regresses pass/fail/skip counts
+    /// is caught, not a "this must always be 0 fails" gate.
     #[test]
     fn full_suite_counts_match_the_measured_baseline() {
         let (passed, failed, skipped) = run_all(&suite_dir());
         assert_eq!(
             (passed, failed, skipped),
-            (124, 0, 22),
+            (129, 0, 23),
             "vector pass/fail/skip counts changed -- if this is an intentional fix or a new \
              vector, update the pinned baseline; if not, something regressed"
         );
@@ -1008,7 +1015,10 @@ mod tests {
     #[test]
     fn decode_scalar_accepts_string_encoded_integer_and_number() {
         let node = json!({"scalar": {"kind": "integer", "value": "42"}});
-        assert_eq!(decode_document(&node), RawNode::Leaf(Scalar::Int(42)));
+        assert_eq!(
+            decode_document(&node),
+            RawNode::Leaf(Scalar::Int(42.into()))
+        );
         let node = json!({"scalar": {"kind": "number", "value": "1.5"}});
         assert_eq!(decode_document(&node), RawNode::Leaf(Scalar::Float(1.5)));
     }

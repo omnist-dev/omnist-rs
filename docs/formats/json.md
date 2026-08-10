@@ -37,15 +37,14 @@ time it reaches this codec, so there is nothing left to adjust or report
 here, unlike Python (which stringifies a live `datetime.date`/`time` object
 and records a `temporal.stringified` warning).
 
-## Integer digit cap and the `i64` representational limit
+## Integer digit cap (arbitrary-precision, matching Python -- issue #104)
 
 A JSON integer literal over **4300 digits** is a `ParseError` (mirrors
 CPython's `sys.set_int_max_str_digits` guard, which fires inside
-`json.loads` before Python ever sees the value). Because this port's
-`Scalar::Int` is `i64` (max ~19 significant digits), any literal over 19
-digits fails first with "out of range for a 64-bit integer" -- the
-4300-digit cap essentially never fires in practice for this port, but is
-kept anyway for parity with the same guard `oml.rs`/`yaml.rs`/`toml.rs`
-share. Python's reference, by contrast, holds arbitrary-precision `int`s
-under the 4300-digit cap with no 64-bit ceiling at all -- a disclosed
-Rust-specific representational gap, not a bug.
+`json.loads` before Python ever sees the value). Under that cap, this
+port's `Scalar::Int`/`Value::Int` hold the value exactly, at any size --
+`num_bigint::BigInt`, not a fixed-width integer -- matching Python's own
+arbitrary-precision `int` with no additional ceiling. (Previously
+`i64`-backed, ~19 significant digits; that was a real spec-conformance
+bug, not a disclosed representational gap -- see
+[Limitations](../limitations.md#scalarint-is-arbitrary-precision-issue-104).)

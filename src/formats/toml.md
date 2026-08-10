@@ -31,7 +31,7 @@ live-confirmed against `tomli_w.dumps` (Python's reference TOML writer) to
 match exactly, path-for-path. `strict` mode raises even though the severity
 is only `Warning`.
 
-## Integer digit cap, and a disclosed hex/octal/binary divergence from Python
+## Integer digit cap, and a real, external `i64` ceiling from `toml_edit`
 
 Live-confirmed against `tomllib.loads`: a **decimal** integer literal
 follows the identical 4300-digit `sys.set_int_max_str_digits` cap
@@ -40,15 +40,24 @@ genuine exception in Python** -- `tomllib.loads("x = 0x" + "f" * 10000)`
 parses successfully with no error at all, because CPython's digit-limit
 guard explicitly exempts power-of-two bases.
 
-This port does **not** replicate that decimal/non-decimal split: every
-radix goes through the same 4300-digit cap, because the underlying
-`toml_edit` crate itself enforces a strict `i64` range at parse time
-regardless of radix -- there is no path here for an oversized hex/octal/
-binary literal to reach `Scalar::Int` uncapped the way Python's
-arbitrary-precision `int` does. This is a **disclosed divergence from
-Python**, not a parity gap to close: `Scalar::Int` is `i64`-backed
-regardless of a literal's original radix, so an "uncapped hex" path would
-still have to fail somewhere past 64 bits either way.
+This port does **not** replicate that decimal/non-decimal split, but for
+a different reason than it used to (issue #104: `Scalar::Int`/`Value::Int`
+are arbitrary-precision `BigInt`s now, not `i64`). The underlying
+`toml_edit` crate's own `Integer` type is `i64`-backed regardless of
+radix (the TOML 1.0 format spec itself documents 64-bit signed
+integers), so **reading** a >19-digit literal of any radix from TOML
+*source text* fails in `toml_edit`'s own parser, before this codec's
+`Scalar` conversion ever runs -- a real, external, still-current
+divergence from Python's arbitrary-precision `int`, not something this
+port's own representation choice can lift. Live-confirmed:
+`convert --from toml` on `n = 99999999999999999999999999` fails with
+`"integer literal ... is out of range for a 64-bit integer"`.
+**Writing** an oversized `Scalar::Int` *to* TOML, by contrast, succeeds
+-- this codec's writer renders integers as plain digit text rather than
+going through `toml_edit`'s typed API, so the ceiling is read-side only;
+live-confirmed the same 26-digit value round-trips out via
+`convert --from oml --to toml` with no error, it just can't be read back
+in through TOML afterward.
 
 ## Native temporal types, truncated (not rounded) sub-microsecond precision
 

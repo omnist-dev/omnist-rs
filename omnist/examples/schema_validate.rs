@@ -18,7 +18,7 @@ fn main() {
 
     let mut fields = IndexMap::new();
     fields.insert("name".to_string(), Value::Str("Ada".to_string()));
-    fields.insert("age".to_string(), Value::Int(37));
+    fields.insert("age".to_string(), Value::Int(37.into()));
     let doc = Doc::of(&Value::Object(fields)).unwrap();
 
     let result = schema.validate(&doc.root());

@@ -52,7 +52,7 @@ fn string_field_accepts_string_as_is() {
     let schema = scalar_schema();
     let node = edges(vec![
         ("s", leaf(DocScalar::Str("hi".into()))),
-        ("i", leaf(DocScalar::Int(1))),
+        ("i", leaf(DocScalar::Int((1).into()))),
         ("n", leaf(DocScalar::Float(1.0))),
         ("b", leaf(DocScalar::Bool(true))),
         ("d", leaf(DocScalar::Str("2024-01-01".into()))),
@@ -85,7 +85,7 @@ fn integer_field_upgrades_whole_float() {
     let RawNode::Edges(out_edges) = out else {
         panic!("expected edges")
     };
-    assert_eq!(out_edges[1].1, leaf(DocScalar::Int(3)));
+    assert_eq!(out_edges[1].1, leaf(DocScalar::Int((3).into())));
 }
 
 #[test]
@@ -113,8 +113,8 @@ fn number_field_upgrades_int_to_float() {
     let schema = scalar_schema();
     let node = edges(vec![
         ("s", leaf(DocScalar::Str("hi".into()))),
-        ("i", leaf(DocScalar::Int(1))),
-        ("n", leaf(DocScalar::Int(7))),
+        ("i", leaf(DocScalar::Int((1).into()))),
+        ("n", leaf(DocScalar::Int((7).into()))),
         ("b", leaf(DocScalar::Bool(true))),
         ("d", leaf(DocScalar::Str("2024-01-01".into()))),
         ("t", leaf(DocScalar::Str("12:30:00".into()))),
@@ -132,7 +132,7 @@ fn number_field_keeps_float_as_is() {
     let schema = scalar_schema();
     let node = edges(vec![
         ("s", leaf(DocScalar::Str("hi".into()))),
-        ("i", leaf(DocScalar::Int(1))),
+        ("i", leaf(DocScalar::Int((1).into()))),
         ("n", leaf(DocScalar::Float(2.5))),
         ("b", leaf(DocScalar::Bool(true))),
         ("d", leaf(DocScalar::Str("2024-01-01".into()))),
@@ -151,7 +151,7 @@ fn boolean_field_accepts_bool_as_is() {
     let schema = scalar_schema();
     let node = edges(vec![
         ("s", leaf(DocScalar::Str("hi".into()))),
-        ("i", leaf(DocScalar::Int(1))),
+        ("i", leaf(DocScalar::Int((1).into()))),
         ("n", leaf(DocScalar::Float(1.0))),
         ("b", leaf(DocScalar::Bool(false))),
         ("d", leaf(DocScalar::Str("2024-01-01".into()))),
@@ -170,7 +170,7 @@ fn date_field_accepts_valid_iso_date_string() {
     let schema = scalar_schema();
     let node = edges(vec![
         ("s", leaf(DocScalar::Str("hi".into()))),
-        ("i", leaf(DocScalar::Int(1))),
+        ("i", leaf(DocScalar::Int((1).into()))),
         ("n", leaf(DocScalar::Float(1.0))),
         ("b", leaf(DocScalar::Bool(true))),
         ("d", leaf(DocScalar::Str("2024-02-29".into()))),
@@ -185,7 +185,7 @@ fn date_field_rejects_invalid_calendar_date() {
     let schema = scalar_schema();
     let node = edges(vec![
         ("s", leaf(DocScalar::Str("hi".into()))),
-        ("i", leaf(DocScalar::Int(1))),
+        ("i", leaf(DocScalar::Int((1).into()))),
         ("n", leaf(DocScalar::Float(1.0))),
         ("b", leaf(DocScalar::Bool(true))),
         ("d", leaf(DocScalar::Str("2024-02-30".into()))),
@@ -201,7 +201,7 @@ fn time_field_accepts_valid_iso_time_string() {
     let schema = scalar_schema();
     let node = edges(vec![
         ("s", leaf(DocScalar::Str("hi".into()))),
-        ("i", leaf(DocScalar::Int(1))),
+        ("i", leaf(DocScalar::Int((1).into()))),
         ("n", leaf(DocScalar::Float(1.0))),
         ("b", leaf(DocScalar::Bool(true))),
         ("d", leaf(DocScalar::Str("2024-01-01".into()))),
@@ -216,7 +216,7 @@ fn datetime_field_rejects_a_bare_date_string() {
     let schema = scalar_schema();
     let node = edges(vec![
         ("s", leaf(DocScalar::Str("hi".into()))),
-        ("i", leaf(DocScalar::Int(1))),
+        ("i", leaf(DocScalar::Int((1).into()))),
         ("n", leaf(DocScalar::Float(1.0))),
         ("b", leaf(DocScalar::Bool(true))),
         ("d", leaf(DocScalar::Str("2024-01-01".into()))),
@@ -232,7 +232,7 @@ fn nullable_field_accepts_null_non_nullable_rejects_it() {
     let schema = scalar_schema();
     let mut pairs = vec![
         ("s", leaf(DocScalar::Str("hi".into()))),
-        ("i", leaf(DocScalar::Int(1))),
+        ("i", leaf(DocScalar::Int((1).into()))),
         ("n", leaf(DocScalar::Float(1.0))),
         ("b", leaf(DocScalar::Bool(true))),
         ("d", leaf(DocScalar::Str("2024-01-01".into()))),
@@ -246,7 +246,7 @@ fn nullable_field_accepts_null_non_nullable_rejects_it() {
     // Now put null in a non-nullable slot.
     let bad = edges(vec![
         ("s", leaf(DocScalar::Null)),
-        ("i", leaf(DocScalar::Int(1))),
+        ("i", leaf(DocScalar::Int((1).into()))),
         ("n", leaf(DocScalar::Float(1.0))),
         ("b", leaf(DocScalar::Bool(true))),
         ("d", leaf(DocScalar::Str("2024-01-01".into()))),
@@ -271,13 +271,13 @@ fn collects_every_problem_not_just_the_first() {
     // Three independent problems: missing "s" (cardinality), an
     // unexpected field, and a type-mismatch on "b".
     let node = edges(vec![
-        ("i", leaf(DocScalar::Int(1))),
+        ("i", leaf(DocScalar::Int((1).into()))),
         ("n", leaf(DocScalar::Float(1.0))),
         ("b", leaf(DocScalar::Str("not a bool".into()))),
         ("d", leaf(DocScalar::Str("2024-01-01".into()))),
         ("t", leaf(DocScalar::Str("12:30:00".into()))),
         ("dt", leaf(DocScalar::Str("2024-01-01T12:30:00".into()))),
-        ("bogus", leaf(DocScalar::Int(1))),
+        ("bogus", leaf(DocScalar::Int((1).into()))),
     ]);
     let err = materialize(&node, Some(&schema)).unwrap_err();
     assert_eq!(err.errors().len(), 3, "{:#?}", err.errors());
@@ -305,8 +305,11 @@ fn collects_every_problem_not_just_the_first() {
 fn shape_mismatch_when_scalar_expected_but_object_given() {
     let schema = scalar_schema();
     let node = edges(vec![
-        ("s", edges(vec![("nested", leaf(DocScalar::Int(1)))])),
-        ("i", leaf(DocScalar::Int(1))),
+        (
+            "s",
+            edges(vec![("nested", leaf(DocScalar::Int((1).into())))]),
+        ),
+        ("i", leaf(DocScalar::Int((1).into()))),
         ("n", leaf(DocScalar::Float(1.0))),
         ("b", leaf(DocScalar::Bool(true))),
         ("d", leaf(DocScalar::Str("2024-01-01".into()))),
@@ -331,7 +334,7 @@ fn shape_mismatch_when_object_expected_but_scalar_given() {
     env.insert("Child".to_string(), child);
     let schema = Schema::new(Ref::new("Root"), env).unwrap();
 
-    let node = edges(vec![("child", leaf(DocScalar::Int(1)))]);
+    let node = edges(vec![("child", leaf(DocScalar::Int((1).into())))]);
     let err = materialize(&node, Some(&schema)).unwrap_err();
     assert!(
         err.errors()
@@ -372,7 +375,7 @@ fn any_field_passes_scalar_and_object_nodes_through_untouched() {
     env.insert("Root".to_string(), root);
     let schema = Schema::new(Ref::new("Root"), env).unwrap();
 
-    let scalar_node = edges(vec![("x", leaf(DocScalar::Int(1)))]);
+    let scalar_node = edges(vec![("x", leaf(DocScalar::Int((1).into())))]);
     let out = materialize(&scalar_node, Some(&schema)).unwrap();
     assert_eq!(out, scalar_node);
 

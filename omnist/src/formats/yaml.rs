@@ -98,10 +98,11 @@ use crate::WriteError;
 use crate::document::{Doc, Value};
 use crate::error::{DocumentError, OmnistError, ParseError};
 use crate::formats::float_fmt;
-use crate::formats::int_cap::{MAX_INT_DIGITS, out_of_range_message, over_cap_message};
+use crate::formats::int_cap::{MAX_INT_DIGITS, over_cap_message};
 use crate::formats::string_escape::{YAML_ESCAPES, write_quoted};
 use crate::report::{Severity, WriteReport};
 use indexmap::IndexMap;
+use num_bigint::BigInt;
 
 // Same guard, same constant as `json.rs`'s/`oml.rs`'s -- see this
 // module's doc comment. Constant and message constructors now live in
@@ -696,34 +697,47 @@ fn is_sexagesimal_int_shape(text: &str) -> bool {
 /// Parses a sexagesimal-shaped string (already confirmed via
 /// [`is_sexagesimal_int_shape`]) into its base-60 integer value: fold each
 /// `:`-separated group left to right as `acc = acc*60 + group`, matching
-/// PyYAML's `construct_yaml_int`'s own sexagesimal branch. Uses checked
-/// arithmetic and reports the same out-of-range `ParseError` shape as
-/// `parse_int_literal` if the fold overflows `i64`.
+/// PyYAML's `construct_yaml_int`'s own sexagesimal branch.
+///
+/// Arbitrary-precision (issue #104): the fold itself can no longer
+/// overflow -- `BigInt` has no width limit -- so `MAX_INT_DIGITS` (the
+/// same cap `parse_int_literal` enforces) is checked explicitly on the
+/// fold's *result* instead. This replaces a real guard, not just
+/// tidies one: the old `i64` accumulator's `checked_mul`/`checked_add`
+/// overflow was incidentally bounding a many-group literal like
+/// `1:0:0:...:0` (thousands of groups); a naive swap to unchecked
+/// `BigInt` arithmetic here would silently remove that bound entirely,
+/// letting such a literal build an arbitrarily large integer.
 fn parse_sexagesimal_int(text: &str) -> Result<Value, ParseError> {
     let neg = text.starts_with('-');
     let t = text.strip_prefix(['+', '-']).unwrap_or(text);
-    let mut acc: i64 = 0;
+    let mut acc = BigInt::from(0);
+    let sixty = BigInt::from(60);
     for group in t.split(':') {
         let cleaned: String = group.chars().filter(|&c| c != '_').collect();
-        let digit: i64 = cleaned
-            .parse()
-            .map_err(|_| ParseError::new(1, 1, out_of_range_message("invalid YAML: ", text)))?;
-        acc = acc
-            .checked_mul(60)
-            .and_then(|v| v.checked_add(digit))
-            .ok_or_else(|| ParseError::new(1, 1, out_of_range_message("invalid YAML: ", text)))?;
+        // Every group is guaranteed decimal digits by `SEXAGESIMAL_INT_RE`
+        // (the caller's shape check) -- this can't fail.
+        let digit = BigInt::parse_bytes(cleaned.as_bytes(), 10)
+            .expect("SEXAGESIMAL_INT_RE guarantees decimal digit groups");
+        acc = acc * &sixty + digit;
     }
-    // `acc` is only ever built via the two checked ops above, both of which
-    // reject on overflow -- so `acc` is provably in `0..=i64::MAX` here,
-    // and `-acc` can never itself overflow `i64` (unlike the general
-    // "negate an arbitrary i64" case `parse_int_literal` handles, where the
-    // magnitude is parsed unsigned first specifically to allow `i64::MIN`).
-    // No `checked_neg` needed -- that would be a fallible-looking branch
-    // that's actually structurally dead, not a real error path to report.
     let value = if neg { -acc } else { acc };
+    let digit_count = value.to_string().trim_start_matches('-').len();
+    if digit_count > MAX_INT_DIGITS {
+        return Err(ParseError::new(
+            1,
+            1,
+            over_cap_message("invalid YAML: ", digit_count),
+        ));
+    }
     Ok(Value::Int(value))
 }
 
+/// Arbitrary-precision (issue #104): a magnitude that fits the shape
+/// `is_int_literal_shape` already confirmed always parses -- no more
+/// `i64`-overflow special-casing (the old version's own comment about
+/// `i64::MIN`'s asymmetric magnitude is now moot, since `BigInt` negation
+/// never overflows).
 fn parse_int_literal(text: &str) -> Result<Value, ParseError> {
     let neg = text.starts_with('-');
     let t = text.strip_prefix(['+', '-']).unwrap_or(text);
@@ -744,43 +758,10 @@ fn parse_int_literal(text: &str) -> Result<Value, ParseError> {
             over_cap_message("invalid YAML: ", digits.len()),
         ));
     }
-    // Parse the unsigned magnitude first, then apply the sign -- issue #26's
-    // fuzz harness caught the previous version parsing `-9223372036854775808`
-    // (`i64::MIN`) by stripping the sign and calling
-    // `i64::from_str_radix("9223372036854775808", 10)`, which itself
-    // overflows (the positive magnitude `9223372036854775808` is one past
-    // `i64::MAX`) even though the signed value is perfectly representable.
-    // `u64` holds the full magnitude range for both `i64::MIN` and
-    // `i64::MAX`, so parse there and negate via `checked_neg` on the signed
-    // conversion instead of negating a possibly-unrepresentable positive
-    // `i64`.
-    let magnitude = match u64::from_str_radix(digits, radix) {
-        Ok(m) => m,
-        Err(_) => {
-            return Err(ParseError::new(
-                1,
-                1,
-                out_of_range_message("invalid YAML: ", text),
-            ));
-        }
-    };
-    let value = if neg {
-        if magnitude == i64::MIN.unsigned_abs() {
-            Some(i64::MIN)
-        } else {
-            i64::try_from(magnitude).ok().and_then(i64::checked_neg)
-        }
-    } else {
-        i64::try_from(magnitude).ok()
-    };
-    match value {
-        Some(v) => Ok(Value::Int(v)),
-        None => Err(ParseError::new(
-            1,
-            1,
-            out_of_range_message("invalid YAML: ", text),
-        )),
-    }
+    let magnitude = BigInt::parse_bytes(digits.as_bytes(), radix)
+        .expect("is_int_literal_shape guarantees valid digits for the detected radix");
+    let value = if neg { -magnitude } else { magnitude };
+    Ok(Value::Int(value))
 }
 
 /// Live-confirmed against `yaml.safe_load`: PyYAML's `tag:yaml.org,2002:float`
@@ -1161,7 +1142,10 @@ mod tests {
     fn reads_every_scalar_kind() {
         let doc = read_yaml("a: 1\nb: \"s\"\nc: true\nd: null\ne: 1.5\n").unwrap();
         let root = doc.root();
-        assert_eq!(*root.get_one("a").unwrap().value().unwrap(), Scalar::Int(1));
+        assert_eq!(
+            *root.get_one("a").unwrap().value().unwrap(),
+            Scalar::Int((1).into())
+        );
         assert_eq!(
             *root.get_one("b").unwrap().value().unwrap(),
             Scalar::Str("s".to_string())
@@ -1241,20 +1225,23 @@ mod tests {
         let root = doc.root();
         assert_eq!(
             *root.get_one("a").unwrap().value().unwrap(),
-            Scalar::Int(-5)
+            Scalar::Int((-5).into())
         );
         assert_eq!(
             *root.get_one("b").unwrap().value().unwrap(),
-            Scalar::Int(26)
+            Scalar::Int((26).into())
         );
         assert_eq!(
             *root.get_one("c").unwrap().value().unwrap(),
-            Scalar::Int(15)
+            Scalar::Int((15).into())
         );
-        assert_eq!(*root.get_one("d").unwrap().value().unwrap(), Scalar::Int(5));
+        assert_eq!(
+            *root.get_one("d").unwrap().value().unwrap(),
+            Scalar::Int((5).into())
+        );
         assert_eq!(
             *root.get_one("e").unwrap().value().unwrap(),
-            Scalar::Int(1000)
+            Scalar::Int((1000).into())
         );
     }
 
@@ -1278,58 +1265,78 @@ mod tests {
         let root = doc.root();
         assert_eq!(
             *root.get_one("a").unwrap().value().unwrap(),
-            Scalar::Int(43200)
+            Scalar::Int((43200).into())
         );
         assert_eq!(
             *root.get_one("b").unwrap().value().unwrap(),
-            Scalar::Int(80)
+            Scalar::Int((80).into())
         );
         assert_eq!(
             *root.get_one("c").unwrap().value().unwrap(),
-            Scalar::Int(3723)
+            Scalar::Int((3723).into())
         );
         assert_eq!(
             *root.get_one("d").unwrap().value().unwrap(),
-            Scalar::Int(-80)
+            Scalar::Int((-80).into())
         );
         assert_eq!(
             *root.get_one("e").unwrap().value().unwrap(),
-            Scalar::Int(80)
+            Scalar::Int((80).into())
         );
         assert_eq!(
             *root.get_one("f").unwrap().value().unwrap(),
-            Scalar::Int(7425)
+            Scalar::Int((7425).into())
         );
         assert_eq!(
             *root.get_one("g").unwrap().value().unwrap(),
-            Scalar::Int(750)
+            Scalar::Int((750).into())
         );
     }
 
     #[test]
-    fn sexagesimal_first_group_over_i64_range_is_out_of_range_error() {
-        // Unlike PyYAML (arbitrary-precision Python ints), this port caps
-        // integers at i64, same ceiling `parse_int_literal` already
-        // enforces for plain decimal literals -- a first digit group this
-        // large fails to even parse as i64, hitting the group-parse
-        // `map_err` branch in `parse_sexagesimal_int`.
+    fn sexagesimal_first_group_over_i64_range_parses() {
+        // Issue #104: `Scalar::Int` is arbitrary-precision (`BigInt`), so
+        // a first digit group beyond `i64`'s ~19-digit range is no longer
+        // a parse error -- `parse_sexagesimal_int`'s fold just produces a
+        // real, correctly-computed `BigInt` value.
         let text = format!("a: {}:0\n", "9".repeat(20));
-        let err = read_yaml(&text).unwrap_err();
-        assert!(
-            matches!(&err, OmnistError::Parse(e) if e.message.contains("out of range")),
-            "got {err:?}"
+        let doc = read_yaml(&text).unwrap();
+        let value = doc.root().child("a").unwrap().value().unwrap();
+        assert_eq!(
+            value,
+            &Scalar::Int(num_bigint::BigInt::parse_bytes(b"5999999999999999999940", 10).unwrap())
         );
     }
 
     #[test]
-    fn sexagesimal_fold_overflow_across_many_in_range_groups_is_out_of_range_error() {
-        // Every individual group here is a legal 0-59 sexagesimal digit, so
-        // this exercises the *fold* overflow (`checked_mul(60)`/
-        // `checked_add`), not the single-group-parse overflow above.
+    fn sexagesimal_fold_overflow_across_many_in_range_groups_parses() {
+        // Every individual group here is a legal 0-59 sexagesimal digit;
+        // this exercises the *fold* itself accumulating well past `i64`
+        // range across many groups -- issue #104 means the fold no longer
+        // overflows, it just keeps growing the `BigInt`.
         let text = format!("a: 1{}\n", ":59".repeat(15));
+        let doc = read_yaml(&text).unwrap();
+        let value = doc.root().child("a").unwrap().value().unwrap();
+        assert_eq!(
+            value,
+            &Scalar::Int(
+                num_bigint::BigInt::parse_bytes(b"940369969151999999999999999", 10).unwrap()
+            )
+        );
+    }
+
+    #[test]
+    fn sexagesimal_fold_still_rejects_past_the_digit_cap() {
+        // The digit-cap check this migration *added* to the fold (issue
+        // #104 -- replacing the `i64` overflow that used to bound this
+        // incidentally) -- enough groups to push the folded result's
+        // decimal digit count past MAX_INT_DIGITS must still be rejected,
+        // not silently accepted now that raw fold overflow no longer does
+        // that job.
+        let text = format!("a: 1{}\n", ":59".repeat(2500));
         let err = read_yaml(&text).unwrap_err();
         assert!(
-            matches!(&err, OmnistError::Parse(e) if e.message.contains("out of range")),
+            matches!(&err, OmnistError::Parse(e) if e.message.contains("4300-digit")),
             "got {err:?}"
         );
     }
@@ -1476,10 +1483,13 @@ mod tests {
         let root = doc.root();
         let a = root.get_one("a").unwrap();
         let b = a.get_one("b").unwrap();
-        assert_eq!(*b.get_one("c").unwrap().value().unwrap(), Scalar::Int(1));
+        assert_eq!(
+            *b.get_one("c").unwrap().value().unwrap(),
+            Scalar::Int((1).into())
+        );
         let ms = root.get("m");
         assert_eq!(ms.len(), 3);
-        assert_eq!(*ms[2].value().unwrap(), Scalar::Int(3));
+        assert_eq!(*ms[2].value().unwrap(), Scalar::Int((3).into()));
     }
 
     #[test]
@@ -1487,7 +1497,10 @@ mod tests {
         let doc = read_yaml("a: {b: 1, c: 2}\nm: [1, 2, 3]\n").unwrap();
         let root = doc.root();
         let a = root.get_one("a").unwrap();
-        assert_eq!(*a.get_one("b").unwrap().value().unwrap(), Scalar::Int(1));
+        assert_eq!(
+            *a.get_one("b").unwrap().value().unwrap(),
+            Scalar::Int((1).into())
+        );
         assert_eq!(root.get("m").len(), 3);
     }
 
@@ -1524,7 +1537,10 @@ mod tests {
         let doc = read_yaml("a: 1\nb: 2\na: 3\n").unwrap();
         let root = doc.root();
         assert_eq!(root.labels(), vec!["a".to_string(), "b".to_string()]);
-        assert_eq!(*root.get_one("a").unwrap().value().unwrap(), Scalar::Int(3));
+        assert_eq!(
+            *root.get_one("a").unwrap().value().unwrap(),
+            Scalar::Int((3).into())
+        );
     }
 
     #[test]
@@ -1575,43 +1591,36 @@ mod tests {
         let doc = read_yaml("a: -9223372036854775808\n").unwrap();
         assert_eq!(
             *doc.root().get_one("a").unwrap().value().unwrap(),
-            Scalar::Int(i64::MIN)
+            Scalar::Int((i64::MIN).into())
         );
     }
 
     #[test]
-    fn positive_integer_one_past_i64_max_is_out_of_range_error() {
-        // Fits in u64 (so passes the magnitude parse) but not in i64 --
-        // exercises the final `None` arm of `parse_int_literal`'s match,
-        // distinct from `integer_literal_over_i64_range_is_out_of_range_error`
-        // below (whose 20-nines literal overflows even `u64`).
-        let err = read_yaml("a: 9223372036854775808\n").unwrap_err();
-        assert!(
-            matches!(&err, OmnistError::Parse(e) if e.message.contains("out of range")),
-            "got {err:?}"
-        );
+    fn positive_integer_one_past_i64_max_parses() {
+        // Issue #104: no more `i64` ceiling -- one past `i64::MAX` is now
+        // just a real, correctly-parsed value.
+        let doc = read_yaml("a: 9223372036854775808\n").unwrap();
+        let value = doc.root().child("a").unwrap().value().unwrap();
+        assert_eq!(value, &Scalar::Int(num_bigint::BigInt::from(i64::MAX) + 1));
     }
 
     #[test]
-    fn negative_integer_one_past_i64_min_is_out_of_range_error() {
-        // Magnitude 9223372036854775809 fits in u64 and isn't
-        // `i64::MIN.unsigned_abs()`, so it falls through to the
-        // `checked_neg` arm, which correctly reports out-of-range instead
-        // of silently wrapping.
-        let err = read_yaml("a: -9223372036854775809\n").unwrap_err();
-        assert!(
-            matches!(&err, OmnistError::Parse(e) if e.message.contains("out of range")),
-            "got {err:?}"
-        );
+    fn negative_integer_one_past_i64_min_parses() {
+        // Issue #104: same, on the negative side -- was the `checked_neg`
+        // overflow arm, now just a real value one past `i64::MIN`.
+        let doc = read_yaml("a: -9223372036854775809\n").unwrap();
+        let value = doc.root().child("a").unwrap().value().unwrap();
+        assert_eq!(value, &Scalar::Int(num_bigint::BigInt::from(i64::MIN) - 1));
     }
 
     #[test]
-    fn integer_literal_over_i64_range_is_out_of_range_error() {
+    fn integer_literal_over_i64_range_parses() {
         let text = format!("a: {}\n", "9".repeat(20));
-        let err = read_yaml(&text).unwrap_err();
-        assert!(
-            matches!(&err, OmnistError::Parse(e) if e.message.contains("out of range")),
-            "got {err:?}"
+        let doc = read_yaml(&text).unwrap();
+        let value = doc.root().child("a").unwrap().value().unwrap();
+        assert_eq!(
+            value,
+            &Scalar::Int(num_bigint::BigInt::parse_bytes(b"99999999999999999999", 10).unwrap())
         );
     }
 
@@ -1623,7 +1632,7 @@ mod tests {
         let root = doc.root();
         assert_eq!(root.get("a").len(), 3);
         assert_eq!(root.get("b").len(), 3);
-        assert_eq!(*root.get("b")[1].value().unwrap(), Scalar::Int(2));
+        assert_eq!(*root.get("b")[1].value().unwrap(), Scalar::Int((2).into()));
     }
 
     #[test]
@@ -1692,8 +1701,14 @@ mod tests {
         let root = doc.root();
         for label in ["a", "b", "c"] {
             let node = root.get_one(label).unwrap();
-            assert_eq!(*node.get_one("x").unwrap().value().unwrap(), Scalar::Int(1));
-            assert_eq!(*node.get_one("y").unwrap().value().unwrap(), Scalar::Int(2));
+            assert_eq!(
+                *node.get_one("x").unwrap().value().unwrap(),
+                Scalar::Int((1).into())
+            );
+            assert_eq!(
+                *node.get_one("y").unwrap().value().unwrap(),
+                Scalar::Int((2).into())
+            );
         }
         for label in ["d", "e"] {
             assert_eq!(root.get(label).len(), 3);
@@ -1709,16 +1724,16 @@ mod tests {
         let child = doc.root().get_one("child").unwrap();
         assert_eq!(
             *child.get_one("x").unwrap().value().unwrap(),
-            Scalar::Int(1)
+            Scalar::Int((1).into())
         );
         assert_eq!(
             *child.get_one("y").unwrap().value().unwrap(),
-            Scalar::Int(20),
+            Scalar::Int((20).into()),
             "an explicit local key beats the merged-in value"
         );
         assert_eq!(
             *child.get_one("z").unwrap().value().unwrap(),
-            Scalar::Int(3)
+            Scalar::Int((3).into())
         );
     }
 
@@ -1731,11 +1746,11 @@ mod tests {
         let child = doc.root().get_one("child").unwrap();
         assert_eq!(
             *child.get_one("x").unwrap().value().unwrap(),
-            Scalar::Int(1)
+            Scalar::Int((1).into())
         );
         assert_eq!(
             *child.get_one("y").unwrap().value().unwrap(),
-            Scalar::Int(3)
+            Scalar::Int((3).into())
         );
     }
 
@@ -1743,7 +1758,10 @@ mod tests {
     fn quoted_double_angle_bracket_key_is_a_literal_string_not_a_merge() {
         let doc = read_yaml("a:\n  \"<<\": 1\n").unwrap();
         let a = doc.root().get_one("a").unwrap();
-        assert_eq!(*a.get_one("<<").unwrap().value().unwrap(), Scalar::Int(1));
+        assert_eq!(
+            *a.get_one("<<").unwrap().value().unwrap(),
+            Scalar::Int((1).into())
+        );
     }
 
     // omnist-ts#46: a fuzz suite intermittently found a ParseError with a
@@ -1794,7 +1812,10 @@ mod tests {
             *root.get_one("a").unwrap().value().unwrap(),
             Scalar::Str("yes".to_string())
         );
-        assert_eq!(*root.get_one("b").unwrap().value().unwrap(), Scalar::Int(5));
+        assert_eq!(
+            *root.get_one("b").unwrap().value().unwrap(),
+            Scalar::Int((5).into())
+        );
         assert_eq!(
             *root.get_one("c").unwrap().value().unwrap(),
             Scalar::Bool(true)
@@ -1905,7 +1926,10 @@ mod tests {
         assert_eq!(describe_non_string_key(&Value::Bool(true)), "True");
         assert_eq!(describe_non_string_key(&Value::Bool(false)), "False");
         assert_eq!(describe_non_string_key(&Value::Null), "None");
-        assert_eq!(describe_non_string_key(&Value::Int(43200)), "43200");
+        assert_eq!(
+            describe_non_string_key(&Value::Int((43200).into())),
+            "43200"
+        );
         assert_eq!(describe_non_string_key(&Value::Float(1.5)), "1.5");
         // Whole-number floats must keep the `.0` (Python's `repr(1.0)` is
         // `'1.0'`, not `'1'` -- `f64::to_string()` alone drops it).
@@ -1956,7 +1980,7 @@ mod tests {
         let v = obj(vec![
             ("null", Value::Null),
             ("bool", Value::Bool(true)),
-            ("int", Value::Int(42)),
+            ("int", Value::Int((42).into())),
             ("float", Value::Float(1.5)),
             ("str", Value::Str("hi".to_string())),
         ]);
@@ -2028,7 +2052,11 @@ mod tests {
     fn round_trips_repeated_labels_as_a_yaml_sequence() {
         let doc = doc_of(obj(vec![(
             "m",
-            Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+            Value::Array(vec![
+                Value::Int((1).into()),
+                Value::Int((2).into()),
+                Value::Int((3).into()),
+            ]),
         )]));
         let text = write_yaml(&doc, false, None).unwrap();
         let back = read_yaml(&text).unwrap();
@@ -2038,12 +2066,24 @@ mod tests {
     #[test]
     fn round_trips_nested_mappings_and_sequences_of_mappings() {
         let v = obj(vec![
-            ("a", obj(vec![("b", Value::Int(1)), ("c", Value::Int(2))])),
+            (
+                "a",
+                obj(vec![
+                    ("b", Value::Int((1).into())),
+                    ("c", Value::Int((2).into())),
+                ]),
+            ),
             (
                 "items",
                 Value::Array(vec![
-                    obj(vec![("x", Value::Int(1)), ("y", Value::Int(2))]),
-                    obj(vec![("x", Value::Int(3)), ("y", Value::Int(4))]),
+                    obj(vec![
+                        ("x", Value::Int((1).into())),
+                        ("y", Value::Int((2).into())),
+                    ]),
+                    obj(vec![
+                        ("x", Value::Int((3).into())),
+                        ("y", Value::Int((4).into())),
+                    ]),
                 ]),
             ),
         ]);
@@ -2086,7 +2126,7 @@ mod tests {
 
     #[test]
     fn strict_write_with_no_adjustments_succeeds() {
-        let doc = doc_of(obj(vec![("a", Value::Int(1))]));
+        let doc = doc_of(obj(vec![("a", Value::Int((1).into()))]));
         let text = write_yaml(&doc, true, None).unwrap();
         assert!(text.contains("a: 1"));
     }
@@ -2102,7 +2142,7 @@ mod tests {
 
     #[test]
     fn deeply_nested_document_write_reuses_doc_construction_depth_guard() {
-        let mut v = Value::Int(0);
+        let mut v = Value::Int((0).into());
         for _ in 0..=crate::document::MAX_DEPTH {
             v = obj(vec![("a", v)]);
         }
@@ -2130,7 +2170,7 @@ mod tests {
         for i in [0, n / 2, n - 1] {
             assert_eq!(
                 *root.get_one(&format!("field{i}")).unwrap().value().unwrap(),
-                Scalar::Int(i as i64)
+                Scalar::Int((i as i64).into())
             );
         }
         let out = write_yaml(&doc, false, None).unwrap();
@@ -2268,7 +2308,7 @@ mod tests {
     #[test]
     fn nel_in_a_label_triggers_a_warning_and_still_round_trips() {
         let label = format!("a{}b", '\u{0085}');
-        let doc = doc_of(obj(vec![(label.as_str(), Value::Int(1))]));
+        let doc = doc_of(obj(vec![(label.as_str(), Value::Int((1).into()))]));
         let mut rep = WriteReport::new();
         let text = write_yaml(&doc, false, Some(&mut rep)).unwrap();
         assert_eq!(rep.len(), 1);
@@ -2276,7 +2316,7 @@ mod tests {
         let back = read_yaml(&text).unwrap();
         assert_eq!(
             *back.root().get_one(&label).unwrap().value().unwrap(),
-            Scalar::Int(1)
+            Scalar::Int((1).into())
         );
     }
 
@@ -2540,7 +2580,7 @@ mod tests {
         // `write_node_on_a_bare_empty_array_writes_the_flow_empty_token`.
         let mut out = String::new();
         write_seq_child(
-            &Value::Array(vec![Value::Int(1), Value::Int(2)]),
+            &Value::Array(vec![Value::Int((1).into()), Value::Int((2).into())]),
             0,
             &mut out,
         );

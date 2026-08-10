@@ -87,5 +87,10 @@ omnist-rs issue #88, found and fixed alongside #87 above.
 ## Integer digit cap
 
 Same 4300-digit cap as `json.rs`/`oml.rs`/`toml.rs`, applied to a plain
-decimal integer scalar's digit run before parsing; the same `i64`
-representational ceiling applies (see [formats/json.md](json.md)).
+decimal integer scalar's digit run before parsing; arbitrary-precision
+above that (see [formats/json.md](json.md#integer-digit-cap-arbitrary-precision-matching-python----issue-104)).
+The legacy sexagesimal fold (above) enforces the identical cap on its
+*folded result*, not any one group -- issue #104: an unbounded
+`BigInt` fold with no such check would let a many-group literal build an
+arbitrarily large integer, a resource-exhaustion regression the fold's
+old `i64` overflow used to prevent as an unplanned side effect.

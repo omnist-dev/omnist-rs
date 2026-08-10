@@ -7,7 +7,7 @@ use omnist::osd::to_osd;
 fn person(name: &str, age: i64, tags: Vec<&str>) -> Value {
     let mut fields = IndexMap::new();
     fields.insert("name".to_string(), Value::Str(name.to_string()));
-    fields.insert("age".to_string(), Value::Int(age));
+    fields.insert("age".to_string(), Value::Int(age.into()));
     fields.insert(
         "tags".to_string(),
         Value::Array(

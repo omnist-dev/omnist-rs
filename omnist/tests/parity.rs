@@ -84,7 +84,9 @@ fn decode_raw(v: &J) -> RawNode {
         return RawNode::Leaf(Scalar::Bool(*b));
     }
     if let Some(n) = obj.get("$int") {
-        return RawNode::Leaf(Scalar::Int(n.as_i64().expect("$int must fit in i64")));
+        return RawNode::Leaf(Scalar::Int(
+            n.as_i64().expect("$int must fit in i64").into(),
+        ));
     }
     if let Some(n) = obj.get("$float") {
         let f = match n {
@@ -790,7 +792,7 @@ fn parity_corpus_replays_every_fixture_against_rust() {
 /// `deep_node(depth)` mirrors the Python extractor's `deep_node` helper
 /// exactly: `depth` levels of `[("a", ...)]` wrapping a leaf `1`.
 fn deep_node(depth: usize) -> RawNode {
-    let mut node = RawNode::Leaf(Scalar::Int(1));
+    let mut node = RawNode::Leaf(Scalar::Int(1.into()));
     for _ in 0..depth {
         node = RawNode::Edges(vec![("a".to_string(), node)]);
     }
@@ -812,7 +814,7 @@ fn json_object_to_raw(v: &J) -> RawNode {
         match v {
             J::Null => Scalar::Null,
             J::Bool(b) => Scalar::Bool(*b),
-            J::Number(n) if n.is_i64() => Scalar::Int(n.as_i64().unwrap()),
+            J::Number(n) if n.is_i64() => Scalar::Int(n.as_i64().unwrap().into()),
             J::Number(n) => Scalar::Float(n.as_f64().unwrap()),
             J::String(s) => Scalar::Str(s.clone()),
             other => panic!("json_object_to_raw: unsupported scalar {other:?}"),
@@ -858,7 +860,7 @@ fn scalar_value_from_enc(v: &J) -> Value {
         return Value::Bool(*b);
     }
     if let Some(n) = obj.get("$int") {
-        return Value::Int(n.as_i64().expect("$int must fit in i64"));
+        return Value::Int(n.as_i64().expect("$int must fit in i64").into());
     }
     if let Some(n) = obj.get("$float") {
         let f = match n {

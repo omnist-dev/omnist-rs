@@ -319,7 +319,13 @@ fn item_to_value(item: &Item) -> Result<Value, ParseError> {
 fn toml_value_to_value(v: &toml_edit::Value) -> Result<Value, ParseError> {
     match v {
         toml_edit::Value::String(s) => Ok(Value::Str(s.value().clone())),
-        toml_edit::Value::Integer(i) => Ok(Value::Int(*i.value())),
+        // `toml_edit`'s own `Integer` is `i64`-backed (the TOML 1.0 format
+        // spec itself specifies 64-bit signed integers) -- a >19-digit
+        // literal in TOML *source text* is rejected by `toml_edit`'s own
+        // parser before this function ever runs, a genuine external
+        // format-level constraint distinct from omnist's own Scalar
+        // representation (issue #104; see docs/formats/toml.md).
+        toml_edit::Value::Integer(i) => Ok(Value::Int((*i.value()).into())),
         toml_edit::Value::Float(f) => Ok(Value::Float(*f.value())),
         toml_edit::Value::Boolean(b) => Ok(Value::Bool(*b.value())),
         toml_edit::Value::Datetime(dt) => Ok(Value::Str(format_datetime(dt.value()))),
@@ -599,7 +605,10 @@ mod tests {
     fn reads_every_native_scalar_kind() {
         let doc = read_toml("a = 1\nb = \"s\"\nc = true\nd = 1.5\ne = false\n").unwrap();
         let root = doc.root();
-        assert_eq!(*root.get_one("a").unwrap().value().unwrap(), Scalar::Int(1));
+        assert_eq!(
+            *root.get_one("a").unwrap().value().unwrap(),
+            Scalar::Int((1).into())
+        );
         assert_eq!(
             *root.get_one("b").unwrap().value().unwrap(),
             Scalar::Str("s".to_string())
@@ -627,7 +636,7 @@ mod tests {
         let nested = root.get_one("nested").unwrap();
         assert_eq!(
             *nested.get_one("x").unwrap().value().unwrap(),
-            Scalar::Int(1)
+            Scalar::Int((1).into())
         );
     }
 
@@ -639,11 +648,11 @@ mod tests {
         assert_eq!(items.len(), 2);
         assert_eq!(
             *items[0].get_one("x").unwrap().value().unwrap(),
-            Scalar::Int(1)
+            Scalar::Int((1).into())
         );
         assert_eq!(
             *items[1].get_one("x").unwrap().value().unwrap(),
-            Scalar::Int(2)
+            Scalar::Int((2).into())
         );
     }
 
@@ -759,7 +768,7 @@ mod tests {
     #[test]
     fn round_trips_every_native_scalar_kind() {
         let v = obj(vec![
-            ("a", Value::Int(42)),
+            ("a", Value::Int((42).into())),
             ("b", Value::Str("hello".to_string())),
             ("c", Value::Bool(true)),
             ("d", Value::Float(1.5)),
@@ -771,7 +780,7 @@ mod tests {
         let root = doc2.root();
         assert_eq!(
             *root.get_one("a").unwrap().value().unwrap(),
-            Scalar::Int(42)
+            Scalar::Int((42).into())
         );
         assert_eq!(
             *root.get_one("b").unwrap().value().unwrap(),
@@ -842,13 +851,17 @@ mod tests {
             (
                 "nested",
                 obj(vec![
-                    ("x", Value::Int(1)),
+                    ("x", Value::Int((1).into())),
                     ("y", Value::Str("z".to_string())),
                 ]),
             ),
             (
                 "arr",
-                Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+                Value::Array(vec![
+                    Value::Int((1).into()),
+                    Value::Int((2).into()),
+                    Value::Int((3).into()),
+                ]),
             ),
         ]);
         let doc = doc_of(v);
@@ -858,7 +871,7 @@ mod tests {
         let nested = root.get_one("nested").unwrap();
         assert_eq!(
             *nested.get_one("x").unwrap().value().unwrap(),
-            Scalar::Int(1)
+            Scalar::Int((1).into())
         );
         assert_eq!(
             *nested.get_one("y").unwrap().value().unwrap(),
@@ -872,8 +885,8 @@ mod tests {
         let v = obj(vec![(
             "items",
             Value::Array(vec![
-                obj(vec![("x", Value::Int(1))]),
-                obj(vec![("x", Value::Int(2))]),
+                obj(vec![("x", Value::Int((1).into()))]),
+                obj(vec![("x", Value::Int((2).into()))]),
             ]),
         )]);
         let doc = doc_of(v);
@@ -883,11 +896,11 @@ mod tests {
         assert_eq!(items.len(), 2);
         assert_eq!(
             *items[0].get_one("x").unwrap().value().unwrap(),
-            Scalar::Int(1)
+            Scalar::Int((1).into())
         );
         assert_eq!(
             *items[1].get_one("x").unwrap().value().unwrap(),
-            Scalar::Int(2)
+            Scalar::Int((2).into())
         );
     }
 
@@ -925,7 +938,7 @@ mod tests {
 
     #[test]
     fn lenient_write_drops_null_field_and_records_adjustment() {
-        let v = obj(vec![("a", Value::Int(1)), ("b", Value::Null)]);
+        let v = obj(vec![("a", Value::Int((1).into())), ("b", Value::Null)]);
         let doc = doc_of(v);
         let mut rep = WriteReport::new();
         let text = write_toml(&doc, false, Some(&mut rep)).unwrap();
@@ -940,7 +953,11 @@ mod tests {
     fn lenient_write_drops_null_array_item_shifting_index() {
         let v = obj(vec![(
             "c",
-            Value::Array(vec![Value::Int(1), Value::Null, Value::Int(2)]),
+            Value::Array(vec![
+                Value::Int((1).into()),
+                Value::Null,
+                Value::Int((2).into()),
+            ]),
         )]);
         let doc = doc_of(v);
         let mut rep = WriteReport::new();
@@ -955,7 +972,7 @@ mod tests {
     fn null_in_nested_table_records_nested_path() {
         let v = obj(vec![(
             "nested",
-            obj(vec![("x", Value::Null), ("y", Value::Int(5))]),
+            obj(vec![("x", Value::Null), ("y", Value::Int((5).into()))]),
         )]);
         let doc = doc_of(v);
         let rep = check_toml(&doc);
@@ -965,7 +982,7 @@ mod tests {
 
     #[test]
     fn strict_write_raises_on_null_even_though_severity_is_warning() {
-        let v = obj(vec![("a", Value::Int(1)), ("b", Value::Null)]);
+        let v = obj(vec![("a", Value::Int((1).into())), ("b", Value::Null)]);
         let doc = doc_of(v);
         let err = write_toml(&doc, true, None).unwrap_err();
         assert!(err.to_string().contains("$.b"));
@@ -985,7 +1002,7 @@ mod tests {
 
     #[test]
     fn non_table_root_is_a_write_error() {
-        let doc = doc_of(Value::Int(5));
+        let doc = doc_of(Value::Int((5).into()));
         let err = write_toml(&doc, false, None).unwrap_err();
         assert!(err.to_string().contains("top-level table"));
         assert!(err.report().is_none());
@@ -993,7 +1010,7 @@ mod tests {
 
     #[test]
     fn non_table_root_is_a_write_error_even_with_a_report_supplied() {
-        let doc = doc_of(Value::Int(5));
+        let doc = doc_of(Value::Int((5).into()));
         let mut rep = WriteReport::new();
         let err = write_toml(&doc, false, Some(&mut rep)).unwrap_err();
         assert!(err.to_string().contains("top-level table"));
@@ -1073,11 +1090,11 @@ mod tests {
         let root = doc.root();
         assert_eq!(
             *root.get_one("a").unwrap().value().unwrap(),
-            Scalar::Int(i64::MAX)
+            Scalar::Int((i64::MAX).into())
         );
         assert_eq!(
             *root.get_one("b").unwrap().value().unwrap(),
-            Scalar::Int(i64::MIN)
+            Scalar::Int((i64::MIN).into())
         );
     }
 
@@ -1112,7 +1129,7 @@ mod tests {
         // time (see this module's doc comment) -- confirms write_toml/
         // check_toml never even see an over-deep Doc to begin with, exactly
         // json.rs's/yaml.rs's own precedent test for this same guard.
-        let mut v = Value::Int(0);
+        let mut v = Value::Int((0).into());
         for _ in 0..=crate::document::MAX_DEPTH {
             v = obj(vec![("a", v)]);
         }
@@ -1123,14 +1140,14 @@ mod tests {
 
     #[test]
     fn writes_quoted_key_for_non_bare_label() {
-        let v = obj(vec![("has space", Value::Int(1))]);
+        let v = obj(vec![("has space", Value::Int((1).into()))]);
         let doc = doc_of(v);
         let text = write_toml(&doc, false, None).unwrap();
         assert_eq!(text, "\"has space\" = 1\n");
         let doc2 = read_toml(&text).unwrap();
         assert_eq!(
             *doc2.root().get_one("has space").unwrap().value().unwrap(),
-            Scalar::Int(1)
+            Scalar::Int((1).into())
         );
     }
 

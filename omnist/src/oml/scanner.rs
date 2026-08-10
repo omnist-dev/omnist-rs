@@ -25,7 +25,7 @@
 //! already canonical.
 
 use crate::error::ParseError;
-use crate::formats::int_cap::{MAX_INT_DIGITS, out_of_range_message, over_cap_message};
+use crate::formats::int_cap::{MAX_INT_DIGITS, over_cap_message};
 use crate::schema::{
     canonicalize_iso_datetime, canonicalize_iso_time, is_iso_date, is_iso_datetime, is_iso_time,
 };
@@ -53,7 +53,7 @@ pub(super) enum TokKind {
     /// `[A-Za-z_][A-Za-z0-9_-]*` -- may be `null`/`true`/`false`, a bare
     /// label, or (as a scalar) a "bare word" error.
     Ident(String),
-    Int(i64),
+    Int(num_bigint::BigInt),
     Float(f64),
 }
 
@@ -587,9 +587,12 @@ impl<'a> Scanner<'a> {
             if digits.len() > MAX_INT_DIGITS {
                 return Err(self.error_at(start, over_cap_message("", digits.len())));
             }
-            let v: i64 = text
-                .parse()
-                .map_err(|_| self.error_at(start, out_of_range_message("", text)))?;
+            // Arbitrary-precision (issue #104): `text` is exclusively
+            // ASCII digits with an optional leading `-` by construction,
+            // which `BigInt::parse_bytes` always parses.
+            let v = num_bigint::BigInt::parse_bytes(text.as_bytes(), 10).expect(
+                "scanner only emits digit-shaped text, which BigInt::parse_bytes always parses",
+            );
             Ok((TokKind::Int(v), start, end))
         }
     }

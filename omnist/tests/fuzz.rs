@@ -120,8 +120,9 @@ fn arb_scalar() -> impl Strategy<Value = Value> {
         any::<bool>().prop_map(Value::Bool),
         // Bounded well away from i64::MAX/MIN edge weirdness in most
         // cases, plus a dedicated extreme-integer arm.
-        (-1_000_000i64..1_000_000).prop_map(Value::Int),
-        prop_oneof![Just(i64::MAX), Just(i64::MIN), Just(0i64), Just(-1i64),].prop_map(Value::Int),
+        (-1_000_000i64..1_000_000).prop_map(|i: i64| Value::Int(i.into())),
+        prop_oneof![Just(i64::MAX), Just(i64::MIN), Just(0i64), Just(-1i64),]
+            .prop_map(|i: i64| Value::Int(i.into())),
         (-1e6f64..1e6)
             .prop_filter("finite", |f| f.is_finite())
             .prop_map(Value::Float),

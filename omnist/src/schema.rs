@@ -1104,13 +1104,13 @@ mod tests {
     fn valid_service_doc() -> Value {
         obj(&[
             ("host", Value::Str("api.internal".into())),
-            ("port", Value::Int(8443)),
+            ("port", Value::Int((8443).into())),
             (
                 "databases",
                 Value::Array(vec![obj(&[
                     ("type", Value::Str("prod".into())),
                     ("server", Value::Str("db1".into())),
-                    ("port", Value::Int(5432)),
+                    ("port", Value::Int((5432).into())),
                 ])]),
             ),
             (
@@ -1136,7 +1136,10 @@ mod tests {
     #[test]
     fn cardinality_rejects_too_few_databases() {
         let schema = service_schema();
-        let v = obj(&[("host", Value::Str("h".into())), ("port", Value::Int(1))]);
+        let v = obj(&[
+            ("host", Value::Str("h".into())),
+            ("port", Value::Int((1).into())),
+        ]);
         let doc = Doc::of(&v).unwrap();
         let res = schema.validate(&doc.root());
         assert!(!res.ok());
@@ -1156,12 +1159,12 @@ mod tests {
             (
                 "databases",
                 Value::Array(vec![obj(&[
-                    ("port", Value::Int(1)),
+                    ("port", Value::Int((1).into())),
                     ("type", Value::Str("t".into())),
                     ("server", Value::Str("s".into())),
                 ])]),
             ),
-            ("port", Value::Int(8443)),
+            ("port", Value::Int((8443).into())),
             ("host", Value::Str("h".into())),
         ]);
         let doc = Doc::of(&v).unwrap();
@@ -1175,7 +1178,7 @@ mod tests {
         let schema = service_schema();
         let mut v = valid_service_doc();
         if let Value::Object(m) = &mut v {
-            m.insert("extra".to_string(), Value::Int(1));
+            m.insert("extra".to_string(), Value::Int((1).into()));
         }
         let doc = Doc::of(&v).unwrap();
         let res = schema.validate(&doc.root());
@@ -1194,13 +1197,13 @@ mod tests {
         let schema = service_schema();
         let v = obj(&[
             ("host", obj(&[])),
-            ("port", Value::Int(1)),
+            ("port", Value::Int((1).into())),
             (
                 "databases",
                 Value::Array(vec![obj(&[
                     ("type", Value::Str("t".into())),
                     ("server", Value::Str("s".into())),
-                    ("port", Value::Int(1)),
+                    ("port", Value::Int((1).into())),
                 ])]),
             ),
         ]);
@@ -1218,7 +1221,7 @@ mod tests {
         let mut env = Map::new();
         env.insert("Root".to_string(), Record::new(vec![]).unwrap());
         let schema = Schema::new(Ref::new("Root"), env).unwrap();
-        let doc = Doc::of(&Value::Int(1)).unwrap();
+        let doc = Doc::of(&Value::Int((1).into())).unwrap();
         let res = schema.validate(&doc.root());
         assert!(!res.ok());
         assert_eq!(res.errors()[0].code, ErrorCode::ShapeMismatch);
@@ -1290,7 +1293,10 @@ mod tests {
 
     #[test]
     fn integer_satisfies_number_but_not_vice_versa() {
-        assert!(matches_kind(&DocScalar::Int(3), ScalarKind::Number));
+        assert!(matches_kind(
+            &DocScalar::Int((3).into()),
+            ScalarKind::Number
+        ));
         assert!(!matches_kind(&DocScalar::Float(3.0), ScalarKind::Integer));
     }
 
@@ -1421,8 +1427,8 @@ mod tests {
             &DocScalar::Str("25:00:00".into()),
             ScalarKind::Time
         ));
-        assert!(!matches_kind(&DocScalar::Int(1), ScalarKind::Date));
-        assert!(!matches_kind(&DocScalar::Int(1), ScalarKind::Time));
+        assert!(!matches_kind(&DocScalar::Int((1).into()), ScalarKind::Date));
+        assert!(!matches_kind(&DocScalar::Int((1).into()), ScalarKind::Time));
     }
 
     #[test]
@@ -1453,11 +1459,11 @@ mod tests {
         // case in a separate `[0,]`-cardinality field below.
         for v in [
             Value::Str("hi".into()),
-            Value::Int(1),
+            Value::Int((1).into()),
             Value::Float(1.5),
             Value::Bool(true),
             Value::Null,
-            obj(&[("nested", Value::Int(1))]),
+            obj(&[("nested", Value::Int((1).into()))]),
         ] {
             let doc = Doc::of(&obj(&[("x", v.clone())])).unwrap();
             assert!(schema.accepts(&doc.root()), "any field rejected {v:?}");
@@ -1474,7 +1480,7 @@ mod tests {
         let schema = Schema::new(Ref::new("Root"), env).unwrap();
         let doc = Doc::of(&obj(&[(
             "x",
-            Value::Array(vec![Value::Int(1), Value::Str("mixed".into())]),
+            Value::Array(vec![Value::Int((1).into()), Value::Str("mixed".into())]),
         )]))
         .unwrap();
         assert!(schema.accepts(&doc.root()));
@@ -1518,7 +1524,7 @@ mod tests {
     fn value_kind_name_covers_every_variant() {
         assert_eq!(value_kind_name(&DocScalar::Null), "null");
         assert_eq!(value_kind_name(&DocScalar::Bool(true)), "boolean");
-        assert_eq!(value_kind_name(&DocScalar::Int(1)), "integer");
+        assert_eq!(value_kind_name(&DocScalar::Int((1).into())), "integer");
         assert_eq!(value_kind_name(&DocScalar::Float(1.0)), "number");
         assert_eq!(value_kind_name(&DocScalar::Str("x".into())), "string");
     }

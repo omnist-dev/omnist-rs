@@ -1,6 +1,6 @@
 [package]
 name = "omnist"
-version = "0.1.1-alpha"
+version = "0.1.2-alpha"
 edition = "2024"
 description = "One data model, many formats: read, validate, and write JSON, YAML, TOML, XML, and OML. (Rust port of https://github.com/omnist-dev/omnist)"
 license = "Apache-2.0"
@@ -14,6 +14,8 @@ regex = "1"
 yaml-rust2 = { version = "0.11.0", default-features = false }
 toml_edit = { version = "0.25.13", default-features = false, features = ["parse", "display"] }
 quick-xml = "0.41.0"
+num-bigint = "0.4"
+num-traits = "0.2"
 
 [dev-dependencies]
 proptest = "1"

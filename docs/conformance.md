@@ -3,7 +3,9 @@
 This port has its own conformance-test harness (`tools/conformance/`)
 against [omnist-spec](https://github.com/omnist-dev/omnist-spec), the
 language-agnostic upstream specification. It vendors omnist-spec as a
-pinned git submodule (`vendor/omnist-spec`, currently `v0.1.1-alpha`) and
+pinned git submodule (`vendor/omnist-spec`, currently commit `f93c569`,
+past the `v0.2.2-alpha` tag -- pinned to the exact commit adding issue
+#104's conformance vector, ahead of any tag that includes it yet) and
 runs entirely against this crate's own library code -- it does not depend
 on the Python or TypeScript ports' implementations.
 
@@ -16,7 +18,7 @@ reporting rule:
 - **Track 1** (`vendor/omnist-spec/conformance/fixtures/`, directory-per-fixture,
   11 operations): **19 passed, 0 failed, 0 skipped**.
 - **Track 2** (`vendor/omnist-spec/test-suite/`, JSON-vector suite, 14-operation
-  vocabulary): **124 passed, 0 failed, 22 skipped** (of 146 vectors).
+  vocabulary): **129 passed, 0 failed, 23 skipped** (of 152 vectors).
 
 Zero real fails on either track as of this writing. Run it yourself:
 
@@ -72,8 +74,8 @@ not implied parity
 ## Real bugs this harness found and fixed
 
 Building this harness against the real spec (rather than trusting the
-Python/TypeScript ports as ground truth) found six real product bugs,
-all fixed across this port's `0.1.0-alpha`/`0.1.1-alpha`:
+Python/TypeScript ports as ground truth) found seven real product bugs,
+all fixed across this port's `0.1.0-alpha`/`0.1.1-alpha` releases:
 
 - **XML reader was type-coercing leaf text** (int/float/bool) at parse
   time, contradicting the spec -- XML has no typed literals. Fixed:
@@ -106,6 +108,24 @@ all fixed across this port's `0.1.0-alpha`/`0.1.1-alpha`:
   structurally unreachable given this port's `any`-scoping decision (see
   [`limitations.md`](limitations.md#the-any-type-scoping-gap-deferred-not-forgotten));
   reclassified from fail to a cited skip rather than a product fix.
+- **`Scalar::Int(i64)` rejected valid arbitrary-precision integer
+  literals** -- omnist-spec section 2.2 defines `integer` as
+  arbitrary-precision (bounded only by the shared 4,300-digit cap), not
+  fixed-width; a 20+ digit OML literal was rejected outright with no
+  digit-cap override in play, a real grammar-acceptance bug (spec
+  section 9.2), not a permitted narrower-limit variation. Not found by
+  this harness on its own -- surfaced by a maintainer-prompted
+  ledger-legitimacy audit ("is this a genuine language limitation or an
+  unexamined shortcut") on the `omnist-spec` side, which added the vector
+  this fix now passes for real. Fixed by moving `Scalar::Int`/`Value::Int`
+  onto `num_bigint::BigInt`; see
+  [Limitations](limitations.md#scalarint-is-arbitrary-precision-issue-104).
+  Found and fixed along the way, not assumed mechanical: the YAML legacy
+  sexagesimal literal's fold used to rely on `i64` overflow as an
+  incidental size bound -- a naive `BigInt` swap would have silently
+  removed it, letting a many-`:`-group literal build an arbitrarily large
+  integer with nothing stopping it. Fixed by enforcing the existing
+  digit cap explicitly on the fold's result instead.
 
 None of these required filing against omnist-spec, Python, or
 TypeScript -- every real fail traced back to an omnist-rs bug when
