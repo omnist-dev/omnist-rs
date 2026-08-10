@@ -89,6 +89,35 @@ fn integer_field_upgrades_whole_float() {
 }
 
 #[test]
+fn already_typed_date_time_and_datetime_re_materialize_as_themselves() {
+    // Issue #105's identity arms: re-materializing a document that's
+    // already genuinely `Date`/`Time`/`Datetime`-typed (e.g. read straight
+    // from OML's/TOML's own native temporal grammar, or a second
+    // `materialize` pass) leaves the value as-is rather than treating it
+    // as a type mismatch.
+    let schema = scalar_schema();
+    let node = edges(vec![
+        ("s", leaf(DocScalar::Str("hi".into()))),
+        ("i", leaf(DocScalar::Int((1).into()))),
+        ("n", leaf(DocScalar::Float(1.0))),
+        ("b", leaf(DocScalar::Bool(true))),
+        ("d", leaf(DocScalar::Date("2024-01-01".into()))),
+        ("t", leaf(DocScalar::Time("12:30:00".into()))),
+        ("dt", leaf(DocScalar::Datetime("2024-01-01T12:30:00".into()))),
+    ]);
+    let out = materialize(&node, Some(&schema)).unwrap();
+    let RawNode::Edges(out_edges) = out else {
+        panic!("expected edges")
+    };
+    assert_eq!(out_edges[4].1, leaf(DocScalar::Date("2024-01-01".into())));
+    assert_eq!(out_edges[5].1, leaf(DocScalar::Time("12:30:00".into())));
+    assert_eq!(
+        out_edges[6].1,
+        leaf(DocScalar::Datetime("2024-01-01T12:30:00".into()))
+    );
+}
+
+#[test]
 fn integer_field_rejects_non_whole_float() {
     let schema = scalar_schema();
     let node = edges(vec![

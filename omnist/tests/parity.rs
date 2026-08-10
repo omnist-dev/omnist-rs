@@ -100,6 +100,20 @@ fn decode_raw(v: &J) -> RawNode {
     if let Some(J::String(s)) = obj.get("$str") {
         return RawNode::Leaf(Scalar::Str(s.clone()));
     }
+    // Issue #105: distinct from `$str` -- `extract_fixtures.py::enc` tags
+    // a real `datetime.date`/`time`/`datetime` object separately now,
+    // matching live-observed Python behavior (`omnist.oml.read_oml`
+    // genuinely constructs one of these for a bare temporal literal, not
+    // a `str`).
+    if let Some(J::String(s)) = obj.get("$date") {
+        return RawNode::Leaf(Scalar::Date(s.clone()));
+    }
+    if let Some(J::String(s)) = obj.get("$time") {
+        return RawNode::Leaf(Scalar::Time(s.clone()));
+    }
+    if let Some(J::String(s)) = obj.get("$datetime") {
+        return RawNode::Leaf(Scalar::Datetime(s.clone()));
+    }
     if let Some(J::Array(edges)) = obj.get("$edges") {
         let out = edges
             .iter()
@@ -873,6 +887,19 @@ fn scalar_value_from_enc(v: &J) -> Value {
     }
     if let Some(J::String(s)) = obj.get("$str") {
         return Value::Str(s.clone());
+    }
+    // Issue #105: see `decode_raw`'s identical arms above -- no current
+    // fixture exercises a temporal value as a `doc_ops` add/set operand,
+    // but this stays consistent with `decode_raw` rather than silently
+    // panicking if one ever does.
+    if let Some(J::String(s)) = obj.get("$date") {
+        return Value::Date(s.clone());
+    }
+    if let Some(J::String(s)) = obj.get("$time") {
+        return Value::Time(s.clone());
+    }
+    if let Some(J::String(s)) = obj.get("$datetime") {
+        return Value::Datetime(s.clone());
     }
     panic!("unrecognized encoded scalar value: {v:?}");
 }

@@ -126,10 +126,11 @@
 //! need to re-validate calendar/clock fields the way `yaml.rs`'s
 //! `normalize_timestamp` must (YAML's own crate does no such validation).
 //!
-//! This port's [`crate::document::Scalar`] still has no temporal variant
-//! (per #16's verified finding) -- [`format_datetime`] turns a parsed
-//! `toml_edit` `Datetime` into a canonical ISO-spelled `Scalar::Str`
-//! exactly like `yaml.rs`'s `normalize_timestamp` does for YAML timestamps:
+//! [`crate::document::Scalar`] has real `Date`/`Time`/`Datetime` variants
+//! (issue #105) -- [`toml_value_to_value`] reads `toml_edit`'s own already
+//! fully-validated `Datetime` struct's `date`/`time` presence to construct
+//! the right one directly (real provenance, not a shape guess), and
+//! [`format_datetime`] renders the canonical ISO spelling either way:
 //! zero-padded, `T`-joined, a bare `Z` offset normalized to `+00:00`
 //! (matching `yaml.rs`'s identical normalization -- this port's canonical
 //! temporal strings never contain a literal `Z`, only a numeric offset,
@@ -147,28 +148,23 @@
 //! by this module's `round_trips_offset_datetime_preserving_negative_offset`
 //! and `_positive_offset` tests.
 //!
-//! On the **write** side -- the reverse of `format_datetime` -- an
-//! ISO-shaped `Scalar::Str` is written as a *native* TOML temporal literal
-//! (unquoted), reusing [`crate::schema::is_iso_date`]/[`is_iso_time`][`crate::schema::is_iso_time`]/
-//! [`is_iso_datetime`][`crate::schema::is_iso_datetime`] for the shape-check
-//! exactly as the issue directs, rather than a second hand-rolled regex.
-//! **This intentionally cannot distinguish** "a string that started life as
-//! a real TOML date" from "a plain string that merely happens to be
-//! date-shaped" -- the same representational limit `yaml.rs`'s
-//! `write_yaml`/`needs_quoting` already accepts for YAML timestamps (an
-//! ISO-canonical string round-trips unquoted there too), applied
-//! consistently rather than re-litigated per format. This **does** diverge
-//! from Python's own `write_toml`: Python's document model retains a real
-//! `datetime.date`/`time`/`datetime` *object* end-to-end (never
-//! stringified until some later, optional schema-directed step), so a
-//! plain Python `str` that merely looks like a date -- live-confirmed:
-//! `tomli_w.dumps({'a': '1979-05-27'})` -- writes as the **quoted** string
-//! `a = "1979-05-27"`, not a native date literal. This divergence is not a
-//! new bug to file: it is the same, already-accepted consequence of this
-//! Rust port's issue-#16 architecture decision (`Scalar` has no temporal
-//! variant at all) that `yaml.rs` already documents and applies -- TOML
-//! just makes the same trade-off visible a second time, in the opposite
-//! (write, not read) direction from JSON's.
+//! On the **write** side, a genuine `Scalar::Date`/`Datetime` writes as a
+//! *native* TOML temporal literal (unquoted) unconditionally -- no
+//! shape-check, since the variant itself is the provenance signal (issue
+//! #105, the same fix issue #99 already applied to OML). An ordinary
+//! `Scalar::Str` **always writes quoted**, however date-shaped its text --
+//! this now matches Python's `write_toml` exactly (previously diverged:
+//! Python's document model retains a real `datetime.date`/`time`/
+//! `datetime` object end-to-end, so a plain `str` that merely looks like a
+//! date -- live-confirmed: `tomli_w.dumps({'a': '1979-05-27'})` -- always
+//! wrote as the quoted string `a = "1979-05-27"`, never a native literal;
+//! this port's pre-#105 `Scalar` had no way to make that distinction, so
+//! it wrote bare unconditionally whenever the text merely *looked*
+//! temporal-shaped -- a real bug, confirmed live and fixed, not a
+//! permitted variation). A `Scalar::Time` carrying a UTC offset is the one
+//! remaining case with no native TOML spelling at all (TOML's *local
+//! time* literal has no offset field) -- see `write_scalar`'s own
+//! `has_offset` fallback.
 //!
 //! ## Depth guard reuse
 //!
@@ -212,7 +208,6 @@ use crate::formats::int_cap::{MAX_INT_DIGITS, out_of_range_message, over_cap_mes
 use crate::formats::string_escape::{TOML_ESCAPES, write_quoted};
 use crate::formats::textpos::line_col_bytes;
 use crate::report::{Severity, WriteReport};
-use crate::schema::{is_iso_date, is_iso_datetime, is_iso_time};
 use indexmap::IndexMap;
 use toml_edit::{Item, TableLike};
 
@@ -328,7 +323,29 @@ fn toml_value_to_value(v: &toml_edit::Value) -> Result<Value, ParseError> {
         toml_edit::Value::Integer(i) => Ok(Value::Int((*i.value()).into())),
         toml_edit::Value::Float(f) => Ok(Value::Float(*f.value())),
         toml_edit::Value::Boolean(b) => Ok(Value::Bool(*b.value())),
-        toml_edit::Value::Datetime(dt) => Ok(Value::Str(format_datetime(dt.value()))),
+        // `toml_edit` already validates and types TOML's four native
+        // temporal forms itself (calendar/clock fields, `2024-02-30`
+        // etc., are rejected in its own parser) -- `dt.value()`'s
+        // `date`/`time` presence tells us exactly which of the three
+        // kinds this is, real provenance rather than a shape guess
+        // (issue #105; previously collapsed straight to `Value::Str`,
+        // discarding real type information `toml_edit` had already
+        // computed).
+        toml_edit::Value::Datetime(dt) => {
+            let canonical = format_datetime(dt.value());
+            let inner = dt.value();
+            Ok(match (inner.date.is_some(), inner.time.is_some()) {
+                (true, true) => Value::Datetime(canonical),
+                (true, false) => Value::Date(canonical),
+                (false, true) => Value::Time(canonical),
+                // `toml_edit`'s own grammar always sets at least one of
+                // `date`/`time` -- a defensive, non-panicking fallback
+                // rather than `unreachable!()`, since this is an
+                // assumption about a dependency's invariant, not this
+                // crate's own.
+                (false, false) => Value::Str(canonical),
+            })
+        }
         toml_edit::Value::Array(arr) => {
             let mut out = Vec::with_capacity(arr.len());
             for item in arr.iter() {
@@ -535,7 +552,26 @@ fn write_scalar(v: &Value, out: &mut String) {
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
         Value::Int(i) => out.push_str(&i.to_string()),
         Value::Float(x) => write_float(*x, out),
-        Value::Str(s) => write_str_scalar(s, out),
+        // Always quoted -- no shape-guessing (issue #105, the same fix
+        // issue #99 already applied to OML). A genuinely temporal-kinded
+        // value is a `Date`/`Time`/`Datetime` variant, not a
+        // shape-matched `Str`; see the arms below.
+        Value::Str(s) => write_toml_string(s, out),
+        Value::Date(s) | Value::Datetime(s) => out.push_str(s),
+        // TOML has no "local time with an offset" literal form (only
+        // *date*time can carry an offset) -- a `Time` value that happens
+        // to carry one (YAML's own `TIME_RE` allows it, see issue #99's
+        // `bare_time_literal_with_utc_offset_reads_as_a_genuine_temporal_leaf`)
+        // has no native TOML spelling, so it's written as a quoted
+        // string instead, the same fallback this module already used
+        // before real provenance existed -- see `has_offset`.
+        Value::Time(s) => {
+            if has_offset(s) {
+                write_toml_string(s, out);
+            } else {
+                out.push_str(s);
+            }
+        }
         Value::Object(_) | Value::Array(_) => {
             unreachable!("write_scalar is only ever called on a leaf")
         }
@@ -546,18 +582,6 @@ fn write_scalar(v: &Value, out: &mut String) {
 /// core (issue #46's fix); this is just TOML's spelling table.
 fn write_float(x: f64, out: &mut String) {
     float_fmt::write_float(x, "nan", "inf", "-inf", out);
-}
-
-/// Writes a string scalar: as a *native* TOML temporal literal (unquoted)
-/// if it's shaped like one of TOML's four temporal forms (reusing
-/// `schema.rs`'s shape-check, per this module's doc comment), else as a
-/// quoted TOML basic string.
-fn write_str_scalar(s: &str, out: &mut String) {
-    if is_iso_datetime(s) || is_iso_date(s) || (is_iso_time(s) && !has_offset(s)) {
-        out.push_str(s);
-        return;
-    }
-    write_toml_string(s, out);
 }
 
 /// Whether an [`is_iso_time`]-shaped string also carries a `+HH:MM`/
@@ -597,6 +621,23 @@ mod tests {
 
     fn obj(pairs: Vec<(&str, Value)>) -> Value {
         Value::Object(pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
+    }
+
+    #[test]
+    fn toml_value_to_value_defensive_fallback_on_a_bare_offset_datetime() {
+        // `toml_edit`'s own grammar never emits a `Datetime` with neither
+        // `date` nor `time` set through real TOML source text, but its
+        // `Datetime` struct's fields are public, so this hand-built case
+        // is directly constructible -- real, tested coverage of the
+        // defensive `Value::Str` fallback (issue #105), not speculative
+        // dead code.
+        let dt = toml_edit::Datetime {
+            date: None,
+            time: None,
+            offset: None,
+        };
+        let v = toml_edit::Value::Datetime(toml_edit::Formatted::new(dt));
+        assert_eq!(toml_value_to_value(&v).unwrap(), Value::Str(String::new()));
     }
 
     // ---------------------------------------------------------- reader: scalars
@@ -669,7 +710,7 @@ mod tests {
         let doc = read_toml("d = 1979-05-27\n").unwrap();
         assert_eq!(
             *doc.root().get_one("d").unwrap().value().unwrap(),
-            Scalar::Str("1979-05-27".to_string())
+            Scalar::Date("1979-05-27".to_string())
         );
     }
 
@@ -678,7 +719,7 @@ mod tests {
         let doc = read_toml("t = 00:32:00.999999\n").unwrap();
         assert_eq!(
             *doc.root().get_one("t").unwrap().value().unwrap(),
-            Scalar::Str("00:32:00.999999".to_string())
+            Scalar::Time("00:32:00.999999".to_string())
         );
     }
 
@@ -687,7 +728,7 @@ mod tests {
         let doc = read_toml("t = 07:32:00\n").unwrap();
         assert_eq!(
             *doc.root().get_one("t").unwrap().value().unwrap(),
-            Scalar::Str("07:32:00".to_string())
+            Scalar::Time("07:32:00".to_string())
         );
     }
 
@@ -698,7 +739,7 @@ mod tests {
         let doc = read_toml("t = 00:32:00.9999999\n").unwrap();
         assert_eq!(
             *doc.root().get_one("t").unwrap().value().unwrap(),
-            Scalar::Str("00:32:00.999999".to_string())
+            Scalar::Time("00:32:00.999999".to_string())
         );
     }
 
@@ -708,7 +749,7 @@ mod tests {
         let doc = read_toml("t = 07:32:00.000000001\n").unwrap();
         assert_eq!(
             *doc.root().get_one("t").unwrap().value().unwrap(),
-            Scalar::Str("07:32:00".to_string())
+            Scalar::Time("07:32:00".to_string())
         );
     }
 
@@ -717,7 +758,7 @@ mod tests {
         let doc = read_toml("dt = 1979-05-27T07:32:00\n").unwrap();
         assert_eq!(
             *doc.root().get_one("dt").unwrap().value().unwrap(),
-            Scalar::Str("1979-05-27T07:32:00".to_string())
+            Scalar::Datetime("1979-05-27T07:32:00".to_string())
         );
     }
 
@@ -726,7 +767,7 @@ mod tests {
         let doc = read_toml("dt = 1979-05-27T07:32:00Z\n").unwrap();
         assert_eq!(
             *doc.root().get_one("dt").unwrap().value().unwrap(),
-            Scalar::Str("1979-05-27T07:32:00+00:00".to_string())
+            Scalar::Datetime("1979-05-27T07:32:00+00:00".to_string())
         );
     }
 
@@ -735,14 +776,14 @@ mod tests {
         let doc = read_toml("dt = 1979-05-27T07:32:00-07:00\n").unwrap();
         assert_eq!(
             *doc.root().get_one("dt").unwrap().value().unwrap(),
-            Scalar::Str("1979-05-27T07:32:00-07:00".to_string())
+            Scalar::Datetime("1979-05-27T07:32:00-07:00".to_string())
         );
         let text = write_toml(&doc, false, None).unwrap();
         assert_eq!(text, "dt = 1979-05-27T07:32:00-07:00\n");
         let doc2 = read_toml(&text).unwrap();
         assert_eq!(
             *doc2.root().get_one("dt").unwrap().value().unwrap(),
-            Scalar::Str("1979-05-27T07:32:00-07:00".to_string())
+            Scalar::Datetime("1979-05-27T07:32:00-07:00".to_string())
         );
     }
 
@@ -759,7 +800,7 @@ mod tests {
         let doc = read_toml("dt = 1979-05-27 07:32:00-07:00\n").unwrap();
         assert_eq!(
             *doc.root().get_one("dt").unwrap().value().unwrap(),
-            Scalar::Str("1979-05-27T07:32:00-07:00".to_string())
+            Scalar::Datetime("1979-05-27T07:32:00-07:00".to_string())
         );
     }
 
@@ -819,10 +860,14 @@ mod tests {
 
     #[test]
     fn round_trips_local_date_time_and_datetime() {
+        // Genuinely temporal-kinded values (issue #105) write as TOML's
+        // native literals and read back as the same real variant -- see
+        // `plain_string_that_looks_like_a_date_stays_quoted` below for the
+        // companion case (a plain string merely shaped like one of these).
         let v = obj(vec![
-            ("d", Value::Str("1979-05-27".to_string())),
-            ("t", Value::Str("07:32:00".to_string())),
-            ("dt", Value::Str("1979-05-27T07:32:00".to_string())),
+            ("d", Value::Date("1979-05-27".to_string())),
+            ("t", Value::Time("07:32:00".to_string())),
+            ("dt", Value::Datetime("1979-05-27T07:32:00".to_string())),
         ]);
         let doc = doc_of(v);
         let text = write_toml(&doc, false, None).unwrap();
@@ -833,16 +878,29 @@ mod tests {
         let root = doc2.root();
         assert_eq!(
             *root.get_one("d").unwrap().value().unwrap(),
-            Scalar::Str("1979-05-27".to_string())
+            Scalar::Date("1979-05-27".to_string())
         );
         assert_eq!(
             *root.get_one("t").unwrap().value().unwrap(),
-            Scalar::Str("07:32:00".to_string())
+            Scalar::Time("07:32:00".to_string())
         );
         assert_eq!(
             *root.get_one("dt").unwrap().value().unwrap(),
-            Scalar::Str("1979-05-27T07:32:00".to_string())
+            Scalar::Datetime("1979-05-27T07:32:00".to_string())
         );
+    }
+
+    #[test]
+    fn a_genuine_time_value_carrying_an_offset_writes_as_a_quoted_string() {
+        // TOML has no "local time with an offset" literal (only *date*time
+        // can carry one) -- a real `Value::Time` that happens to carry a
+        // UTC offset (OML's own time grammar allows this) has no native
+        // TOML spelling, so `write_scalar` falls back to a quoted string
+        // (see `has_offset` and the `Value::Time` write arm).
+        let v = obj(vec![("t", Value::Time("07:32:00+02:00".to_string()))]);
+        let doc = doc_of(v);
+        let text = write_toml(&doc, false, None).unwrap();
+        assert!(text.contains("t = \"07:32:00+02:00\"\n"));
     }
 
     #[test]
@@ -1179,16 +1237,24 @@ mod tests {
     }
 
     #[test]
-    fn plain_string_that_looks_like_a_date_round_trips_as_native_toml_date() {
-        // See this module's doc comment: diverges from Python's write_toml
-        // (which keeps it a quoted string, since Python's document model
-        // distinguishes a real datetime.date from a str at runtime) --
-        // this port's Scalar has no temporal variant, so the two cases are
-        // indistinguishable, exactly like yaml.rs already accepts for YAML.
+    fn plain_string_that_looks_like_a_date_stays_quoted() {
+        // Issue #105 (the same fix issue #99 already applied to OML): a
+        // plain string that merely *looks* date-shaped must stay quoted
+        // on write -- writing it bare would silently promote it to a
+        // genuine TOML native date literal on the next read (a different
+        // Document). Previously diverged from Python here (which always
+        // kept it a quoted string, since Python's document model
+        // distinguishes a real `datetime.date` from a `str` at runtime);
+        // now matches.
         let v = obj(vec![("a", Value::Str("1979-05-27".to_string()))]);
         let doc = doc_of(v);
         let text = write_toml(&doc, false, None).unwrap();
-        assert_eq!(text, "a = 1979-05-27\n");
+        assert_eq!(text, "a = \"1979-05-27\"\n");
+        let doc2 = read_toml(&text).unwrap();
+        assert_eq!(
+            *doc2.root().get_one("a").unwrap().value().unwrap(),
+            Scalar::Str("1979-05-27".to_string())
+        );
     }
 
     #[test]

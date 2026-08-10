@@ -109,6 +109,33 @@ fn all_integer_samples_stay_integer() {
 }
 
 #[test]
+fn a_genuine_date_time_and_datetime_sample_each_infer_their_own_kind() {
+    // Issue #105: a real (non-string) temporal sample -- as a format with
+    // native temporal grammar (OML/TOML/YAML) now genuinely produces --
+    // infers its own kind, not "string" the way a plain ISO-shaped string
+    // would (verified against Python's own strict `value_kind()`, which
+    // this function mirrors: see `matches_kind`'s doc comment in
+    // `schema.rs`).
+    for (value, expected) in [
+        (Value::Date("2024-01-01".into()), ScalarKind::Date),
+        (Value::Time("12:00:00".into()), ScalarKind::Time),
+        (
+            Value::Datetime("2024-01-01T12:00:00".into()),
+            ScalarKind::Datetime,
+        ),
+    ] {
+        let samples = vec![doc(obj(&[("x", value)]))];
+        let schema = infer(&samples, "Root").unwrap();
+        let f = field(schema.env(), "Root", "x");
+        match &f.ty {
+            FieldType::Scalar(s) => assert_eq!(s.kind(), expected),
+            FieldType::Ref(_) => panic!("expected a scalar"),
+            FieldType::Any => panic!("expected a scalar"),
+        }
+    }
+}
+
+#[test]
 fn null_sample_makes_the_scalar_nullable() {
     let samples = vec![
         doc(obj(&[("x", Value::Int((1).into()))])),

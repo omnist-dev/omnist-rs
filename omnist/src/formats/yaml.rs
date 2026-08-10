@@ -653,7 +653,18 @@ fn resolve_plain_scalar(text: &str) -> Result<Value, ParseError> {
         return parse_float_literal(text);
     }
     if let Some(iso) = normalize_timestamp(text)? {
-        return Ok(Value::Str(iso));
+        // YAML's own implicit-resolver timestamp grammar (unlike OML's or
+        // TOML's) has no standalone bare-time form -- `normalize_timestamp`
+        // only ever produces a date-only or a full datetime spelling, never
+        // a time-only one (issue #105: real provenance instead of staying
+        // `Str`, the same fix issue #99 already applied to OML). A
+        // datetime spelling always contains the date/time `T` separator;
+        // a date-only one never does.
+        return Ok(if iso.contains('T') {
+            Value::Datetime(iso)
+        } else {
+            Value::Date(iso)
+        });
     }
     Ok(Value::Str(text.to_string()))
 }
@@ -1052,7 +1063,25 @@ fn write_scalar_value(v: &Value, out: &mut String) {
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
         Value::Int(i) => out.push_str(&i.to_string()),
         Value::Float(x) => write_float(*x, out),
+        // Always quoted -- no shape-guessing (issue #105, the same fix
+        // issue #99 already applied to OML). A genuinely temporal-kinded
+        // value is a `Date`/`Time`/`Datetime` variant, not a
+        // shape-matched `Str`.
         Value::Str(s) => write_yaml_string(s, out),
+        // Written bare unconditionally -- by construction (see
+        // `Scalar::Date`'s own doc comment) always already a validated,
+        // canonical spelling that YAML's own implicit resolver reads back
+        // as the identical kind (`normalize_timestamp` produces exactly
+        // this date-or-datetime shape, see `resolve_plain_scalar`).
+        Value::Date(s) | Value::Datetime(s) => out.push_str(s),
+        // Unlike `Date`/`Datetime`, YAML's implicit resolver has no bare
+        // standalone-time form at all (`normalize_timestamp`'s grammar
+        // always requires a date) -- a genuine `Time` value (e.g. from a
+        // schema-directed upgrade of a JSON-sourced sample, or read from
+        // OML's own bare time grammar) has no native YAML spelling, so it
+        // must stay a quoted string, the same fallback TOML's writer uses
+        // for a `Time` value that carries a UTC offset.
+        Value::Time(s) => write_yaml_string(s, out),
         Value::Object(_) | Value::Array(_) => {
             unreachable!("write_scalar_value is only ever called on a leaf")
         }
@@ -1414,8 +1443,26 @@ mod tests {
         let doc = read_yaml("a: 2024-01-15\n").unwrap();
         assert_eq!(
             *doc.root().get_one("a").unwrap().value().unwrap(),
-            Scalar::Str("2024-01-15".to_string())
+            Scalar::Date("2024-01-15".to_string())
         );
+    }
+
+    #[test]
+    fn genuine_date_and_datetime_values_write_bare_and_a_time_value_writes_quoted() {
+        // `Date`/`Datetime` (issue #105) write as YAML's own bare
+        // timestamp literal, since `write_scalar_value` trusts them as
+        // already-canonical (see that function's doc comment); `Time` has
+        // no native YAML spelling at all, so it always stays quoted.
+        let v = obj(vec![
+            ("d", Value::Date("2024-01-15".to_string())),
+            ("dt", Value::Datetime("2024-01-15T12:00:00".to_string())),
+            ("t", Value::Time("12:00:00".to_string())),
+        ]);
+        let doc = doc_of(v);
+        let text = write_yaml(&doc, false, None).unwrap();
+        assert!(text.contains("d: 2024-01-15\n"));
+        assert!(text.contains("dt: 2024-01-15T12:00:00\n"));
+        assert!(text.contains("t: \"12:00:00\""));
     }
 
     #[test]
@@ -1428,7 +1475,7 @@ mod tests {
         let doc = read_yaml("a: 2001-2-3 4:05:06.7 Z\n").unwrap();
         assert_eq!(
             *doc.root().get_one("a").unwrap().value().unwrap(),
-            Scalar::Str("2001-02-03T04:05:06.700000+00:00".to_string())
+            Scalar::Datetime("2001-02-03T04:05:06.700000+00:00".to_string())
         );
     }
 
@@ -1453,7 +1500,7 @@ mod tests {
         let doc = read_yaml("a: 2024-01-15T12:30:00\n").unwrap();
         assert_eq!(
             *doc.root().get_one("a").unwrap().value().unwrap(),
-            Scalar::Str("2024-01-15T12:30:00".to_string())
+            Scalar::Datetime("2024-01-15T12:30:00".to_string())
         );
     }
 
@@ -1462,7 +1509,7 @@ mod tests {
         let doc = read_yaml("a: 2001-12-14T21:59:43.10-05:00\n").unwrap();
         assert_eq!(
             *doc.root().get_one("a").unwrap().value().unwrap(),
-            Scalar::Str("2001-12-14T21:59:43.100000-05:00".to_string())
+            Scalar::Datetime("2001-12-14T21:59:43.100000-05:00".to_string())
         );
     }
 
@@ -2263,7 +2310,7 @@ mod tests {
         let doc = read_yaml("a: 2024-02-29\n").unwrap();
         assert_eq!(
             *doc.root().get_one("a").unwrap().value().unwrap(),
-            Scalar::Str("2024-02-29".to_string())
+            Scalar::Date("2024-02-29".to_string())
         );
     }
 
@@ -2299,7 +2346,7 @@ mod tests {
         let doc = read_yaml("a: 2024-01-01T00:00:00+05\n").unwrap();
         assert_eq!(
             *doc.root().get_one("a").unwrap().value().unwrap(),
-            Scalar::Str("2024-01-01T00:00:00+05:00".to_string())
+            Scalar::Datetime("2024-01-01T00:00:00+05:00".to_string())
         );
     }
 

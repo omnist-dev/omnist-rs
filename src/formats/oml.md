@@ -47,48 +47,46 @@ list, never `Value`.
 own scanner, then validated by the same shared
 `crate::schema::is_iso_date`/`is_iso_time`/`is_iso_datetime` checks
 `schema.rs` and every other codec use. A recognized-but-invalid literal
-(`2024-02-30`) is a `ParseError`, never silently accepted. Like every other
-codec, `Scalar` has no native temporal variant, so a valid literal becomes
-a `Scalar::Str`.
+(`2024-02-30`) is a `ParseError`, never silently accepted. A valid literal
+becomes a genuine `Scalar::Date`/`Time`/`Datetime` (issue #105) -- the
+scanner threads which of the three kinds it matched (`TemporalKind`)
+through to the parser so it constructs the exact right variant, not a
+generic string.
 
 **`time`/`datetime` literal text is canonicalized on read** (issue #90,
 fixed while building the [conformance harness](../conformance.md) against
 omnist-spec): a missing `:SS` is filled to `:00`, and an under-padded
 fractional-second component is zero-padded to 6 digits. `date` literals
 have no optional grammar components and pass through unchanged. This
-means a bare `12:00` reads as `Scalar::Str("12:00:00")`, **not**
+means a bare `12:00` reads as `Scalar::Time("12:00:00")`, **not**
 `"12:00"` -- see the corrected note in [Python
 divergences](../python-divergences.md#bare-time-literal-round-tripping-oml-pr-11)
 for what changed from this port's earlier, stronger byte-for-byte claim.
 
-## Bare vs. quoted on write: `RawNode::TemporalLeaf`, not shape-guessing
+## Bare vs. quoted on write: real variant, not shape-guessing
 
-A leaf writes bare (no quotes) only when it's a
-[`RawNode::TemporalLeaf`](../../omnist/src/document.rs) -- never by
-guessing from a `Scalar::Str`'s shape (issue #99). The pre-#99 writer
-wrote *any* date/time/datetime-*shaped* string bare, regardless of
-provenance: a plain JSON string like `"2024-01-01"` got silently promoted
-to a genuine OML temporal literal on write, corrupting it on the next
-read (a different Document, per [ch.4's grammar](https://github.com/omnist-dev/omnist-spec/blob/main/docs/04-oml-grammar.md)). Confirmed live and
-fixed.
+A leaf writes bare (no quotes) only when it genuinely holds a
+`Scalar::Date`/`Time`/`Datetime` -- never by guessing from a
+`Scalar::Str`'s shape (issue #99). The pre-#99 writer wrote *any*
+date/time/datetime-*shaped* string bare, regardless of provenance: a plain
+JSON string like `"2024-01-01"` got silently promoted to a genuine OML
+temporal literal on write, corrupting it on the next read (a different
+Document, per [ch.4's grammar](https://github.com/omnist-dev/omnist-spec/blob/main/docs/04-oml-grammar.md)). Confirmed live and fixed.
 
-`Scalar` still has no temporal variant (issue #16, closed) -- the
-provenance tag lives one level up, on `RawNode`, from exactly two real
-sources:
+Issue #99 fixed this with a `RawNode::TemporalLeaf` write-hint tag layered
+on top of `Scalar::Str`, since `Scalar` had no temporal variant of its own
+at the time. Issue #105 gave `Scalar` real `Date`/`Time`/`Datetime`
+variants, making that tag redundant -- it's been removed, and the writer
+now just matches on `Scalar`'s own variant directly. The two real sources
+that produce a genuine temporal variant are unchanged:
 
-- **OML's own bare-literal grammar.** `read_oml`'s parser tags a
-  genuinely-read bare `date`/`time`/`datetime` token as
-  `TemporalLeaf`; an ordinary quoted string (however it's shaped) stays
-  a plain `Leaf`.
+- **OML's own bare-literal grammar.** `read_oml`'s parser constructs a
+  `Scalar::Date`/`Time`/`Datetime` for a genuinely-read bare literal
+  token; an ordinary quoted string (however it's shaped) stays a plain
+  `Scalar::Str`.
 - **Schema-directed `materialize`.** Upgrading a field to a
-  Date/Time/Datetime-kinded schema produces `TemporalLeaf` too, so a
+  Date/Time/Datetime-kinded schema constructs the real variant too, so a
   materialized document writes its temporal fields bare through OML.
-
-Both wrap the identical `Scalar::Str` -- the tag never changes document
-*equality* (`Doc::eq_doc`/conformance's `compare_document`): a
-`TemporalLeaf` and a `Leaf` holding the same value compare equal, since
-the tag is purely a write-hint. It's OML-write-only: JSON/YAML/TOML/XML
-never construct or consult it.
 
 ## Integer digit cap and `i64`
 

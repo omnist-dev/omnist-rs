@@ -110,7 +110,7 @@ fn datetime_date_then_time_lookahead_canonicalizes_missing_seconds() {
     let parsed = Doc::from_raw(read_oml("a: 2024-01-01T10:30\n").unwrap()).unwrap();
     let value = parsed.root().child("a").unwrap().value().unwrap();
     assert!(
-        matches!(value, crate::document::Scalar::Str(s) if s == "2024-01-01T10:30:00"),
+        matches!(value, crate::document::Scalar::Datetime(s) if s == "2024-01-01T10:30:00"),
         "expected canonical '2024-01-01T10:30:00', got {value:?}"
     );
 }
@@ -134,7 +134,7 @@ fn time_literal_without_seconds_canonicalizes_on_read() {
     let parsed = Doc::from_raw(read_oml("a: 12:00\n").unwrap()).unwrap();
     let value = parsed.root().child("a").unwrap().value().unwrap();
     assert!(
-        matches!(value, crate::document::Scalar::Str(s) if s == "12:00:00"),
+        matches!(value, crate::document::Scalar::Time(s) if s == "12:00:00"),
         "expected canonical '12:00:00', got {value:?}"
     );
 }
@@ -144,7 +144,7 @@ fn time_literal_with_short_fraction_zero_pads_on_read() {
     let parsed = Doc::from_raw(read_oml("a: 12:00:00.5\n").unwrap()).unwrap();
     let value = parsed.root().child("a").unwrap().value().unwrap();
     assert!(
-        matches!(value, crate::document::Scalar::Str(s) if s == "12:00:00.500000"),
+        matches!(value, crate::document::Scalar::Time(s) if s == "12:00:00.500000"),
         "expected canonical '12:00:00.500000', got {value:?}"
     );
 }
@@ -164,7 +164,7 @@ fn bare_time_literal_with_utc_offset_reads_as_a_genuine_temporal_leaf() {
         edges[0],
         (
             "a".to_string(),
-            RawNode::TemporalLeaf(crate::document::Scalar::Str("12:00:00+05:00".to_string()))
+            RawNode::Leaf(crate::document::Scalar::Time("12:00:00+05:00".to_string()))
         )
     );
 }
@@ -282,25 +282,26 @@ fn write_oml_preserves_datetime_utc_offset_exactly() {
 }
 
 // omnist-ts#52: a bare TIME literal did not round-trip (became a quoted
-// string on write-then-read). Now expressed via `RawNode::TemporalLeaf`
-// (issue #99) -- a genuinely temporal value, not a plain string that
-// merely looks like one; see `plain_string_shaped_like_a_time_stays_quoted`
+// string on write-then-read). Now expressed via a real `Scalar::Time`
+// (issue #105, superseding issue #99's `RawNode::TemporalLeaf` write-hint
+// tag) -- a genuinely temporal value, not a plain string that merely
+// looks like one; see `plain_string_shaped_like_a_time_stays_quoted`
 // below for the case this variant exists to distinguish from.
 #[test]
 fn bare_time_literal_round_trips_as_a_time_not_a_quoted_string() {
     let raw = RawNode::Edges(vec![(
         "a".to_string(),
-        RawNode::TemporalLeaf(crate::document::Scalar::Str("12:00".to_string())),
+        RawNode::Leaf(crate::document::Scalar::Time("12:00".to_string())),
     )]);
     let text = write_oml(&raw, 2).unwrap();
     // Must write as a bare, unquoted time literal, not `"12:00"`.
     assert_eq!(text, "a: 12:00");
     // Reading it back canonicalizes the missing seconds (issue #90) and
-    // is itself a genuinely-read bare literal, so the parsed value is a
-    // `TemporalLeaf("12:00:00")`, not a byte-identical round trip of `raw`.
+    // is itself a genuinely-read bare literal, so the parsed value is
+    // `Scalar::Time("12:00:00")`, not a byte-identical round trip of `raw`.
     let expected = RawNode::Edges(vec![(
         "a".to_string(),
-        RawNode::TemporalLeaf(crate::document::Scalar::Str("12:00:00".to_string())),
+        RawNode::Leaf(crate::document::Scalar::Time("12:00:00".to_string())),
     )]);
     let parsed = read_oml(&text).unwrap();
     assert_eq!(parsed, expected);
@@ -337,53 +338,30 @@ fn plain_string_shaped_like_a_date_stays_quoted() {
     assert_eq!(parsed, raw);
 }
 
-// The companion case: a genuinely date-kinded value (e.g. read from OML's
-// own bare grammar) writes bare, no quotes.
+// The companion case: a genuinely date/datetime-kinded value (e.g. read
+// from OML's own bare grammar) writes bare, no quotes.
 #[test]
 fn genuine_temporal_leaf_writes_bare_for_date_and_datetime_too() {
     let raw = RawNode::Edges(vec![
         (
             "d".to_string(),
-            RawNode::TemporalLeaf(crate::document::Scalar::Str("2024-01-01".to_string())),
+            RawNode::Leaf(crate::document::Scalar::Date("2024-01-01".to_string())),
         ),
         (
             "dt".to_string(),
-            RawNode::TemporalLeaf(crate::document::Scalar::Str(
+            RawNode::Leaf(crate::document::Scalar::Datetime(
                 "2024-01-01T12:30:00".to_string(),
             )),
         ),
     ]);
     let text = write_oml(&raw, 2).unwrap();
     assert_eq!(text, "d: 2024-01-01\ndt: 2024-01-01T12:30:00");
-    // Compact mode has its own `RawNode::TemporalLeaf` arm
-    // (`write_edges_compact`), separate from pretty mode's -- covered here
+    // Compact mode dispatches through the same `write_scalar` (issue
+    // #105), separate from pretty mode's own call site -- covered here
     // too rather than only through the pretty-mode assertion above.
     assert_eq!(
         write_oml_compact(&raw).unwrap(),
         "d: 2024-01-01; dt: 2024-01-01T12:30:00"
-    );
-}
-
-// A `TemporalLeaf`/`Leaf` pair holding the same `Scalar` must compare
-// equal -- the tag is a write-hint, not a value difference (issue #99's
-// manual `PartialEq`, replacing the derive).
-#[test]
-fn temporal_leaf_and_leaf_with_the_same_scalar_are_equal() {
-    let a = RawNode::Leaf(crate::document::Scalar::Str("2024-01-01".to_string()));
-    let b = RawNode::TemporalLeaf(crate::document::Scalar::Str("2024-01-01".to_string()));
-    assert_eq!(a, b);
-}
-
-#[test]
-fn write_temporal_leaf_falls_back_to_write_scalar_for_a_non_str_scalar() {
-    // Structurally unreachable via any real construction path (see
-    // `write_temporal_leaf`'s own doc comment -- nothing in this crate
-    // ever wraps a non-`Str` scalar in `TemporalLeaf`), exercised
-    // directly so the fallback arm is real, tested code, not a dead
-    // branch.
-    assert_eq!(
-        writer::write_temporal_leaf(&crate::document::Scalar::Int((5).into())),
-        "5"
     );
 }
 
@@ -1057,9 +1035,9 @@ fn write_oml_compact_on_a_bare_leaf_node() {
 fn write_oml_on_a_bare_temporal_leaf_node() {
     // A whole document that's a single genuinely-temporal leaf (no
     // wrapping edges) -- `write_oml`/`write_oml_compact`'s own
-    // `RawNode::TemporalLeaf` top-level arm, distinct from the same tag
+    // `Scalar::Date` top-level arm, distinct from the same variant
     // appearing nested under an edge (already covered elsewhere).
-    let raw = RawNode::TemporalLeaf(crate::document::Scalar::Str("2024-01-01".to_string()));
+    let raw = RawNode::Leaf(crate::document::Scalar::Date("2024-01-01".to_string()));
     assert_eq!(write_oml(&raw, 2).unwrap(), "2024-01-01");
     assert_eq!(write_oml_compact(&raw).unwrap(), "2024-01-01");
 }

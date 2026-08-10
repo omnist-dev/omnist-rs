@@ -101,13 +101,21 @@ all fixed across this port's `0.1.0-alpha`/`0.1.1-alpha` releases:
   117/0/22 run despite existing, because no vector at the time tested it.
   Fixed by tagging genuine provenance (OML's own bare-literal grammar, or
   a schema-directed `materialize` upgrade) on `RawNode` instead of
-  guessing from shape; see [OML](formats/oml.md#bare-vs-quoted-on-write-rawnodetemporalleaf-not-shape-guessing).
+  guessing from shape; see [OML](formats/oml.md#bare-vs-quoted-on-write-real-variant-not-shape-guessing).
   omnist-spec's own `v0.1.1-alpha` adds the 6 vectors
   (`formats-oml/oml.json`) this fix now passes for real.
 - One harness-side false fail: a JSON temporal-write-report vector is
   structurally unreachable given this port's `any`-scoping decision (see
   [`limitations.md`](limitations.md#the-any-type-scoping-gap-deferred-not-forgotten));
   reclassified from fail to a cited skip rather than a product fix.
+- A separate harness-side skip, since resolved by issue #105: the
+  `formats-json/basic/temporal-leaf-is-stringified-on-write` vector was
+  structurally unreachable because `Scalar` had no temporal variant to
+  preserve through the harness's own vector decoder (issue #16/#89) --
+  skipped, cited, not a product bug. Issue #105 gave `Scalar` real
+  `Date`/`Time`/`Datetime` variants, the decoder now preserves them, and
+  this vector passes for real; its skip detector has been removed from
+  `vector_runner.rs`.
 - **`Scalar::Int(i64)` rejected valid arbitrary-precision integer
   literals** -- omnist-spec section 2.2 defines `integer` as
   arbitrary-precision (bounded only by the shared 4,300-digit cap), not

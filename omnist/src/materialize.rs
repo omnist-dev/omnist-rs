@@ -167,13 +167,8 @@ fn materialize_scalar(
     path: &str,
     res: &mut ValidationResult,
 ) -> RawNode {
-    // `RawNode::TemporalLeaf` (issue #99) is accepted as input on equal
-    // footing with `Leaf` -- e.g. re-materializing an already-upgraded
-    // document, or a document read directly from OML's own bare temporal
-    // grammar -- both hold the identical `DocScalar`, just with a
-    // writer-hint tag `materialize` doesn't need to distinguish here.
     let value = match node {
-        RawNode::Leaf(v) | RawNode::TemporalLeaf(v) => v,
+        RawNode::Leaf(v) => v,
         RawNode::Edges(_) => {
             res.add(
                 path,
@@ -190,7 +185,7 @@ fn materialize_scalar(
         return RawNode::Leaf(DocScalar::Null);
     }
     if let Some(upgraded) = try_upgrade(value, kind) {
-        return wrap_upgraded(kind, upgraded);
+        return RawNode::Leaf(upgraded);
     }
     res.add(
         path,
@@ -201,18 +196,6 @@ fn materialize_scalar(
         ErrorCode::TypeMismatch,
     );
     node.clone()
-}
-
-/// A value materialize just upgraded to `kind` is wrapped as a
-/// [`RawNode::TemporalLeaf`] when `kind` is Date/Time/Datetime -- the
-/// "schema-directed materialize" provenance source issue #99's own vector
-/// comments name, alongside OML's own bare-literal grammar
-/// (`crate::oml::parser`). Every other kind stays a plain `Leaf`.
-fn wrap_upgraded(kind: ScalarKind, value: DocScalar) -> RawNode {
-    match kind {
-        ScalarKind::Date | ScalarKind::Time | ScalarKind::Datetime => RawNode::TemporalLeaf(value),
-        _ => RawNode::Leaf(value),
-    }
 }
 
 /// Value-exact upgrade table -- `None` means the value cannot become
@@ -246,17 +229,36 @@ fn try_upgrade(value: &DocScalar, kind: ScalarKind) -> Option<DocScalar> {
             Some(DocScalar::Float(i.to_f64().unwrap_or(f64::INFINITY)))
         }
         (ScalarKind::Number, DocScalar::Float(_)) => Some(value.clone()),
+        // Issue #105: upgrading a plain string to Date/Time/Datetime now
+        // constructs the real `Scalar` variant (previously stayed `Str`,
+        // tagged only via the now-removed `RawNode::TemporalLeaf`
+        // write-hint). `Time`/`Datetime` canonicalize (fills a missing
+        // `:SS`, zero-pads a short fraction) the same way OML's own
+        // bare-literal grammar already does -- `is_iso_time`/
+        // `is_iso_datetime` accept non-canonical spellings that this
+        // variant's own invariant (always canonical) requires
+        // normalizing first. `Date` has no optional grammar components,
+        // so its source spelling is already canonical.
         (ScalarKind::Date, DocScalar::Str(s)) if crate::schema::is_iso_date(s) => {
-            Some(value.clone())
+            Some(DocScalar::Date(s.clone()))
         }
         (ScalarKind::Time, DocScalar::Str(s)) if crate::schema::is_iso_time(s) => {
-            Some(value.clone())
+            Some(DocScalar::Time(crate::schema::canonicalize_iso_time(s)))
         }
         (ScalarKind::Datetime, DocScalar::Str(s))
             if crate::schema::is_iso_datetime(s) && !crate::schema::is_iso_date(s) =>
         {
-            Some(value.clone())
+            Some(DocScalar::Datetime(
+                crate::schema::canonicalize_iso_datetime(s),
+            ))
         }
+        // Identity: a value already correctly typed (e.g. re-materializing
+        // an already-materialized document, or one read directly from
+        // OML's/TOML's own native temporal grammar) stays as-is -- mirrors
+        // the `Integer`/`Int` and `Number`/`Float` identity arms above.
+        (ScalarKind::Date, DocScalar::Date(_))
+        | (ScalarKind::Time, DocScalar::Time(_))
+        | (ScalarKind::Datetime, DocScalar::Datetime(_)) => Some(value.clone()),
         _ => None,
     }
 }

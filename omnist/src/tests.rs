@@ -11,7 +11,7 @@ use super::*;
 
 #[test]
 fn version_matches_cargo_toml() {
-    assert_eq!(VERSION, "0.1.2-alpha");
+    assert_eq!(VERSION, "0.1.3-alpha");
 }
 
 // -- cross-op characterization: infer + materialize (issue #14) ------------

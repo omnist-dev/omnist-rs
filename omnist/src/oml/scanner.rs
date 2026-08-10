@@ -44,12 +44,15 @@ pub(super) enum TokKind {
     /// field label (per the grammar's "a quoted token is always a field
     /// label" rule) as well as a scalar value.
     Str(String),
-    /// A recognized-and-semantically-valid date/time/datetime literal, its
-    /// exact source spelling. Deliberately **not** the same variant as
-    /// `Str` -- see the module doc comment: folding these together would
-    /// let `_looks_like_edge` misfire on a bare temporal value followed by
-    /// a stray `:`, treating the date as a label.
-    Temporal(String),
+    /// A recognized-and-semantically-valid date/time/datetime literal: its
+    /// specific kind, plus its canonical spelling. Deliberately **not**
+    /// the same variant as `Str` -- see the module doc comment: folding
+    /// these together would let `_looks_like_edge` misfire on a bare
+    /// temporal value followed by a stray `:`, treating the date as a
+    /// label. The kind (issue #105) is what lets the parser construct the
+    /// real `Scalar::Date`/`Time`/`Datetime` variant directly, instead of
+    /// a plain `Scalar::Str` needing a separate write-hint tag.
+    Temporal(TemporalKind, String),
     /// `[A-Za-z_][A-Za-z0-9_-]*` -- may be `null`/`true`/`false`, a bare
     /// label, or (as a scalar) a "bare word" error.
     Ident(String),
@@ -477,7 +480,7 @@ impl<'a> Scanner<'a> {
             TemporalKind::Time => canonicalize_iso_time(&text),
             TemporalKind::Datetime => canonicalize_iso_datetime(&text),
         };
-        Ok((TokKind::Temporal(canonical), start, end))
+        Ok((TokKind::Temporal(kind, canonical), start, end))
     }
 
     fn digits_from(&self, pos: usize) -> usize {
@@ -655,6 +658,7 @@ impl<'a> Scanner<'a> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) enum TemporalKind {
     Date,
     Time,

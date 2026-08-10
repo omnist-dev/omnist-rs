@@ -83,25 +83,18 @@
 //! specific syntax-failure-with-diagnostics vectors still skip, citing
 //! "SchemaError carries no structured path/code".
 //!
-//! **Structurally-unreachable temporal-write-report skip (issue #89, found
-//! during issue #82 Step 4 triage).** `formats-json/basic/
-//! temporal-leaf-is-stringified-on-write` expects a `write` of a
-//! `date`/`time`/`datetime`-kind leaf to JSON to report a
-//! `format.temporal-stringified` adjustment. `decode_document`/
-//! `decode_scalar` above already collapse those three kinds to plain
-//! `Scalar::Str` on the way in -- `omnist::document::Scalar` has no
-//! temporal variant at all (issue #16's architecture decision; see
-//! `document.rs`'s module doc and `formats/json.rs:16-20`) -- so the
-//! information needed to emit that adjustment is discarded before any
-//! writer runs, not merely unimplemented in the writer. `run_write`'s
-//! `has_unreachable_temporal_stringified_expectation` detector catches any
-//! `write` vector shaped this way (asserts a `*temporal-stringified`
-//! diagnostic code against an input containing a temporal-kind leaf) and
-//! skips it, citing issue #16. Only this one vector matches today --
-//! TOML/YAML have native temporal literals (no stringify-report needed on
-//! write) and XML has no temporal-write vector at all -- but the detector
-//! is structural, not name-keyed, so it will also catch any future vector
-//! shaped the same way.
+//! **Formerly-unreachable temporal-write-report skip, now resolved (issue
+//! #89, found during issue #82 Step 4 triage; resolved by issue #105).**
+//! `formats-json/basic/temporal-leaf-is-stringified-on-write` expects a
+//! `write` of a `date`/`time`/`datetime`-kind leaf to JSON to report a
+//! `format.temporal-stringified` adjustment. Before issue #105,
+//! `omnist::document::Scalar` had no temporal variant, so
+//! `decode_document`/`decode_scalar` collapsed those three kinds to plain
+//! `Scalar::Str` before any writer ran, making the vector structurally
+//! unreachable. Issue #105 gave `Scalar` real `Date`/`Time`/`Datetime`
+//! variants and `formats/json.rs::check_json` now genuinely emits
+//! `format.temporal-stringified` on write, so this vector runs for real
+//! and passes -- the former skip detector has been removed.
 //!
 //! Usage:
 //!
@@ -178,25 +171,17 @@ fn skip(message: impl Into<String>) -> VResult {
 
 /// Decodes one canonical-encoding node (`{"scalar": {kind, value}}` or
 /// `{"edges": [[label, node], ...]}`) into a `RawNode`. `date`/`time`/
-/// `datetime` all decode to the same underlying `Scalar::Str` a
-/// `"string"`-kind value would -- `omnist::document::Scalar` has no
-/// temporal variant -- but wrapped as `RawNode::TemporalLeaf`, not plain
-/// `Leaf`, since that's exactly the provenance issue #99's OML writer
-/// needs to tell a genuinely-kinded value apart from a plain string that
-/// merely looks like one. See `vendor/omnist-spec/test-suite/formats-oml/
-/// oml.json`'s `date-shaped-string-stays-quoted-on-write` /
-/// `genuine-date-writes-bare` vector pair, which is unrepresentable
-/// without this distinction.
+/// `datetime` decode to the real `Scalar::Date`/`Time`/`Datetime` variant
+/// (issue #105), distinct from `"string"`'s plain `Scalar::Str` even when
+/// the underlying value text is identical -- see
+/// `vendor/omnist-spec/test-suite/formats-oml/oml.json`'s
+/// `date-shaped-string-stays-quoted-on-write` / `genuine-date-writes-bare`
+/// vector pair, which is unrepresentable without this distinction.
 fn decode_document(node: &Json) -> RawNode {
     if let Some(scalar) = node.get("scalar") {
         let kind = scalar.get("kind").and_then(Json::as_str);
         let value = scalar.get("value").unwrap_or(&Json::Null);
-        let decoded = decode_scalar(kind, value);
-        return if matches!(kind, Some("date") | Some("time") | Some("datetime")) {
-            RawNode::TemporalLeaf(decoded)
-        } else {
-            RawNode::Leaf(decoded)
-        };
+        return RawNode::Leaf(decode_scalar(kind, value));
     }
     let edges = node
         .get("edges")
@@ -243,12 +228,23 @@ fn decode_scalar(kind: Option<&str>, value: &Json) -> Scalar {
             };
             Scalar::Float(n)
         }
-        Some("string") | Some("date") | Some("time") | Some("datetime") => Scalar::Str(
+        Some("string") => Scalar::Str(
             value
                 .as_str()
-                .expect("this scalar kind's value is a string")
+                .expect("string-kind value is a string")
                 .to_string(),
         ),
+        Some(kind @ ("date" | "time" | "datetime")) => {
+            let text = value
+                .as_str()
+                .expect("this scalar kind's value is a string")
+                .to_string();
+            match kind {
+                "date" => Scalar::Date(text),
+                "time" => Scalar::Time(text),
+                _ => Scalar::Datetime(text),
+            }
+        }
         Some(other) => panic!("unknown scalar kind {other:?}"),
     }
 }
@@ -479,57 +475,7 @@ fn run_materialize(v: &Json) -> VResult {
     }
 }
 
-/// Structural detector for the issue-#89 skip category: a `write` vector
-/// whose `expect.diagnostics` asserts a `*temporal-stringified` adjustment
-/// against an input document containing a `date`/`time`/`datetime`-kind
-/// leaf. `omnist::document::Scalar` has no temporal variant (issue #16's
-/// architecture decision -- see `document.rs`'s module doc and
-/// `formats/json.rs:16-20`), so `decode_document`/`decode_scalar` above
-/// already collapse such a leaf to a plain `Scalar::Str` before it ever
-/// reaches a writer. The information "this was originally date/time/
-/// datetime-typed" is discarded at construction, not at write time, so no
-/// writer in this port can ever emit the expected adjustment -- this is
-/// structurally unreachable, not an unimplemented feature.
-fn has_unreachable_temporal_stringified_expectation(v: &Json) -> bool {
-    let asserts_temporal_stringified = v["expect"]["diagnostics"]
-        .as_array()
-        .map(|ds| {
-            ds.iter().any(|d| {
-                d.get("code")
-                    .and_then(Json::as_str)
-                    .is_some_and(|c| c.ends_with("temporal-stringified"))
-            })
-        })
-        .unwrap_or(false);
-    asserts_temporal_stringified && document_has_temporal_leaf(&v["input"]["document"])
-}
-
-/// Walks a canonical-encoding document node looking for a `date`/`time`/
-/// `datetime`-kind scalar leaf (see `decode_document`'s doc comment for why
-/// these three kinds collapse to `Scalar::Str`).
-fn document_has_temporal_leaf(node: &Json) -> bool {
-    if let Some(scalar) = node.get("scalar") {
-        let kind = scalar.get("kind").and_then(Json::as_str);
-        return matches!(kind, Some("date") | Some("time") | Some("datetime"));
-    }
-    node.get("edges")
-        .and_then(Json::as_array)
-        .map(|edges| {
-            edges.iter().any(|pair| {
-                pair.as_array()
-                    .is_some_and(|arr| document_has_temporal_leaf(&arr[1]))
-            })
-        })
-        .unwrap_or(false)
-}
-
 fn run_write(v: &Json) -> VResult {
-    if has_unreachable_temporal_stringified_expectation(v) {
-        return skip(
-            "format.temporal-stringified adjustment is structurally unreachable -- \
-             Scalar has no temporal variant (issue #16 architecture decision); see issue #89",
-        );
-    }
     let input = &v["input"];
     let format = input["format"].as_str().unwrap_or("oml");
     let raw = decode_document(&input["document"]);
@@ -914,22 +860,24 @@ mod tests {
     /// `main`/`main_with_dir` itself is process-entry-point code no test
     /// calls directly). The exact counts are this step's honest,
     /// freshly-reproduced measurement -- history through (124, 0, 22) at
-    /// 146 vectors (issue #99). Now (129, 0, 23) at 152 vectors after
-    /// issue #104 (`Scalar::Int`/`Value::Int` arbitrary-precision via
-    /// `num_bigint::BigInt`) plus the bundled unrelated spec changes
-    /// noted on `vector_count_is_152` above. Confirmed the vector this
-    /// issue actually targets passes for real, not assumed:
-    /// `document-model/limits/integer-beyond-fixed-width-still-parses-under-default-limit`
-    /// is a real `[PASS]` in a fresh run. Every count here is freshly
-    /// reproduced by running the harness, not computed by hand. Pinned
-    /// so a future change that silently regresses pass/fail/skip counts
-    /// is caught, not a "this must always be 0 fails" gate.
+    /// 146 vectors (issue #99), then (129, 0, 23) at 152 vectors after
+    /// issue #104. Now (130, 0, 22) after issue #105 (`Scalar`/`Value`
+    /// gained real `Date`/`Time`/`Datetime` variants): the
+    /// `formats-json/basic/temporal-leaf-is-stringified-on-write` vector,
+    /// previously skipped as structurally unreachable (issue #89, since
+    /// `Scalar` had no temporal variant to preserve through
+    /// `decode_scalar`), now passes for real -- confirmed via a fresh
+    /// `[PASS]` line in the harness's own output, not assumed. Every
+    /// count here is freshly reproduced by running the harness, not
+    /// computed by hand. Pinned so a future change that silently
+    /// regresses pass/fail/skip counts is caught, not a "this must
+    /// always be 0 fails" gate.
     #[test]
     fn full_suite_counts_match_the_measured_baseline() {
         let (passed, failed, skipped) = run_all(&suite_dir());
         assert_eq!(
             (passed, failed, skipped),
-            (129, 0, 23),
+            (130, 0, 22),
             "vector pass/fail/skip counts changed -- if this is an intentional fix or a new \
              vector, update the pinned baseline; if not, something regressed"
         );
@@ -978,7 +926,11 @@ mod tests {
     }
 
     #[test]
-    fn a_structurally_unreachable_temporal_write_report_vector_skips() {
+    fn the_formerly_unreachable_temporal_write_report_vector_now_passes() {
+        // Issue #105 gave `document::Scalar` real Date/Time/Datetime
+        // variants, so `check_json` genuinely reports
+        // `format.temporal-stringified` on write now -- this vector is no
+        // longer structurally unreachable (was skipped under issue #89).
         let vectors = iter_vectors(&suite_dir());
         let v = vectors
             .iter()
@@ -986,7 +938,7 @@ mod tests {
                 nv.vector["name"] == "formats-json/basic/temporal-leaf-is-stringified-on-write"
             })
             .expect("vector exists");
-        assert_eq!(dispatch(&v.vector).status, Status::Skip);
+        assert_eq!(dispatch(&v.vector).status, Status::Pass);
     }
 
     #[test]

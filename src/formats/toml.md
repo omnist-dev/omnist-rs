@@ -72,11 +72,16 @@ against `tomllib`: `00:32:00.9999999` (7 nines) reads as
 truncating conversion exactly. A numeric UTC offset is preserved exactly
 across read+write (no offset-erasure bug).
 
-On write, an ISO-shaped `Scalar::Str` is written as a *native*, unquoted
-TOML temporal literal -- this **diverges from Python's own `write_toml`**,
-whose document model retains a real `datetime` object end-to-end: a plain
-Python string that merely *looks* like a date
-(`tomli_w.dumps({'a': '1979-05-27'})`) writes as the quoted string
-`a = "1979-05-27"`, not a native date literal. This is the same,
-already-accepted consequence of this port's `Scalar`-has-no-temporal-
-variant architecture decision that `yaml.rs` documents too, not a new bug.
+On read, `toml_value_to_value` constructs the real `Value::Date`/`Time`/
+`Datetime` variant directly from `toml_edit::Datetime`'s own already-
+validated `date`/`time` fields (issue #105) -- previously this discarded
+into a plain `Value::Str`. On write, only a genuine `Date`/`Time`/
+`Datetime` variant is written as a native, unquoted TOML literal; a plain
+`Scalar::Str` that merely *looks* like a date always writes as a quoted
+string, matching Python's `write_toml` exactly (a plain Python string that
+looks like a date, e.g. `tomli_w.dumps({'a': '1979-05-27'})`, also writes
+quoted). This resolves the shape-guessing divergence issue #99 first
+introduced for OML and issue #105 now closes here too -- see [Python
+divergences](../python-divergences.md#date-shaped-strings-as-native-temporal-literals-tomlyaml-resolved-by-issue-105).
+A `Time` value carrying a UTC offset has no native TOML spelling at all
+(only *date*time can carry an offset) and always writes quoted.

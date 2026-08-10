@@ -38,18 +38,28 @@ YAML merge-key spec directly (an unquoted `<<` key's value must be a
 mapping or sequence of mappings, merged in order, explicit keys taking
 precedence).
 
-## No native temporal type, but a looser input grammar than JSON
+## Native temporal type on read, but no bare-time literal, and a looser input grammar than JSON
 
-Like `json.rs`, `Scalar` has no temporal variant -- a timestamp becomes a
-`Scalar::Str` holding its ISO spelling. Unlike JSON, YAML's timestamp
-grammar is looser (space-separated date/time, single-digit month/day, a
-bare `Z` suffix, no zero-padding); this module normalizes any such spelling
-to the same canonical, zero-padded, `T`-joined ISO shape PyYAML's own
-`datetime.isoformat()` would produce -- so `2001-12-14 21:59:43.10 -5`
+A bare YAML timestamp reads as a genuine `Scalar::Date` (no `T`) or
+`Scalar::Datetime` (has one) (issue #105) -- never `Scalar::Time`: YAML's
+own `normalize_timestamp` grammar always requires a date component, so
+there's no bare-time literal to produce one from. YAML's timestamp grammar
+is looser than JSON's (space-separated date/time, single-digit month/day,
+a bare `Z` suffix, no zero-padding); this module normalizes any such
+spelling to the same canonical, zero-padded, `T`-joined ISO shape PyYAML's
+own `datetime.isoformat()` would produce -- so `2001-12-14 21:59:43.10 -5`
 round-trips to `2001-12-14T21:59:43.100000-05:00`, not its original
 spelling. A timestamp-shaped string naming a calendar/clock value that
 doesn't exist (`2024-13-01`) is a `ParseError`, matching PyYAML's own
 construction-time failure.
+
+On write, only a genuine `Scalar::Date`/`Datetime` writes bare; a plain
+`Scalar::Str` that merely looks like one always writes quoted, matching
+Python exactly (see [Python
+divergences](../python-divergences.md#date-shaped-strings-as-native-temporal-literals-tomlyaml-resolved-by-issue-105)).
+A genuine `Scalar::Time` (e.g. from OML's own bare-time grammar, or a
+schema-directed upgrade) has no native YAML spelling at all and always
+writes quoted.
 
 ## Native `NaN`/`Infinity` -- no lossy adjustment here (unlike JSON)
 
