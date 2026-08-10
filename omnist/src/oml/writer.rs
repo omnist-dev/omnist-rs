@@ -67,10 +67,6 @@ pub(super) fn write_edges(
                 check_write_depth(node_depth + 1, "$")?;
                 lines.push(format!("{pad}{lab}: {}", write_scalar(s)));
             }
-            RawNode::TemporalLeaf(s) => {
-                check_write_depth(node_depth + 1, "$")?;
-                lines.push(format!("{pad}{lab}: {}", write_temporal_leaf(s)));
-            }
         }
     }
     Ok(lines.join("\n"))
@@ -96,10 +92,6 @@ pub(super) fn write_edges_compact(
             RawNode::Leaf(s) => {
                 check_write_depth(node_depth + 1, "$")?;
                 parts.push(format!("{lab}: {}", write_scalar(s)));
-            }
-            RawNode::TemporalLeaf(s) => {
-                check_write_depth(node_depth + 1, "$")?;
-                parts.push(format!("{lab}: {}", write_temporal_leaf(s)));
             }
         }
     }
@@ -136,24 +128,13 @@ pub(super) fn write_scalar(v: &Scalar) -> String {
         Scalar::Bool(b) => b.to_string(),
         Scalar::Int(i) => i.to_string(),
         Scalar::Float(f) => write_float(*f),
-        // Always quoted -- no shape-guessing (issue #99). A
-        // `RawNode::TemporalLeaf` is the only way to get a bare temporal
-        // spelling; see `write_temporal_leaf` below.
+        // Always quoted -- no shape-guessing (issue #99). A genuinely
+        // temporal-kinded value is a `Date`/`Time`/`Datetime` variant
+        // (issue #105), not a shape-matched `Str` -- see the arm below.
         Scalar::Str(s) => write_string(s),
-    }
-}
-
-/// Writes a [`RawNode::TemporalLeaf`]'s scalar bare (no quotes). By
-/// construction (see that variant's own doc comment) this is always a
-/// `Scalar::Str` holding an already-validated date/time/datetime
-/// spelling -- nothing in this crate ever wraps a non-`Str` scalar in
-/// `TemporalLeaf`. Falls back to the ordinary [`write_scalar`] for any
-/// other variant rather than panicking, since that's still a safe,
-/// correct rendering even though it should never be reached in practice.
-pub(super) fn write_temporal_leaf(v: &Scalar) -> String {
-    match v {
-        Scalar::Str(s) => s.to_string(),
-        other => write_scalar(other),
+        // Bare, no quotes -- by construction (see `Scalar::Date`'s own
+        // doc comment) always already a validated, canonical spelling.
+        Scalar::Date(s) | Scalar::Time(s) | Scalar::Datetime(s) => s.clone(),
     }
 }
 

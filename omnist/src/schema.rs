@@ -607,22 +607,43 @@ impl std::fmt::Display for ValidationResult {
 
 /// Does `value` match scalar kind `kind`? Mirrors Python's `matches_kind` --
 /// validation only *checks*, it never converts (see `docs/design/model.md`
-/// §10). This port's [`document::Scalar`] has no native date/time/datetime
-/// variant, so those three kinds only ever match a `Str` shaped (and
-/// semantically valid) per [`is_iso_date`]/[`is_iso_time`]/
-/// [`is_iso_datetime`].
+/// §10).
+///
+/// **Verified against Python's real `schema.py::matches_kind` before
+/// implementing** (issue #105's first attempt got this wrong by reasoning
+/// from first principles instead of checking -- caught by the parity
+/// corpus, `omnist/tests/parity.rs`, before merge): `Date`/`Time`/
+/// `Datetime` match **either** the real `document::Scalar` variant **or**
+/// a plain `Str` whose text independently shape-validates
+/// ([`is_iso_date`]/[`is_iso_time`]/[`is_iso_datetime`]) -- Python's own
+/// `matches_kind` does exactly this hybrid check (a real `datetime.date`
+/// object, or a string `_is_iso`-shaped for one), so a JSON- or
+/// XML-sourced document with a date-shaped string field genuinely
+/// satisfies `kind: date` at `validate` time in Python, with no
+/// `materialize` upgrade required first. This is unlike `Integer`/
+/// `Number`, which stay strict (Python's own `matches_kind` has no
+/// string-shape fallback for those).
 pub fn matches_kind(value: &DocScalar, kind: ScalarKind) -> bool {
     match kind {
         ScalarKind::String => matches!(value, DocScalar::Str(_)),
         ScalarKind::Boolean => matches!(value, DocScalar::Bool(_)),
         ScalarKind::Integer => matches!(value, DocScalar::Int(_)),
         ScalarKind::Number => matches!(value, DocScalar::Int(_) | DocScalar::Float(_)),
-        ScalarKind::Date => matches!(value, DocScalar::Str(s) if is_iso_date(s)),
-        ScalarKind::Time => matches!(value, DocScalar::Str(s) if is_iso_time(s)),
+        ScalarKind::Date => {
+            matches!(value, DocScalar::Date(_))
+                || matches!(value, DocScalar::Str(s) if is_iso_date(s))
+        }
+        ScalarKind::Time => {
+            matches!(value, DocScalar::Time(_))
+                || matches!(value, DocScalar::Str(s) if is_iso_time(s))
+        }
         // Deliberately excludes a bare date string -- see is_iso_datetime's
-        // doc comment for why "datetime" and "date" must stay disjoint.
+        // doc comment for why "datetime" and "date" must stay disjoint,
+        // mirroring Python's `_is_iso(value, _dt.datetime) and not
+        // _is_iso(value, _dt.date)`.
         ScalarKind::Datetime => {
-            matches!(value, DocScalar::Str(s) if is_iso_datetime(s) && !is_iso_date(s))
+            matches!(value, DocScalar::Datetime(_))
+                || matches!(value, DocScalar::Str(s) if is_iso_datetime(s) && !is_iso_date(s))
         }
     }
 }
@@ -637,6 +658,9 @@ pub(crate) fn value_kind_name(v: &DocScalar) -> &'static str {
         DocScalar::Int(_) => "integer",
         DocScalar::Float(_) => "number",
         DocScalar::Str(_) => "string",
+        DocScalar::Date(_) => "date",
+        DocScalar::Time(_) => "time",
+        DocScalar::Datetime(_) => "datetime",
     }
 }
 
@@ -1394,12 +1418,14 @@ mod tests {
     }
 
     #[test]
-    fn matches_kind_datetime_excludes_bare_date_string() {
-        // The exact _is_iso-vs-fromisoformat subtlety called out in the
-        // Python docstring: fromisoformat("2024-01-01") on `datetime` would
-        // succeed (defaulting to midnight), but that's not the same value
-        // as "no time given" -- matches_kind("datetime", …) must reject it,
-        // while matches_kind("date", …) accepts it.
+    fn matches_kind_datetime_excludes_bare_date_string_and_a_real_date() {
+        // The exact _is_iso-vs-fromisoformat subtlety, verified against
+        // Python's real `matches_kind` (issue #105): a bare date-only
+        // string satisfies `Date` but not `Datetime` (`fromisoformat` on
+        // `datetime` would succeed, defaulting the missing time to
+        // midnight -- not the same value as "no time given"). The same
+        // disjointness holds for the real, non-string variants: a genuine
+        // `Scalar::Date` never matches `Datetime` and vice versa.
         let v = DocScalar::Str("2024-01-01".to_string());
         assert!(matches_kind(&v, ScalarKind::Date));
         assert!(!matches_kind(&v, ScalarKind::Datetime));
@@ -1407,10 +1433,25 @@ mod tests {
         let dt = DocScalar::Str("2024-01-01T00:00:00".to_string());
         assert!(matches_kind(&dt, ScalarKind::Datetime));
         assert!(!matches_kind(&dt, ScalarKind::Date));
+
+        let d_real = DocScalar::Date("2024-01-01".to_string());
+        assert!(matches_kind(&d_real, ScalarKind::Date));
+        assert!(!matches_kind(&d_real, ScalarKind::Datetime));
+
+        let dt_real = DocScalar::Datetime("2024-01-01T00:00:00".to_string());
+        assert!(matches_kind(&dt_real, ScalarKind::Datetime));
+        assert!(!matches_kind(&dt_real, ScalarKind::Date));
     }
 
     #[test]
     fn matches_kind_date_and_time_directly() {
+        // Both the real variant and a shape-matching plain string satisfy
+        // Date/Time (verified against Python's real `matches_kind`, issue
+        // #105 -- Python's own hybrid check, not just this port's).
+        assert!(matches_kind(
+            &DocScalar::Date("2024-01-01".into()),
+            ScalarKind::Date
+        ));
         assert!(matches_kind(
             &DocScalar::Str("2024-01-01".into()),
             ScalarKind::Date
@@ -1418,6 +1459,10 @@ mod tests {
         assert!(!matches_kind(
             &DocScalar::Str("not-a-date".into()),
             ScalarKind::Date
+        ));
+        assert!(matches_kind(
+            &DocScalar::Time("12:00:00".into()),
+            ScalarKind::Time
         ));
         assert!(matches_kind(
             &DocScalar::Str("12:00:00".into()),
@@ -1527,5 +1572,17 @@ mod tests {
         assert_eq!(value_kind_name(&DocScalar::Int((1).into())), "integer");
         assert_eq!(value_kind_name(&DocScalar::Float(1.0)), "number");
         assert_eq!(value_kind_name(&DocScalar::Str("x".into())), "string");
+        assert_eq!(
+            value_kind_name(&DocScalar::Date("2024-01-01".into())),
+            "date"
+        );
+        assert_eq!(
+            value_kind_name(&DocScalar::Time("12:00:00".into())),
+            "time"
+        );
+        assert_eq!(
+            value_kind_name(&DocScalar::Datetime("2024-01-01T12:00:00".into())),
+            "datetime"
+        );
     }
 }

@@ -64,6 +64,21 @@ pub struct NodeId(usize);
 /// `i64`, which silently rejected any literal past ~19 digits -- a
 /// spec-conformance bug, not a permitted narrower-limit variation, since no
 /// digit-count override was in play).
+///
+/// `Date`/`Time`/`Datetime` (issue #105) each hold their already
+/// shape-validated, canonical ISO spelling -- no `chrono`/`time` crate
+/// dependency, since the algebra never does temporal arithmetic, only
+/// equality and canonical rendering (the same reasoning issue #104 applied
+/// to `Int`). Constructing one always goes through
+/// `crate::schema::is_iso_date`/`is_iso_time`/`is_iso_datetime` (shape
+/// validation) and, for `Time`/`Datetime`,
+/// `crate::schema::canonicalize_iso_time`/`canonicalize_iso_datetime`
+/// (canonicalization) -- there is no code path that constructs one of
+/// these holding un-validated or non-canonical text. This closed the
+/// architecture gap issue #16 originally left open (previously cited as a
+/// reason `Scalar` had no temporal variant at all); see issue #99's
+/// `RawNode::TemporalLeaf`, now removed, for the write-hint mechanism this
+/// replaces.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Scalar {
     Null,
@@ -71,6 +86,9 @@ pub enum Scalar {
     Int(num_bigint::BigInt),
     Float(f64),
     Str(String),
+    Date(String),
+    Time(String),
+    Datetime(String),
 }
 
 impl fmt::Display for Scalar {
@@ -81,6 +99,7 @@ impl fmt::Display for Scalar {
             Scalar::Int(i) => write!(f, "{i}"),
             Scalar::Float(x) => write!(f, "{x}"),
             Scalar::Str(s) => write!(f, "{s:?}"),
+            Scalar::Date(s) | Scalar::Time(s) | Scalar::Datetime(s) => write!(f, "{s}"),
         }
     }
 }
@@ -97,6 +116,12 @@ pub enum Value {
     Int(num_bigint::BigInt),
     Float(f64),
     Str(String),
+    /// See [`Scalar::Date`]/[`Scalar::Time`]/[`Scalar::Datetime`] (issue
+    /// #105) -- always already shape-validated and canonical, same
+    /// invariant.
+    Date(String),
+    Time(String),
+    Datetime(String),
     Array(Vec<Value>),
     Object(IndexMap<String, Value>),
 }
@@ -124,6 +149,9 @@ impl From<Scalar> for Value {
             Scalar::Int(i) => Value::Int(i),
             Scalar::Float(x) => Value::Float(x),
             Scalar::Str(s) => Value::Str(s),
+            Scalar::Date(s) => Value::Date(s),
+            Scalar::Time(s) => Value::Time(s),
+            Scalar::Datetime(s) => Value::Datetime(s),
         }
     }
 }
@@ -146,18 +174,6 @@ struct Entry {
     /// writer that had the same reset bug because the guard lived in one
     /// place, not one shared helper called from every entry point).
     depth: usize,
-    /// Mirrors [`RawNode::TemporalLeaf`] for a leaf entry (always `false`
-    /// for `NodeData::Internal`) -- kept as a flag alongside `NodeData`
-    /// rather than doubling `NodeData` itself into a matching third
-    /// variant, so every existing `NodeData::Leaf`/`NodeData::Internal`
-    /// match in this module (equality, mutation guards, `Value`
-    /// conversion) stays exhaustive and untouched by issue #99; only
-    /// `raw_at`/`push_raw`, the `RawNode` <-> arena boundary, need to
-    /// read/set it. See issue #99's plan comment on the issue itself for
-    /// why this is intentionally *not* symmetric with `RawNode`'s own
-    /// variant-based design -- `RawNode` has no such "single choke point"
-    /// arena to hang a side flag off of, so it needs the real variant.
-    is_temporal: bool,
 }
 
 /// The shared depth guard. Every construction/mutation path that can grow
@@ -264,6 +280,14 @@ fn build_node(
         Value::Bool(b) => push(arena, NodeData::Leaf(Scalar::Bool(*b)), depth, path),
         Value::Int(i) => push(arena, NodeData::Leaf(Scalar::Int(i.clone())), depth, path),
         Value::Float(x) => push(arena, NodeData::Leaf(Scalar::Float(*x)), depth, path),
+        Value::Date(s) => push(arena, NodeData::Leaf(Scalar::Date(s.clone())), depth, path),
+        Value::Time(s) => push(arena, NodeData::Leaf(Scalar::Time(s.clone())), depth, path),
+        Value::Datetime(s) => push(
+            arena,
+            NodeData::Leaf(Scalar::Datetime(s.clone())),
+            depth,
+            path,
+        ),
         Value::Str(s) => push(arena, NodeData::Leaf(Scalar::Str(s.clone())), depth, path),
     }
 }
@@ -276,18 +300,6 @@ fn push(
     depth: usize,
     path: &str,
 ) -> Result<NodeId, DocumentError> {
-    push_entry(arena, data, depth, path, false)
-}
-
-/// As [`push`], but for a leaf entry mirroring [`RawNode::TemporalLeaf`]
-/// (see issue #99) -- only `push_raw` ever passes `is_temporal: true`.
-fn push_entry(
-    arena: &mut Vec<Entry>,
-    data: NodeData,
-    depth: usize,
-    path: &str,
-    is_temporal: bool,
-) -> Result<NodeId, DocumentError> {
     if arena.len() >= MAX_NODES {
         return Err(DocumentError::new(
             path,
@@ -295,11 +307,7 @@ fn push_entry(
         ));
     }
     let id = NodeId(arena.len());
-    arena.push(Entry {
-        data,
-        depth,
-        is_temporal,
-    });
+    arena.push(Entry { data, depth });
     Ok(id)
 }
 
@@ -658,43 +666,10 @@ impl<'a> Cursor<'a> {
 /// arbitrary interleaving losslessly (per its own docs: "no adjustment ever
 /// needed"), so its reader/writer (`crate::oml`) builds/walks a `Doc`
 /// through this type instead of going through `Value`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum RawNode {
     Leaf(Scalar),
-    /// A leaf genuinely known to be date/time/datetime-kinded -- by OML's
-    /// own bare-literal grammar on read (`crate::oml`), or by a
-    /// schema-directed `crate::materialize` upgrade to a Date/Time/
-    /// Datetime-kinded field. Write-hint only, consumed solely by
-    /// `crate::oml::write_oml` (bare vs quoted) -- see issue #99. Never
-    /// constructed by JSON/YAML/TOML/XML's readers/writers, none of which
-    /// have OML's grammar-level way to know this; XML in particular has no
-    /// native temporal literals at all (see `docs/formats/xml.md`).
-    /// [`Scalar`] itself deliberately stays without a temporal variant
-    /// (issue #16, closed) -- this tag lives one level up instead.
-    TemporalLeaf(Scalar),
     Edges(Vec<(String, RawNode)>),
-}
-
-impl PartialEq for RawNode {
-    /// `TemporalLeaf` and `Leaf` holding the same [`Scalar`] compare
-    /// equal -- the tag is a writer hint, not a value difference, so two
-    /// otherwise-identical documents that differ only in whether one leaf
-    /// happens to be schema-upgraded (or was read as a bare OML temporal
-    /// literal) must still be the same Document. A derived `PartialEq`
-    /// would get this wrong (see this type's own doc comment); this
-    /// mirrors the same "a derive silently encodes an irrelevant
-    /// distinction as inequality" fix already applied to
-    /// `crate::schema::Record`'s field-order bug.
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (
-                RawNode::Leaf(a) | RawNode::TemporalLeaf(a),
-                RawNode::Leaf(b) | RawNode::TemporalLeaf(b),
-            ) => a == b,
-            (RawNode::Edges(a), RawNode::Edges(b)) => a == b,
-            _ => false,
-        }
-    }
 }
 
 impl Doc {
@@ -719,7 +694,6 @@ impl Doc {
     fn raw_at(&self, id: NodeId) -> RawNode {
         let entry = self.entry(id);
         match &entry.data {
-            NodeData::Leaf(s) if entry.is_temporal => RawNode::TemporalLeaf(s.clone()),
             NodeData::Leaf(s) => RawNode::Leaf(s.clone()),
             NodeData::Internal(edges) => RawNode::Edges(
                 edges
@@ -783,7 +757,6 @@ fn push_raw(arena: &mut Vec<Entry>, node: RawNode, depth: usize) -> Result<NodeI
     check_write_depth(depth, "$")?;
     match node {
         RawNode::Leaf(s) => push(arena, NodeData::Leaf(s), depth, "$"),
-        RawNode::TemporalLeaf(s) => push_entry(arena, NodeData::Leaf(s), depth, "$", true),
         RawNode::Edges(edges) => {
             let mut out = Vec::with_capacity(edges.len());
             for (label, child) in edges {
@@ -798,19 +771,6 @@ fn push_raw(arena: &mut Vec<Entry>, node: RawNode, depth: usize) -> Result<NodeI
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn raw_node_leaf_and_edges_are_never_equal() {
-        // The `_ => false` catch-all in `RawNode`'s manual `PartialEq`
-        // (issue #99) -- a leaf (either variant) can never equal an
-        // internal node, regardless of the leaf's own tag.
-        let leaf = RawNode::Leaf(Scalar::Int((1).into()));
-        let temporal = RawNode::TemporalLeaf(Scalar::Str("2024-01-01".to_string()));
-        let edges = RawNode::Edges(vec![]);
-        assert_ne!(leaf, edges);
-        assert_ne!(temporal, edges);
-        assert_ne!(edges, leaf);
-    }
 
     fn obj(pairs: &[(&str, Value)]) -> Value {
         let mut m = IndexMap::new();

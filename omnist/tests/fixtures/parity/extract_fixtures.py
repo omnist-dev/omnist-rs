@@ -93,16 +93,22 @@ def enc(v):
         return {"$float": v}
     if isinstance(v, str):
         return {"$str": v}
-    # omnist-rs's Scalar has no dedicated date/time/datetime variant (see
-    # document.rs's module doc): temporal literals are represented as
-    # Scalar::Str holding the ISO text. Encode the same way here so the
-    # Rust harness compares like-for-like.
+    # omnist-rs's Scalar::Date/Time/Datetime (issue #105) -- distinct tags
+    # from `$str`, matching the real, live-observed Python behavior:
+    # `omnist.oml.read_oml` genuinely constructs a `datetime.date`/`time`/
+    # `datetime` object for a bare temporal literal (`_is_scalar` in
+    # document.py explicitly recognizes all three), not a `str`. This
+    # extractor previously collapsed all three to `$str`, which was
+    # correct only while omnist-rs's own `Scalar` had no temporal variant
+    # to compare against -- confirmed stale once that stopped being true.
+    # `datetime.datetime` must be checked before `datetime.date` (it's a
+    # subclass).
     if isinstance(v, datetime.datetime):
-        return {"$str": v.isoformat()}
+        return {"$datetime": v.isoformat()}
     if isinstance(v, datetime.date):
-        return {"$str": v.isoformat()}
+        return {"$date": v.isoformat()}
     if isinstance(v, datetime.time):
-        return {"$str": v.isoformat()}
+        return {"$time": v.isoformat()}
     if isinstance(v, list):
         return {"$edges": [[label, enc(val)] for (label, val) in v]}
     raise TypeError(f"unhandled type {type(v)}")

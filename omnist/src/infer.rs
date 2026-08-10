@@ -227,8 +227,13 @@ fn infer_type(
         // branch the porting playbook flags -- matching directly here
         // keeps every arm real and independently tested (see
         // `infer::tests` for one sample of each kind, including a `null`
-        // mixed in). Unlike `matches_kind`, a string is always `"string"`
-        // here, never `date`/`time`/`datetime` -- see the module doc.
+        // mixed in). A `Str` sample always infers `"string"`, never
+        // `date`/`time`/`datetime` -- those only infer from a genuinely
+        // Date/Time/Datetime-typed sample (issue #105; before that variant
+        // existed, this was structurally impossible for any sample --
+        // `docs/limitations.md`'s prior "infer never infers temporal
+        // kinds" note is now stale for samples sourced from a format that
+        // can produce one, e.g. OML's/TOML's own native temporal grammar).
         match v {
             DocScalar::Null => null = true,
             DocScalar::Bool(_) => {
@@ -242,6 +247,15 @@ fn infer_type(
             }
             DocScalar::Str(_) => {
                 names.insert("string");
+            }
+            DocScalar::Date(_) => {
+                names.insert("date");
+            }
+            DocScalar::Time(_) => {
+                names.insert("time");
+            }
+            DocScalar::Datetime(_) => {
+                names.insert("datetime");
             }
         }
     }

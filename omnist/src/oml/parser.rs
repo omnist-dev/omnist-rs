@@ -4,7 +4,7 @@
 //! See the parent module's doc comment for the overall architecture
 //! rationale (issue #10).
 
-use super::scanner::{Scanner, TokKind};
+use super::scanner::{Scanner, TemporalKind, TokKind};
 use crate::document::{self, RawNode, Scalar};
 use crate::error::ParseError;
 
@@ -248,19 +248,18 @@ impl<'a> Parser<'a> {
 
     /// Returns a [`RawNode`] leaf, not a bare [`Scalar`] -- `TokKind::
     /// Temporal` (a genuinely bare, grammar-validated date/time/datetime
-    /// literal) becomes [`RawNode::TemporalLeaf`], distinct from
+    /// literal) becomes the matching [`Scalar::Date`]/[`Scalar::Time`]/
+    /// [`Scalar::Datetime`] variant (issue #105), distinct from
     /// `TokKind::Str` (an ordinary quoted string that merely holds
-    /// date/time/datetime-*shaped* text), which becomes a plain
-    /// [`RawNode::Leaf`]. Both wrap the identical `Scalar::Str(s)` --
-    /// `document::Scalar` has no separate temporal variant (issue #16) --
-    /// so this distinction is exactly the provenance tag issue #99 needs
-    /// `write_oml` to see, and would be lost immediately if this returned
-    /// a bare `Scalar` for both.
+    /// date/time/datetime-*shaped* text), which stays a plain
+    /// `Scalar::Str`.
     fn parse_scalar(&mut self) -> Result<RawNode, ParseError> {
         let (kind, start, end) = self.advance()?;
         match kind {
             TokKind::Str(s) => Ok(RawNode::Leaf(Scalar::Str(s))),
-            TokKind::Temporal(s) => Ok(RawNode::TemporalLeaf(Scalar::Str(s))),
+            TokKind::Temporal(TemporalKind::Date, s) => Ok(RawNode::Leaf(Scalar::Date(s))),
+            TokKind::Temporal(TemporalKind::Time, s) => Ok(RawNode::Leaf(Scalar::Time(s))),
+            TokKind::Temporal(TemporalKind::Datetime, s) => Ok(RawNode::Leaf(Scalar::Datetime(s))),
             TokKind::Int(i) => Ok(RawNode::Leaf(Scalar::Int(i))),
             TokKind::Float(f) => Ok(RawNode::Leaf(Scalar::Float(f))),
             TokKind::Ident(text) => match text.as_str() {

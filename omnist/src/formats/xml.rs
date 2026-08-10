@@ -443,12 +443,7 @@ fn scan_xml_into(node: &RawNode, path: &str, rep: &mut WriteReport) {
                 scan_xml_into(child, &p, rep);
             }
         }
-        // XML has no native temporal literals (see this module's own
-        // docs), so `TemporalLeaf` never arrives here in practice -- but
-        // if it did (e.g. a `RawNode` built by another format's writer
-        // path being fed to XML), it must still write out identically to
-        // an ordinary leaf; issue #99's tag is OML-write-only.
-        RawNode::Leaf(scalar) | RawNode::TemporalLeaf(scalar) => scan_leaf(scalar, path, rep),
+        RawNode::Leaf(scalar) => scan_leaf(scalar, path, rep),
     }
 }
 
@@ -467,7 +462,12 @@ fn scan_leaf(scalar: &Scalar, path: &str, rep: &mut WriteReport) {
         // (the old shape-based coercion happened to undo this on read);
         // now reported like every other type-losing write, matching
         // Python's identical fix (`omnist#288`, `value.stringified`).
-        Scalar::Bool(_) | Scalar::Int(_) | Scalar::Float(_) => rep.add(
+        Scalar::Bool(_)
+        | Scalar::Int(_)
+        | Scalar::Float(_)
+        | Scalar::Date(_)
+        | Scalar::Time(_)
+        | Scalar::Datetime(_) => rep.add(
             path,
             "value.stringified",
             "non-string scalar written as text (reads back as a string)",
@@ -515,7 +515,7 @@ fn write_element(tag: &str, content: &RawNode, level: usize, out: &mut String) {
             out.push_str(">\n");
         }
         RawNode::Edges(_) => out.push_str(" />\n"),
-        RawNode::Leaf(scalar) | RawNode::TemporalLeaf(scalar) => {
+        RawNode::Leaf(scalar) => {
             let text = xml_sanitize(&xml_text(scalar));
             if text.is_empty() {
                 out.push_str(" />\n");
@@ -576,7 +576,7 @@ fn xml_text(scalar: &Scalar) -> String {
         }
         Scalar::Int(i) => i.to_string(),
         Scalar::Float(x) => write_float_text(*x),
-        Scalar::Str(s) => s.clone(),
+        Scalar::Str(s) | Scalar::Date(s) | Scalar::Time(s) | Scalar::Datetime(s) => s.clone(),
     }
 }
 

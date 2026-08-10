@@ -116,17 +116,33 @@ pub fn check_json(doc: &Doc) -> WriteReport {
     let grouped = doc.to_grouped();
     let mut path = String::from("$");
     crate::formats::visit_grouped(&grouped, &mut path, &mut |visited, path| {
-        if let crate::formats::Visited::Node {
-            value: Value::Float(x),
-        } = visited
-            && (x.is_nan() || x.is_infinite())
-        {
-            rep.add(
-                path,
-                "float.special",
-                format!("{x} is not valid JSON; wrote null"),
-                Severity::Error,
-            );
+        let crate::formats::Visited::Node { value } = visited else {
+            return;
+        };
+        match value {
+            Value::Float(x) if x.is_nan() || x.is_infinite() => {
+                rep.add(
+                    path,
+                    "float.special",
+                    format!("{x} is not valid JSON; wrote null"),
+                    Severity::Error,
+                );
+            }
+            // JSON has no temporal type (issue #105 -- previously
+            // structurally unreachable per issue #16/#89, since `Scalar`
+            // had no temporal variant for this leaf to ever hold; now
+            // reachable for real). Matches Python's writer, which
+            // stringifies and reports the same adjustment.
+            Value::Date(_) | Value::Time(_) | Value::Datetime(_) => {
+                rep.add(
+                    path,
+                    "format.temporal-stringified",
+                    "date/time/datetime has no native JSON literal; wrote as an ISO-8601 string"
+                        .to_string(),
+                    Severity::Warning,
+                );
+            }
+            _ => {}
         }
     });
     rep
@@ -177,7 +193,13 @@ fn write_value(v: &Value, indent: Option<usize>, level: usize, out: &mut String)
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
         Value::Int(i) => out.push_str(&i.to_string()),
         Value::Float(x) => write_float(*x, out),
-        Value::Str(s) => write_json_string(s, out),
+        // JSON has no native temporal literal -- a genuinely
+        // temporal-kinded value (issue #105) is stringified the same way
+        // Python's writer does, with `check_json` reporting the
+        // now-reachable `temporal.stringified` adjustment (see below).
+        Value::Str(s) | Value::Date(s) | Value::Time(s) | Value::Datetime(s) => {
+            write_json_string(s, out)
+        }
         Value::Array(items) => write_seq(items.iter(), '[', ']', indent, level, out, write_value),
         Value::Object(map) => write_seq(
             map.iter(),

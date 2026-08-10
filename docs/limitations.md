@@ -65,24 +65,32 @@ Fixed; see each format's own page for anything still worth knowing:
   value round-trips out but not back in through TOML specifically. Every
   other format (JSON, YAML, OML) has no such ceiling.
 
-## No native temporal `Scalar` variant
+## Temporal kinds have no arithmetic
 
-`Scalar` has no `date`/`time`/`datetime` variant at all -- every temporal
-value, in every format, is represented as a `Scalar::Str` holding its
-canonical ISO spelling, validated by the shared
-`crate::schema::is_iso_date`/`is_iso_time`/`is_iso_datetime` checks. This
-means:
+`Scalar`/`Value` carry real `Date(String)`/`Time(String)`/`Datetime(String)`
+variants (added in issue #105), each holding an already shape-validated,
+canonical ISO spelling -- but the string is opaque data, not a `chrono`/
+`time` value. There is no date arithmetic, comparison, or component
+extraction anywhere in this crate; the algebra never needed it (mirroring
+the same no-arithmetic reasoning `Scalar::Int`'s `BigInt` backing already
+applies to integers). This means:
 
-- `omnist::infer::infer` never infers `date`/`time`/`datetime` from a
-  string-shaped sample -- every string sample infers as `string`. A schema
-  wanting a temporal field must be authored (or edited in after
-  inference), not inferred.
+- `omnist::infer::infer` infers `date`/`time`/`datetime` only from a
+  genuinely temporal-kinded sample (one already read as `Scalar::Date`/
+  `Time`/`Datetime` -- e.g. from OML's or TOML's own native temporal
+  grammar); a plain ISO-shaped *string* sample still infers as `string`,
+  matching Python's own strict `value_kind()` exactly.
+- `omnist::schema::matches_kind`, by contrast, accepts either a real
+  temporal variant *or* a shape-matching plain string for a
+  `Date`/`Time`/`Datetime`-typed field -- also matching Python's own
+  hybrid `matches_kind` exactly. A schema-directed `materialize` upgrade is
+  what promotes a matching string to the real typed variant.
 - Formats with a native temporal type on the wire (TOML's four temporal
-  literal forms, YAML's looser timestamp grammar) still round-trip through
-  a `Scalar::Str` internally; see each format's own page for exactly what
-  that means for their write-side behavior (particularly
-  [formats/toml.md](formats/toml.md)'s divergence from Python's
-  live-`datetime`-object model).
+  literal forms, YAML's looser timestamp grammar) now construct the real
+  typed variant directly on read and write it back bare on write -- no
+  more silent collapse to `Scalar::Str`; see each format's own page for
+  the exact behavior (particularly [formats/toml.md](formats/toml.md),
+  whose write-side shape-guessing divergence from Python is now resolved).
 
 ## Architecture-freedom disclosures already made per codec
 

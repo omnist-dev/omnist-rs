@@ -30,12 +30,18 @@ of a silent substitution.
 
 ## No native temporal type
 
-This port's `Scalar` has no `date`/`time`/`datetime` variant at all (a
-Rust-specific architecture consequence, not a JSON limitation) -- a
-temporal value is already a `Scalar::Str` holding its ISO spelling by the
-time it reaches this codec, so there is nothing left to adjust or report
-here, unlike Python (which stringifies a live `datetime.date`/`time` object
-and records a `temporal.stringified` warning).
+JSON has no native `date`/`time`/`datetime` literal, so a genuine
+`Scalar::Date`/`Time`/`Datetime` (issue #105) writes the same way a
+`Scalar::Str` does -- its raw ISO text, quoted -- and `check_json` records
+a `format.temporal-stringified` warning, matching Python (which
+stringifies a live `datetime.date`/`time` object and records its own
+`temporal.stringified`-equivalent warning). This is a real adjustment now,
+not merely unreachable: before issue #105, `Scalar` had no temporal
+variant at all, so this codec's decoder path (in the conformance harness)
+collapsed such values to a plain string before the writer ever ran,
+making the adjustment structurally unreachable in this port
+(`formats-json/basic/temporal-leaf-is-stringified-on-write`, previously
+skipped, now passes for real).
 
 ## Integer digit cap (arbitrary-precision, matching Python -- issue #104)
 

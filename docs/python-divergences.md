@@ -70,32 +70,25 @@ port regardless of what the cap logic does.
 Permanent: yes, for the same reason as the general `i64` gap above --
 revisiting it would require a non-`i64` `Scalar::Int`.
 
-## Date-shaped strings as native temporal literals (TOML/YAML) vs Python's quoted strings
+## Date-shaped strings as native temporal literals (TOML/YAML) -- resolved by issue #105
 
-**Python**: distinguishes a real `datetime.date`/`datetime`/`time`
-object from a plain `str` at runtime. Writing a Python `str` that merely
-*looks* like a date (e.g. `"1979-05-27"`) writes back as a quoted string;
-only an actual `datetime` object writes as a native literal.
+**Formerly**: `Scalar` had no temporal variant, so `toml.rs`/`yaml.rs`
+could not distinguish "a string that happens to look like a date" from "a
+value that was genuinely read as a date," and shape-guessed: any
+`Scalar::Str` whose contents matched the temporal shape check wrote back
+as a native temporal literal, unlike Python, which only ever promotes a
+real `datetime` object.
 
-**Rust**: `Scalar` has no temporal variant (see
-[`limitations.md`](limitations.md#no-native-temporal-scalar-variant)), so
-there is no type-level way to distinguish "a string that happens to look
-like a date" from "a value that was read as a date." PR #21 (`toml.rs`)
-and PR #19 (`yaml.rs`) both resolve this the same way: any `Scalar::Str`
-whose contents match the temporal shape check
-(`schema::is_iso_date`/`is_iso_time`/`is_iso_datetime`) writes back as a
-native temporal literal, full stop -- a plain string that happens to look
-like a date becomes a native date literal on write, unlike Python.
-
-Origin quote (PR #21): "writing a plain string that merely looks like a
-date... produces a *native* TOML date literal in this port, whereas
-Python's `write_toml` keeps it a quoted string... This is the same
-already-accepted trade-off `yaml.rs` documents for YAML timestamps,
-applied consistently -- not a new upstream bug."
-
-Permanent: yes, unless/until `Scalar` grows a native temporal variant --
-which PR #11 and #17 both treat as an open, not-yet-decided
-architectural question rather than a near-term plan.
+**Now**: issue #105 gave `Scalar`/`Value` real `Date(String)`/
+`Time(String)`/`Datetime(String)` variants. `toml.rs`/`yaml.rs` construct
+the real variant directly from `toml_edit`'s own already-validated
+date/time fields (TOML) or from `normalize_timestamp`'s output (YAML) --
+never by shape-guessing a `Str` -- and write only a genuine temporal
+variant as a native literal; a plain string that merely looks like a date
+now stays a quoted string on write, matching Python exactly. This
+divergence is resolved, not permanent -- see
+[`limitations.md`](limitations.md#temporal-kinds-have-no-arithmetic) for
+what temporal kinds still don't do (arithmetic).
 
 ## Bare time literal round-tripping (OML, PR #11; corrected by issue #90)
 
@@ -222,8 +215,9 @@ Two structural gaps referenced above are covered in full in
   [`limitations.md`](limitations.md#the-any-type-scoping-gap-deferred-not-forgotten).
 - The `i64` representational ceiling, per format --
   [`limitations.md`](limitations.md#representational-limits-from-scalarint-being-i64).
-- The lack of a native temporal `Scalar` variant --
-  [`limitations.md`](limitations.md#no-native-temporal-scalar-variant).
+- Temporal kinds having no arithmetic (a real variant, but an opaque
+  canonical string, not a `chrono`/`time` value) --
+  [`limitations.md`](limitations.md#temporal-kinds-have-no-arithmetic).
 
 ## Summary table
 
@@ -231,7 +225,7 @@ Two structural gaps referenced above are covered in full in
 |---|---|---|
 | `i64` vs arbitrary-precision `int` | Permanent | #5, #11, #17, #23 |
 | TOML hex/octal/binary uncapped in Python, capped here | Permanent | #21 |
-| Date-shaped string becomes native literal on write (TOML/YAML) | Permanent (pending a temporal `Scalar` variant) | #19, #21 |
+| Date-shaped string becomes native literal on write (TOML/YAML) | **No longer a divergence** -- resolved by #105's real temporal variants | #19, #21, #105 |
 | Bare time literal round-trips exactly instead of normalizing | **No longer a divergence** -- corrected by #90 to match Python | #11, #90 |
 | `infer()`/`infer_with_report()` split vs single `allow_any` kwarg | Revisitable | #15, #33 |
 | XML coercion: over-`i64` numeral falls to float | Permanent | #23 |
