@@ -4,6 +4,7 @@
 
 - [Quickstart](./quickstart.md)
 - [User guide](./guide.md)
+- [API reference](./api.md)
 - [CLI reference](./cli.md)
 - [Formats](./formats/index.md)
   - [JSON](./formats/json.md)
