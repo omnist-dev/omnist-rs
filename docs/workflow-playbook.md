@@ -150,6 +150,27 @@ only checks a marker is *present*, not that it's *honest*. Evaluated twice
 already and deliberately not built — handled instead by periodic manual
 multi-agent re-audits before each minor release.
 
+**Doc updates ship in the same PR as the change, not "later" (issue
+#108).** Whenever a PR touches a public signature, a documented behavior,
+or a documented number, update every doc describing it in that same PR —
+don't leave it for a follow-up. `docs/api.md` went stale for two full
+releases (#104's `BigInt`, #105's `Date`/`Time`/`Datetime` variants)
+because neither PR touched it, and every block on that page is
+`doc-illustrative` (a signature listing, not runnable output), so nothing
+in the marker gate above caught the drift. This is the same discipline
+rule 1's design-plan-first and "red before green" already apply to code —
+it now applies to docs too, without exception for `doc-illustrative`
+pages. `docs/api.md` also gets a real, if partial, mechanical backstop:
+`check-doc-examples` (see `tools/check-doc-examples/src/lib.rs`'s
+`stale_api_md_items`) extracts every `pub fn`/`pub struct`/`pub enum`/
+`pub const`/`pub type` name declared in an `api.md` code block and fails
+if it no longer exists anywhere under `omnist/src` — this runs on every
+CI invocation of the doc-example gate (not gated on `api.md` itself
+having changed) and catches a renamed/removed item, though it cannot
+catch a signature that changed while the name stayed the same (e.g.
+`Int(i64)` → `Int(BigInt)`); that half is still on the "update it in the
+same PR" discipline above, not a mechanical check.
+
 ## When the port disagrees with upstream Python or TypeScript
 
 Porting will surface cases where this implementation's behavior differs

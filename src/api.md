@@ -46,23 +46,38 @@ An opaque index into a `Doc`'s arena.
 pub enum Scalar {
     Null,
     Bool(bool),
-    Int(i64),
+    Int(num_bigint::BigInt),
     Float(f64),
     Str(String),
+    Date(String),
+    Time(String),
+    Datetime(String),
 }
 ```
 <!-- doc-illustrative -->
 
-A leaf value. Implements `Display` (`null`, `true`, an integer, a float, or
-a debug-quoted string).
+A leaf value. Implements `Display` (`null`, `true`, an integer, a float, a
+debug-quoted string, or the bare temporal text for `Date`/`Time`/
+`Datetime`). `Int` is arbitrary-precision (`num_bigint::BigInt`, issue
+#104) -- omnist's algebra never does integer arithmetic, so there's no
+representational ceiling to impose. `Date`/`Time`/`Datetime` (issue #105)
+each hold already shape-validated, canonical ISO text as a plain `String`
+-- deliberately no `chrono`/`time` dependency, since the algebra never does
+temporal arithmetic either; nothing outside `crate::schema`'s
+`is_iso_date`/`is_iso_time`/`is_iso_datetime`/`canonicalize_iso_time`/
+`canonicalize_iso_datetime` constructs one, so the invariant holds by
+construction-site discipline, not the type system.
 
 ```rust
 pub enum Value {
     Null,
     Bool(bool),
-    Int(i64),
+    Int(num_bigint::BigInt),
     Float(f64),
     Str(String),
+    Date(String),
+    Time(String),
+    Datetime(String),
     Array(Vec<Value>),
     Object(IndexMap<String, Value>),
 }
@@ -72,7 +87,8 @@ pub enum Value {
 A plain input value (JSON/YAML/TOML-shaped) -- what `Doc::of`/`Doc::add`/
 `Doc::set` turn into canonical nodes. `Object` uses `IndexMap` so key order
 survives construction. `impl From<Scalar> for Value` converts the other
-way.
+way. `Int`/`Date`/`Time`/`Datetime` carry the same invariants as their
+`Scalar` counterparts above.
 
 ```rust
 pub struct Doc { /* private arena + root */ }
@@ -156,21 +172,24 @@ Python reference's `Doc.path`).
 ```rust
 pub enum RawNode {
     Leaf(Scalar),
-    TemporalLeaf(Scalar),
     Edges(Vec<(String, RawNode)>),
 }
 ```
 <!-- doc-illustrative -->
 
-The *raw* canonical Document node: a leaf scalar, a write-hint temporal
-leaf (schema- or OML-grammar-known to be date/time/datetime-kinded --
-consumed only by `omnist::oml::write_oml`), or an ordered edge list that
-may repeat and interleave a label arbitrarily. Unlike `Value::Object`'s
+The *raw* canonical Document node: a leaf scalar, or an ordered edge list
+that may repeat and interleave a label arbitrarily. Unlike `Value::Object`'s
 `IndexMap`, `RawNode::Edges` can represent non-contiguous repeats of the
 same label exactly, which is why OML's reader/writer (`omnist::oml`) walks
-`Doc` through this type instead of `Value`. `PartialEq` treats `Leaf` and
-`TemporalLeaf` holding the same `Scalar` as equal -- the tag is a writer
-hint, not a value difference.
+`Doc` through this type instead of `Value`.
+
+Before issue #105, this enum also had a `TemporalLeaf(Scalar)` variant --
+a write-hint tag (schema- or OML-grammar-known to be date/time/
+datetime-kinded, consumed only by `omnist::oml::write_oml`) that worked
+around `Scalar` having no temporal variant of its own. Issue #105 gave
+`Scalar` real `Date`/`Time`/`Datetime` variants, making the tag redundant,
+and it was removed -- OML's writer now matches on `Scalar`'s own variant
+directly.
 
 ## Schema model (`omnist::schema`)
 
@@ -341,9 +360,13 @@ pub fn matches_kind(value: &document::Scalar, kind: ScalarKind) -> bool;
 
 Does `value` match scalar kind `kind`? Validation only checks, never
 converts (see `materialize` below for the upgrading counterpart). `Date`/
-`Time`/`Datetime` only ever match a `Str` shaped like, and semantically
-valid as, that kind's ISO form, since `document::Scalar` has no native
-temporal variant.
+`Time`/`Datetime` match **either** the real `document::Scalar` variant
+**or** a plain `Str` whose text independently shape-validates as that
+kind's ISO form (verified against Python's own hybrid `matches_kind`,
+issue #105) -- so a JSON- or XML-sourced document with a date-shaped
+string field genuinely satisfies `kind: date` at `validate` time with no
+`materialize` upgrade required first. `Integer`/`Number` stay strict (no
+string-shape fallback), matching Python there too.
 
 ```rust
 pub enum Resolved<'a> {
