@@ -14,6 +14,17 @@ fn version_matches_cargo_toml() {
     assert_eq!(VERSION, "0.1.3-alpha");
 }
 
+#[test]
+fn scalar_display_covers_all_temporal_variants() {
+    use document::Scalar;
+    assert_eq!(Scalar::Date("2024-01-01".into()).to_string(), "2024-01-01");
+    assert_eq!(Scalar::Time("12:30:00".into()).to_string(), "12:30:00");
+    assert_eq!(
+        Scalar::Datetime("2024-01-01T12:30:00".into()).to_string(),
+        "2024-01-01T12:30:00"
+    );
+}
+
 // -- cross-op characterization: infer + materialize (issue #14) ------------
 //
 // An inferred schema is drafted *from* a set of samples, so it should always
