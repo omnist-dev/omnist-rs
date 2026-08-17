@@ -1,5 +1,7 @@
 # API reference
 
+> **Rustdoc API Reference**: Generated rustdoc documentation for all workspace crates is available at [**`api/omnist/index.html`**](api/omnist/index.html).
+
 This page enumerates the `omnist` crate's public surface: every exported
 type, function, and method, grouped by area. Signatures are copied from the
 current source (`omnist/src/*.rs`); doc comments are condensed, not

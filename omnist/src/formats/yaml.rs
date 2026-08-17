@@ -13,7 +13,7 @@
 //! surface for little benefit. Everything omnist-specific is still hand-written
 //! Rust code in this module, not delegated to the crate:
 //!
-//! * **Scalar-tag resolution** ([`resolve_plain_scalar`]) -- `yaml_rust2`'s own
+//! * **Scalar-tag resolution** (`resolve_plain_scalar`) -- `yaml_rust2`'s own
 //!   built-in resolver (`Yaml::from_str`) only recognizes `true`/`false`
 //!   (YAML 1.2 core schema) for booleans. Live-checked against Python's
 //!   `yaml.safe_load` (PyYAML, which this project's Python reference wraps):
@@ -27,7 +27,7 @@
 //!   timestamp against the raw scalar text + style (quoted scalars are never
 //!   auto-typed, matching PyYAML, which only applies implicit resolution to
 //!   plain-style scalars).
-//! * **Merge-key (`<<`) handling** ([`expand_merge_keys`]) -- `yaml_rust2` has
+//! * **Merge-key (`<<`) handling** (`expand_merge_keys`) -- `yaml_rust2` has
 //!   no built-in merge-key support at all (confirmed by reading its source);
 //!   this module implements the YAML merge-key spec directly: an unquoted
 //!   `<<` key's value must be a mapping or a sequence of mappings, merged in
@@ -36,16 +36,16 @@
 //!   module's test suite pins.
 //! * **Depth guard, temporal shape-check, integer digit cap** -- reused from
 //!   [`crate::document`]/[`crate::schema`]/this crate's established
-//!   4300-digit-cap pattern (see [`MAX_INT_DIGITS`]), not reimplemented.
+//!   4300-digit-cap pattern (see `MAX_INT_DIGITS`), not reimplemented.
 //!
 //! ## Depth guard reuse
 //!
 //! Same reasoning as `json.rs`: [`read_yaml`] builds a [`Doc`] via [`Doc::of`],
-//! which calls [`crate::document::check_write_depth`] internally. The merge-
+//! which calls `crate::document::check_write_depth` internally. The merge-
 //! key/alias-resolution pass that runs *before* `Doc::of` also depth-guards
 //! itself (an alias can reference an already-deep subtree, and merging can
 //! grow a mapping before the Document-model depth check ever sees it), reusing
-//! the same [`crate::document::check_write_depth`] guard rather than adding a
+//! the same `crate::document::check_write_depth` guard rather than adding a
 //! second copy. [`write_yaml`]/[`check_yaml`] walk an already-built `Doc` (via
 //! `to_grouped`), whose nodes are already depth-checked, so there is nothing
 //! left to re-guard on the way out.
@@ -59,7 +59,7 @@
 //! time, single-digit month/day, a bare `Z` suffix, no zero-padding) --
 //! Python's PyYAML normalizes any such spelling to a `datetime.date`/
 //! `datetime.datetime` object and then (elsewhere in the pipeline) back to a
-//! canonical ISO string. [`normalize_timestamp`] reproduces that
+//! canonical ISO string. `normalize_timestamp` reproduces that
 //! normalization for the timestamp grammar PyYAML's own
 //! `tag:yaml.org,2002:timestamp` resolver accepts, so a YAML value like
 //! `2001-12-14 21:59:43.10 -5` round-trips to the same canonical
@@ -69,7 +69,7 @@
 //! `2024-02-30`) is a [`ParseError`], not a silent string fallback --
 //! live-confirmed: PyYAML's construction step raises `ValueError` there,
 //! which fails the whole document. Calendar/clock validity itself reuses
-//! [`crate::schema::valid_ymd`]/[`crate::schema::valid_hms`] rather than a
+//! `crate::schema::valid_ymd`/`crate::schema::valid_hms` rather than a
 //! second copy of that logic, even though the *shape* regex is necessarily
 //! separate (looser than `schema.rs`'s).
 //!
@@ -156,7 +156,7 @@ fn count_nodes(node: &Raw) -> usize {
 // ============================================================== Reader
 
 /// The raw shape `yaml_rust2`'s event stream is rebuilt into: a scalar with
-/// its original text and style (style is what [`resolve_plain_scalar`] and
+/// its original text and style (style is what `resolve_plain_scalar` and
 /// merge-key detection both need, and what `yaml_rust2`'s own `Yaml` enum
 /// throws away by pre-resolving plain scalars with its own, PyYAML-incompatible
 /// rules -- see this module's doc comment), or an ordered sequence/mapping.
@@ -829,8 +829,8 @@ fn parse_float_literal(text: &str) -> Result<Value, ParseError> {
 /// `datetime.datetime`'s constructor on the captured fields, which raises a
 /// `ValueError` PyYAML doesn't catch, so the *whole document* fails to parse
 /// rather than quietly typing the value as a string. Calendar-date validity
-/// (leap years, per-month day counts) reuses [`crate::schema::valid_ymd`]/
-/// [`crate::schema::valid_hms`] rather than a second copy of that logic.
+/// (leap years, per-month day counts) reuses `crate::schema::valid_ymd`/
+/// `crate::schema::valid_hms` rather than a second copy of that logic.
 fn normalize_timestamp(text: &str) -> Result<Option<String>, ParseError> {
     static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
         regex::Regex::new(

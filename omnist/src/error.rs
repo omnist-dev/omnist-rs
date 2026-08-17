@@ -19,11 +19,14 @@ use thiserror::Error;
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 #[error("{path}: {message}")]
 pub struct DocumentError {
+    /// The path inside the document where the error occurred.
     pub path: String,
+    /// Human-readable error description.
     pub message: String,
 }
 
 impl DocumentError {
+    /// Construct a new `DocumentError` at the given path.
     pub fn new(path: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
             path: path.into(),
@@ -40,6 +43,7 @@ impl DocumentError {
 pub struct SchemaError(pub String);
 
 impl SchemaError {
+    /// Construct a new `SchemaError`.
     pub fn new(message: impl Into<String>) -> Self {
         Self(message.into())
     }
@@ -52,12 +56,16 @@ impl SchemaError {
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 #[error("line {line}, col {col}: {message}")]
 pub struct ParseError {
+    /// Line number where parsing failed (1-indexed).
     pub line: usize,
+    /// Column number where parsing failed (1-indexed).
     pub col: usize,
+    /// Human-readable parse failure description.
     pub message: String,
 }
 
 impl ParseError {
+    /// Construct a new `ParseError` with position coordinates.
     pub fn new(line: usize, col: usize, message: impl Into<String>) -> Self {
         Self {
             line,
@@ -81,6 +89,7 @@ impl ParseError {
 pub struct FormatError(pub String);
 
 impl FormatError {
+    /// Construct a new `FormatError` for an unknown format name.
     pub fn new(message: impl Into<String>) -> Self {
         Self(message.into())
     }
@@ -98,11 +107,14 @@ impl FormatError {
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 #[error("{message}")]
 pub struct WriteError {
+    /// Human-readable write failure description.
     pub message: String,
+    /// Optional accumulated `WriteReport` when written in strict mode.
     pub report: Option<crate::report::WriteReport>,
 }
 
 impl WriteError {
+    /// Construct a new `WriteError` with no report.
     pub fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
@@ -145,14 +157,17 @@ impl From<DocumentError> for WriteError {
 pub struct MaterializeError(pub crate::schema::ValidationResult);
 
 impl MaterializeError {
+    /// Construct a new `MaterializeError` wrapping a `ValidationResult`.
     pub fn new(result: crate::schema::ValidationResult) -> Self {
         Self(result)
     }
 
+    /// Access the inner `ValidationResult`.
     pub fn result(&self) -> &crate::schema::ValidationResult {
         &self.0
     }
 
+    /// Slice of all validation errors that caused materialization to fail.
     pub fn errors(&self) -> &[crate::schema::ValidationError] {
         self.0.errors()
     }
@@ -161,16 +176,22 @@ impl MaterializeError {
 /// Crate-wide top-level error, mirroring Python's `OmnistError` base class.
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum OmnistError {
+    /// An invalid Document operation or structure.
     #[error(transparent)]
     Document(#[from] DocumentError),
+    /// An invalid Schema definition.
     #[error(transparent)]
     Schema(#[from] SchemaError),
+    /// Document failed to conform to target Schema during materialization.
     #[error(transparent)]
     Materialize(#[from] MaterializeError),
+    /// Source text syntax error with line/column coordinates.
     #[error(transparent)]
     Parse(#[from] ParseError),
+    /// Document could not be written to destination format.
     #[error(transparent)]
     Write(#[from] WriteError),
+    /// Format name not recognized in registry.
     #[error(transparent)]
     Format(#[from] FormatError),
 }

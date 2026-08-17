@@ -29,6 +29,9 @@
 //!   schema-less read, exactly mirroring Python's `_materialize(node,
 //!   schema)` call inside each reader.
 
+#![deny(missing_docs)]
+#![warn(rustdoc::all)]
+
 use std::io::{self, Read, Write};
 
 use clap::{Parser, Subcommand, ValueEnum};
@@ -40,6 +43,7 @@ use omnist::{OmnistError, WriteError, WriteReport};
 // Argument parsing
 // ---------------------------------------------------------------------------
 
+/// Command-line arguments parser for the `omnist` CLI.
 #[derive(Parser, Debug)]
 #[command(
     name = "omnist",
@@ -48,10 +52,12 @@ use omnist::{OmnistError, WriteError, WriteReport};
              read, validate, and write any of them."
 )]
 pub struct Cli {
+    /// Subcommand to execute.
     #[command(subcommand)]
     pub command: Command,
 }
 
+/// Top-level subcommands supported by `omnist`.
 #[derive(Subcommand, Debug)]
 pub enum Command {
     /// Canonicalize an OML document (the only format with no other tool for this).
@@ -69,190 +75,280 @@ pub enum Command {
     Schema(SchemaCommand),
 }
 
+/// Supported document format codecs for CLI input and output.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum Fmt {
+    /// The JSON format codec.
     Json,
+    /// The YAML format codec.
     Yaml,
+    /// The TOML format codec.
     Toml,
+    /// The XML format codec.
     Xml,
+    /// The OML format codec.
     Oml,
 }
 
+/// Output encoding for boolean or report results.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, Default)]
 pub enum ResultFormat {
+    /// Plain text output format.
     #[default]
     Text,
+    /// JSON result encoding.
     Json,
+    /// OML result encoding.
     Oml,
 }
 
+/// Severity threshold filter for schema lint findings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, Default)]
 pub enum LintSeverity {
+    /// Include all informational findings and warnings.
     #[default]
     Info,
+    /// Report warnings only.
     Warning,
 }
 
+/// Arguments for the `format` command (canonicalize OML).
 #[derive(clap::Args, Debug)]
 pub struct FormatArgs {
     /// OML file, or - for stdin
     pub input: String,
+    /// Emit single-line compact OML output.
     #[arg(long)]
     pub compact: bool,
+    /// Not yet supported; accepted for CLI compatibility.
     #[arg(long)]
     pub arrays: bool,
+    /// Output destination file path (defaults to standard output if omitted).
     #[arg(short, long)]
     pub output: Option<String>,
+    /// Emit structured JSON output.
     #[arg(long)]
     pub json: bool,
 }
 
+/// Arguments for the `convert` command (convert document between formats).
 #[derive(clap::Args, Debug)]
 pub struct ConvertArgs {
+    /// Input document file path, or - for stdin.
     pub input: String,
+    /// Input document format codec.
     #[arg(long = "from", value_enum)]
     pub from: Fmt,
+    /// Output document format codec.
     #[arg(long = "to", value_enum)]
     pub to: Fmt,
+    /// Optional OSD schema file path for schema-directed materialization.
     #[arg(long)]
     pub schema: Option<String>,
+    /// Fail immediately if any lossy conversion adjustment occurs.
     #[arg(long)]
     pub strict: bool,
+    /// Emit write adjustment report to standard error.
     #[arg(long)]
     pub report: bool,
+    /// Format for report output (`text`, `json`, `oml`).
     #[arg(long = "result-format", value_enum, default_value_t = ResultFormat::Text)]
     pub result_format: ResultFormat,
+    /// Emit single-line compact OML output when converting to OML.
     #[arg(long)]
     pub compact: bool,
+    /// Not yet supported; accepted for CLI compatibility.
     #[arg(long)]
     pub arrays: bool,
+    /// Output destination file path (defaults to standard output if omitted).
     #[arg(short, long)]
     pub output: Option<String>,
+    /// Emit structured JSON output.
     #[arg(long)]
     pub json: bool,
 }
 
+/// Arguments for the `check` command (simulate write and report adjustments).
 #[derive(clap::Args, Debug)]
 pub struct CheckArgs {
+    /// Input document file path, or - for stdin.
     pub input: String,
+    /// Input document format codec.
     #[arg(long = "from", value_enum)]
     pub from: Fmt,
+    /// Target document format codec to simulate writing to.
     #[arg(long = "to", value_enum)]
     pub to: Fmt,
+    /// Fail with non-zero exit code if any adjustment would be made.
     #[arg(long)]
     pub strict: bool,
+    /// Format for adjustment report output (`text`, `json`, `oml`).
     #[arg(long = "result-format", value_enum, default_value_t = ResultFormat::Text)]
     pub result_format: ResultFormat,
+    /// Emit structured JSON output.
     #[arg(long)]
     pub json: bool,
 }
 
+/// Arguments for the `validate` command (validate document against a schema).
 #[derive(clap::Args, Debug)]
 pub struct ValidateArgs {
+    /// Input document file path, or - for stdin.
     pub input: String,
+    /// Input document format codec.
     #[arg(long = "from", value_enum)]
     pub from: Fmt,
+    /// OSD schema file path to validate against.
     #[arg(long)]
     pub schema: String,
+    /// Format for validation result output (`text`, `json`, `oml`).
     #[arg(long = "result-format", value_enum, default_value_t = ResultFormat::Text)]
     pub result_format: ResultFormat,
+    /// Emit structured JSON output.
     #[arg(long)]
     pub json: bool,
 }
 
+/// Arguments for the `infer` command (infer OSD schema from example documents).
 #[derive(clap::Args, Debug)]
 pub struct InferArgs {
+    /// One or more example document file paths.
     #[arg(required = true)]
     pub input: Vec<String>,
+    /// Input document format codec for all examples.
     #[arg(long = "from", value_enum)]
     pub from: Fmt,
+    /// Emit single-line compact OSD schema output.
     #[arg(long)]
     pub compact: bool,
+    /// Not yet supported; accepted for CLI compatibility.
     #[arg(long)]
     pub arrays: bool,
+    /// Open ambiguous polymorphic fields as `any` instead of failing.
     #[arg(long = "allow-any")]
     pub allow_any: bool,
+    /// Output destination file path (defaults to standard output if omitted).
     #[arg(short, long)]
     pub output: Option<String>,
+    /// Emit structured JSON output.
     #[arg(long)]
     pub json: bool,
 }
 
+/// Schema algebra and utility subcommands.
 #[derive(Subcommand, Debug)]
 pub enum SchemaCommand {
+    /// Canonicalize OSD schema syntax.
     Format(SchemaFormatArgs),
+    /// Normalize schema into minimal, canonical form (spec §6.8).
     Normalize(SchemaFormatArgs),
+    /// Prune unreachable records from schema environment (spec §6.7).
     Prune(SchemaPruneArgs),
+    /// Test whether schema accepts no non-empty documents.
     #[command(name = "is-empty")]
     IsEmpty(SchemaResultArgs),
+    /// Extract minimal subschema covering given labels (spec §6.10).
     Extract(SchemaExtractArgs),
+    /// Run structural lint checks over schema.
     Lint(SchemaLintArgs),
+    /// Check whether schema A is compatible with schema B (spec §6.6).
     #[command(name = "compatible-with")]
     CompatibleWith(SchemaPairArgs),
+    /// Check whether schema A and schema B are semantically equivalent (spec §6.9).
     Equivalent(SchemaPairArgs),
 }
 
+/// Arguments for schema formatting or normalization commands.
 #[derive(clap::Args, Debug)]
 pub struct SchemaFormatArgs {
+    /// OSD schema file path.
     pub schema_file: String,
+    /// Emit single-line compact OSD schema output.
     #[arg(long)]
     pub compact: bool,
+    /// Not yet supported; accepted for CLI compatibility.
     #[arg(long)]
     pub arrays: bool,
+    /// Output destination file path (defaults to standard output if omitted).
     #[arg(short, long)]
     pub output: Option<String>,
+    /// Emit structured JSON output.
     #[arg(long)]
     pub json: bool,
 }
 
+/// Arguments for the `schema prune` command.
 #[derive(clap::Args, Debug)]
 pub struct SchemaPruneArgs {
+    /// OSD schema file path.
     pub schema_file: String,
+    /// Emit single-line compact OSD schema output.
     #[arg(long)]
     pub compact: bool,
+    /// Output destination file path (defaults to standard output if omitted).
     #[arg(short, long)]
     pub output: Option<String>,
+    /// Emit structured JSON output.
     #[arg(long)]
     pub json: bool,
 }
 
+/// Arguments for schema boolean result commands.
 #[derive(clap::Args, Debug)]
 pub struct SchemaResultArgs {
+    /// OSD schema file path.
     pub schema_file: String,
+    /// Format for result output (`text`, `json`, `oml`).
     #[arg(long = "result-format", value_enum, default_value_t = ResultFormat::Text)]
     pub result_format: ResultFormat,
+    /// Emit structured JSON output.
     #[arg(long)]
     pub json: bool,
 }
 
+/// Arguments for the `schema extract` command.
 #[derive(clap::Args, Debug)]
 pub struct SchemaExtractArgs {
+    /// OSD schema file path.
     pub schema_file: String,
+    /// Comma-separated list of field labels to retain in extracted subschema.
     #[arg(long)]
     pub keep: String,
+    /// Emit single-line compact OSD schema output.
     #[arg(long)]
     pub compact: bool,
+    /// Output destination file path (defaults to standard output if omitted).
     #[arg(short, long)]
     pub output: Option<String>,
+    /// Emit structured JSON output.
     #[arg(long)]
     pub json: bool,
 }
 
+/// Arguments for the `schema lint` command.
 #[derive(clap::Args, Debug)]
 pub struct SchemaLintArgs {
+    /// OSD schema file path.
     pub schema_file: String,
+    /// Minimum severity threshold to report (`info` or `warning`).
     #[arg(long, value_enum, default_value_t = LintSeverity::Info)]
     pub severity: LintSeverity,
+    /// Emit structured JSON output.
     #[arg(long)]
     pub json: bool,
 }
 
+/// Arguments for pairwise schema comparison commands (`compatible-with`, `equivalent`).
 #[derive(clap::Args, Debug)]
 pub struct SchemaPairArgs {
+    /// First OSD schema file path.
     pub a: String,
+    /// Second OSD schema file path.
     pub b: String,
+    /// Format for comparison result output (`text`, `json`, `oml`).
     #[arg(long = "result-format", value_enum, default_value_t = ResultFormat::Text)]
     pub result_format: ResultFormat,
+    /// Emit structured JSON output.
     #[arg(long)]
     pub json: bool,
 }

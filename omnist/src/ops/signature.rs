@@ -17,8 +17,11 @@ use crate::schema::{FieldType, Record, ScalarKind};
 /// comment), or `Any`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ShapeKey {
+    /// A scalar shape with kind and nullability.
     Scalar(ScalarKind, bool),
+    /// A reference to a record in the environment.
     Ref,
+    /// An `any` type slot.
     Any,
 }
 

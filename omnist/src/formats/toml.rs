@@ -17,11 +17,11 @@
 //! Everything omnist-specific stays hand-written Rust, not delegated to the
 //! crate:
 //!
-//! * **Null-adjustment** ([`strip_nulls`]) -- TOML has no `null` at all;
+//! * **Null-adjustment** (`strip_nulls`) -- TOML has no `null` at all;
 //!   dropping a null-valued field/array-item and recording it via
 //!   [`crate::report::WriteReport`] is this module's own logic (see
 //!   "No null" below).
-//! * **Temporal canonicalization** ([`format_datetime`]) -- turning
+//! * **Temporal canonicalization** (`format_datetime`) -- turning
 //!   `toml_edit`'s parsed `Date`/`Time`/`Datetime` structs into this port's
 //!   canonical ISO-string spelling (see "Native temporal types" below).
 //! * **Integer digit cap** -- `toml_edit` itself rejects any integer
@@ -85,7 +85,7 @@
 //! hex/octal/binary.
 //!
 //! This port does **not** replicate that decimal/non-decimal split: every
-//! radix goes through the same [`toml_overflow_error`] recovery and the same
+//! radix goes through the same `toml_overflow_error` recovery and the same
 //! 4300-digit cap, because `toml_edit` itself enforces a strict `i64` range
 //! at parse time regardless of radix (see below) -- there is no path in this
 //! implementation for an oversized hex/octal/binary literal to reach
@@ -106,7 +106,7 @@
 //! original digit run), which is *stricter* than Python's real behavior for
 //! anything between 20 and 4300 digits. To keep this port's observable
 //! integer-literal error behavior matching Python's (not `toml_edit`'s
-//! internal, incidentally-stricter parse limit), [`toml_overflow_error`]
+//! internal, incidentally-stricter parse limit), `toml_overflow_error`
 //! recovers the raw literal text from the failed parse's byte span
 //! (`TomlError::span`) and re-derives the digit count itself, producing the
 //! same two-tier message `json.rs`/`yaml.rs` give ("exceeds the 4300-digit
@@ -127,14 +127,14 @@
 //! `normalize_timestamp` must (YAML's own crate does no such validation).
 //!
 //! [`crate::document::Scalar`] has real `Date`/`Time`/`Datetime` variants
-//! (issue #105) -- [`toml_value_to_value`] reads `toml_edit`'s own already
+//! (issue #105) -- `toml_value_to_value` reads `toml_edit`'s own already
 //! fully-validated `Datetime` struct's `date`/`time` presence to construct
 //! the right one directly (real provenance, not a shape guess), and
-//! [`format_datetime`] renders the canonical ISO spelling either way:
+//! `format_datetime` renders the canonical ISO spelling either way:
 //! zero-padded, `T`-joined, a bare `Z` offset normalized to `+00:00`
 //! (matching `yaml.rs`'s identical normalization -- this port's canonical
 //! temporal strings never contain a literal `Z`, only a numeric offset,
-//! which is what [`crate::schema::is_iso_datetime`]'s regex expects).
+//! which is what `crate::schema::is_iso_datetime`'s regex expects).
 //! Fractional seconds beyond microsecond precision are **truncated, not
 //! rounded**, to six digits -- live-confirmed against `tomllib`:
 //! `00:32:00.9999999` (7 nines) reads as `datetime.time(0, 32, 0, 999999)`
@@ -170,8 +170,8 @@
 //!
 //! [`read_toml`] parses TOML text into a [`crate::document::Value`], then
 //! builds a [`Doc`] via [`Doc::of`] -- which calls
-//! [`crate::document::check_write_depth`] internally (see `document.rs`).
-//! [`write_toml`]/[`check_toml`]/[`strip_nulls`] walk an already-built
+//! `crate::document::check_write_depth` internally (see `document.rs`).
+//! [`write_toml`]/[`check_toml`]/`strip_nulls` walk an already-built
 //! `Doc` (via `Doc::to_grouped`), whose every node was depth-checked at
 //! construction time -- exactly `json.rs`'s reasoning (not `yaml.rs`'s,
 //! which pre-processes raw structures *before* `Doc::of` ever runs) --

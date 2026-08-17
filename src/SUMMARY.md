@@ -5,6 +5,7 @@
 - [Quickstart](./quickstart.md)
 - [User guide](./guide.md)
 - [API reference](./api.md)
+  - [Rustdoc (cargo doc)](./api/omnist/index.html)
 - [CLI reference](./cli.md)
 - [Formats](./formats/index.md)
   - [JSON](./formats/json.md)

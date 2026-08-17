@@ -57,7 +57,9 @@ pub(crate) fn push_child_path(buf: &mut String, label: &str, index: usize) {
 /// distinguishes them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Severity {
+    /// Recoverable adjustment (e.g. date written as string).
     Warning,
+    /// Lossy or corrupting adjustment (e.g. NaN written as null).
     Error,
 }
 
@@ -71,6 +73,7 @@ pub struct Adjustment {
     pub code: String,
     /// Human-readable sentence.
     pub message: String,
+    /// The severity level of this adjustment.
     pub severity: Severity,
 }
 
@@ -83,6 +86,7 @@ pub struct WriteReport {
 }
 
 impl WriteReport {
+    /// Create an empty `WriteReport`.
     pub fn new() -> Self {
         Self::default()
     }
@@ -130,14 +134,17 @@ impl WriteReport {
         self.errors().is_empty()
     }
 
+    /// Returns `true` iff no adjustments have been recorded.
     pub fn is_empty(&self) -> bool {
         self.adjustments.is_empty()
     }
 
+    /// Total number of recorded adjustments.
     pub fn len(&self) -> usize {
         self.adjustments.len()
     }
 
+    /// Iterator over all recorded adjustments.
     pub fn iter(&self) -> std::slice::Iter<'_, Adjustment> {
         self.adjustments.iter()
     }
