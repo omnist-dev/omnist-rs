@@ -44,7 +44,7 @@ jobs:
         run: mdbook build
       - name: generate rustdoc
         run: |
-          cargo doc --no-deps --workspace
+          cargo doc --no-deps --workspace --exclude omnist-cli
           mkdir -p book/api
           cp -r target/doc/* book/api/
       - name: add custom domain CNAME
