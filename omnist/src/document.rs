@@ -44,7 +44,7 @@ pub const MAX_DEPTH: usize = 200;
 /// Maximum total node count for a single Document (matches the reference
 /// default in omnist-spec docs/02-document-model.md Sec2.4: a depth limit
 /// alone doesn't bound a shallow-but-enormous document, e.g. a million
-/// sibling edges at depth 1). Enforced once, in [`push`], the single arena
+/// sibling edges at depth 1). Enforced once, in `push`, the single arena
 /// choke point every construction path (`build_node`, `push_raw`) funnels
 /// through -- see omnist-rs#78: previously the only node-count guard in
 /// this crate was scoped narrowly to `formats::yaml`'s anchor/alias
@@ -81,13 +81,21 @@ pub struct NodeId(usize);
 /// replaces.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Scalar {
+    /// Null scalar value (spec §2.2).
     Null,
+    /// Boolean scalar value (spec §2.2).
     Bool(bool),
+    /// Arbitrary-precision integer scalar value (spec §2.2).
     Int(num_bigint::BigInt),
+    /// IEEE 754 floating point scalar value (spec §2.2).
     Float(f64),
+    /// UTF-8 string scalar value (spec §2.2).
     Str(String),
+    /// ISO 8601 calendar date (`YYYY-MM-DD`, spec §2.2).
     Date(String),
+    /// ISO 8601 clock time (`hh:mm:ss`, spec §2.2).
     Time(String),
+    /// ISO 8601 date-time (`YYYY-MM-DDThh:mm:ss`, spec §2.2).
     Datetime(String),
 }
 
@@ -111,18 +119,27 @@ impl fmt::Display for Scalar {
 /// Document model treats as data, not incidental — survives construction.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
+    /// Null value.
     Null,
+    /// Boolean value.
     Bool(bool),
+    /// Arbitrary-precision integer value.
     Int(num_bigint::BigInt),
+    /// Floating point value.
     Float(f64),
+    /// String value.
     Str(String),
     /// See [`Scalar::Date`]/[`Scalar::Time`]/[`Scalar::Datetime`] (issue
     /// #105) -- always already shape-validated and canonical, same
     /// invariant.
     Date(String),
+    /// ISO time value, matching [`Scalar::Time`].
     Time(String),
+    /// ISO datetime value, matching [`Scalar::Datetime`].
     Datetime(String),
+    /// Heterogeneous array value.
     Array(Vec<Value>),
+    /// Key-value object mapping.
     Object(IndexMap<String, Value>),
 }
 
@@ -520,18 +537,22 @@ impl Doc {
 pub struct Cursor<'a> {
     doc: &'a Doc,
     id: NodeId,
+    /// The path of this cursor within the document.
     pub path: String,
 }
 
 impl<'a> Cursor<'a> {
+    /// The internal [`NodeId`] of the referenced node.
     pub fn id(&self) -> NodeId {
         self.id
     }
 
+    /// Returns `true` iff this node is a leaf holding a scalar.
     pub fn is_leaf(&self) -> bool {
         matches!(self.doc.entry(self.id).data, NodeData::Leaf(_))
     }
 
+    /// Returns the scalar value if this is a leaf node, or `Err` if it is an internal edge node.
     pub fn value(&self) -> Result<&'a Scalar, DocumentError> {
         match &self.doc.entry(self.id).data {
             NodeData::Leaf(s) => Ok(s),
@@ -539,6 +560,7 @@ impl<'a> Cursor<'a> {
         }
     }
 
+    /// Returns the outgoing labeled edges if this is an internal node, or `Err` if it is a leaf.
     pub fn edges(&self) -> Result<Vec<(String, Cursor<'a>)>, DocumentError> {
         match &self.doc.entry(self.id).data {
             NodeData::Internal(edges) => {
@@ -598,6 +620,7 @@ impl<'a> Cursor<'a> {
         }
     }
 
+    /// Returns a deduplicated list of child edge labels.
     pub fn labels(&self) -> Vec<String> {
         let mut seen = std::collections::HashSet::new();
         let mut out = Vec::new();
@@ -611,6 +634,7 @@ impl<'a> Cursor<'a> {
         out
     }
 
+    /// Returns all child cursors along edges with the given `label`.
     pub fn get(&self, label: &str) -> Vec<Cursor<'a>> {
         self.edges()
             .into_iter()
@@ -620,6 +644,7 @@ impl<'a> Cursor<'a> {
             .collect()
     }
 
+    /// Returns the single child cursor for `label`, or `Err` if there are 0 or >1 matching edges.
     pub fn get_one(&self, label: &str) -> Result<Cursor<'a>, DocumentError> {
         let mut cs = self.get(label);
         if cs.len() != 1 {
@@ -631,6 +656,7 @@ impl<'a> Cursor<'a> {
         Ok(cs.remove(0))
     }
 
+    /// Returns the number of edges with the given `label`.
     pub fn count(&self, label: &str) -> usize {
         if let NodeData::Internal(edges) = &self.doc.entry(self.id).data {
             edges.iter().filter(|(lbl, _)| lbl == label).count()
@@ -661,21 +687,23 @@ impl<'a> Cursor<'a> {
 ///
 /// This is distinct from [`Value`]: `Value::Object`'s `IndexMap` can't hold
 /// a repeated key, so its "repeated label" convention (a `Value::Array`
-/// under one key, per [`child_specs`]) only ever expands to a *contiguous*
+/// under one key, per `child_specs`) only ever expands to a *contiguous*
 /// run of same-label edges. OML is the one format that must round-trip
 /// arbitrary interleaving losslessly (per its own docs: "no adjustment ever
 /// needed"), so its reader/writer (`crate::oml`) builds/walks a `Doc`
 /// through this type instead of going through `Value`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RawNode {
+    /// A leaf node holding a scalar value.
     Leaf(Scalar),
+    /// An internal node holding labeled outgoing edges.
     Edges(Vec<(String, RawNode)>),
 }
 
 impl Doc {
     /// Build a `Doc` from a [`RawNode`], preserving edge order and
     /// interleaving exactly. Depth-guarded via the same
-    /// [`check_write_depth`] every other construction path uses.
+    /// `check_write_depth` every other construction path uses.
     pub fn from_raw(root: RawNode) -> Result<Doc, DocumentError> {
         let mut arena = Vec::new();
         let root_id = push_raw(&mut arena, root, 0)?;

@@ -46,7 +46,7 @@
 //! into Clark notation (`{uri}local`) and `_local()` strips the `{uri}`
 //! prefix to get the bare local name. `quick_xml` (used here in
 //! non-namespace-aware mode) does not perform namespace URI resolution;
-//! [`local_name`] instead strips a lexical `prefix:` (up to the last `:`)
+//! `local_name` instead strips a lexical `prefix:` (up to the last `:`)
 //! from a tag, which coincides with Python's behavior for the common case
 //! (a declared, in-scope prefix) but does not resolve prefixes through
 //! `xmlns` declarations the way real namespace-aware processing would.
@@ -86,8 +86,8 @@
 //! `omnist-ts#36`: `writeXml`'s `xmlSanitize` used a **non-global** regex,
 //! so only the *first* XML-illegal character in a string was replaced,
 //! emitting malformed XML for any string with more than one. This module's
-//! [`xml_sanitize`] does not use a substitution regex at all -- it maps
-//! every `char` of the input through [`is_xml_illegal_char`] individually
+//! `xml_sanitize` does not use a substitution regex at all -- it maps
+//! every `char` of the input through `is_xml_illegal_char` individually
 //! (`str::chars().map(...).collect()`), so there is no "first occurrence
 //! only" bug class available in the first place. See
 //! `sanitizes_every_illegal_character_not_just_the_first` for the
@@ -101,12 +101,12 @@
 //! shared `_MAX_DEPTH` constant rather than routing through
 //! `document.py`'s write-side guard) -- this is necessary because,
 //! without it, an adversarially deep input could blow the native Rust call
-//! stack in [`parse_content`]'s own recursion *before* [`Doc::from_raw`]
+//! stack in `parse_content`'s own recursion *before* [`Doc::from_raw`]
 //! ever gets a chance to reject it via
-//! [`crate::document::check_write_depth`]. [`Doc::from_raw`] then applies
+//! `crate::document::check_write_depth`. [`Doc::from_raw`] then applies
 //! its own guard a second time when building the final `Doc` -- a harmless,
 //! redundant confirmation of the same limit, not a second copy of the
-//! guard's logic (it calls the crate's one shared [`check_write_depth`]).
+//! guard's logic (it calls the crate's one shared `check_write_depth`).
 //! [`write_xml`]/[`check_xml`] do not re-guard on the way out, matching
 //! `json.rs`'s reasoning: they walk an already-`Doc`-validated
 //! [`RawNode`], so there is nothing left to guard.

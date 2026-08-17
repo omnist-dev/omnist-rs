@@ -1,3 +1,5 @@
+//! Entrypoint binary for the `omnist` CLI.
+
 use clap::Parser;
 use omnist_cli::{Cli, run};
 

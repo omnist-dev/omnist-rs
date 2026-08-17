@@ -15,11 +15,11 @@
 //!
 //! ## Layout (issue #53)
 //!
-//! [`scanner`] tokenizes source text, [`parser`] consumes those tokens into
-//! a [`RawNode`], and [`writer`] renders a `RawNode` back to OML-Core
+//! `scanner` tokenizes source text, `parser` consumes those tokens into
+//! a [`RawNode`], and `writer` renders a `RawNode` back to OML-Core
 //! source. This top-level module keeps the module doc overview, the four
 //! `pub fn`s ([`read_oml`], [`write_oml`], [`write_oml_compact`],
-//! [`check_oml`]), and the [`Codec`](crate::formats::Codec) adapter --
+//! [`check_oml`]), and the `Codec` adapter --
 //! nothing about `crate::oml::*` paths changed by the split.
 //!
 //! ## Architecture (per issue #1/#10, "architecture freedom")
@@ -50,7 +50,7 @@
 //! exactly like Python's `write_oml(node)`, which accepts any hand-built
 //! canonical node, not necessarily one that passed through a depth-checked
 //! builder. So the writer calls the shared
-//! [`crate::document::check_write_depth`] guard itself, at every nesting
+//! `crate::document::check_write_depth` guard itself, at every nesting
 //! level, rather than assuming its input already got checked somewhere
 //! upstream -- the exact bug class omnist-ts#37/#70 were: a writer (or a
 //! second writer) that skipped this because *some* builder happened to

@@ -26,8 +26,7 @@
 //! "upgrading" a temporal field here can only ever mean "is this string
 //! shaped like, and a semantically valid, ISO date/time/datetime" -- it
 //! stays a `Str` either way. That check is exactly
-//! [`crate::schema::is_iso_date`]/[`is_iso_time`][crate::schema::is_iso_time]/
-//! [`is_iso_datetime`][crate::schema::is_iso_datetime], reused here rather
+//! `crate::schema::is_iso_date`/`is_iso_time`/`is_iso_datetime`, reused here rather
 //! than reimplemented -- the exact "validate and materialize must share
 //! one strict parser" pitfall the porting playbook calls out, and the same
 //! functions [`crate::schema::matches_kind`] already uses.

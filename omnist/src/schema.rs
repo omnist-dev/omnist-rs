@@ -27,7 +27,7 @@
 //!
 //! ## Temporal shape-check
 //!
-//! [`is_iso_date`], [`is_iso_time`], and [`is_iso_datetime`] are the single
+//! `is_iso_date`, `is_iso_time`, and `is_iso_datetime` are the single
 //! source of truth for "is this string shaped like (and a semantically
 //! valid) date/time/datetime," `pub(crate)` so a future `materialize`/
 //! `infer` module can reuse the exact same check instead of writing a
@@ -247,15 +247,22 @@ fn canonicalize_time_captures(caps: &regex::Captures<'_>) -> String {
 // Scalar
 // ---------------------------------------------------------------------------
 
-/// One of the seven predefined value kinds a [`Scalar`] can hold.
+/// One of the seven predefined value kinds a [`Scalar`] can hold (spec §2.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ScalarKind {
+    /// The `string` scalar kind (UTF-8 character string, spec §2.2).
     String,
+    /// The `integer` scalar kind (arbitrary-precision integer, spec §2.2).
     Integer,
+    /// The `number` scalar kind (IEEE 754 double precision float or integer, spec §2.2).
     Number,
+    /// The `boolean` scalar kind (`true` or `false`, spec §2.2).
     Boolean,
+    /// The `date` scalar kind (ISO 8601 calendar date `YYYY-MM-DD`, spec §2.2).
     Date,
+    /// The `time` scalar kind (ISO 8601 clock time `hh:mm:ss`, spec §2.2).
     Time,
+    /// The `datetime` scalar kind (ISO 8601 combined date-time, spec §2.2).
     Datetime,
 }
 
@@ -271,6 +278,7 @@ impl ScalarKind {
         ScalarKind::Datetime,
     ];
 
+    /// Return the canonical OSD name of this scalar kind (`"string"`, `"integer"`, etc., spec §2.2).
     pub fn as_str(&self) -> &'static str {
         match self {
             ScalarKind::String => "string",
@@ -306,6 +314,7 @@ pub struct Scalar {
 }
 
 impl Scalar {
+    /// Construct a new `Scalar` with the given [`ScalarKind`] and nullability flag (spec §2.2, §3).
     pub const fn new(kind: ScalarKind, nullable: bool) -> Self {
         Scalar { kind, nullable }
     }
@@ -316,10 +325,12 @@ impl Scalar {
         Ok(Scalar::new(ScalarKind::parse(name)?, nullable))
     }
 
+    /// The value kind of this scalar.
     pub fn kind(&self) -> ScalarKind {
         self.kind
     }
 
+    /// Whether this scalar accepts `null` values (the `?` suffix in OSD syntax).
     pub fn is_nullable(&self) -> bool {
         self.nullable
     }
@@ -336,12 +347,19 @@ impl std::fmt::Display for Scalar {
     }
 }
 
+/// Non-nullable `string` scalar constant (spec §2.2, §3).
 pub const STRING: Scalar = Scalar::new(ScalarKind::String, false);
+/// Non-nullable `integer` scalar constant (spec §2.2, §3).
 pub const INTEGER: Scalar = Scalar::new(ScalarKind::Integer, false);
+/// Non-nullable `number` scalar constant (spec §2.2, §3).
 pub const NUMBER: Scalar = Scalar::new(ScalarKind::Number, false);
+/// Non-nullable `boolean` scalar constant (spec §2.2, §3).
 pub const BOOLEAN: Scalar = Scalar::new(ScalarKind::Boolean, false);
+/// Non-nullable `date` scalar constant (spec §2.2, §3).
 pub const DATE: Scalar = Scalar::new(ScalarKind::Date, false);
+/// Non-nullable `time` scalar constant (spec §2.2, §3).
 pub const TIME: Scalar = Scalar::new(ScalarKind::Time, false);
+/// Non-nullable `datetime` scalar constant (spec §2.2, §3).
 pub const DATETIME: Scalar = Scalar::new(ScalarKind::Datetime, false);
 
 /// A copy of `scalar` that also accepts `null` (the `?` form).
@@ -356,10 +374,12 @@ pub fn nullable(scalar: Scalar) -> Scalar {
 /// A reference to a named record in a [`Schema`]'s environment.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Ref {
+    /// The name of the target record in the schema environment.
     pub name: String,
 }
 
 impl Ref {
+    /// Construct a new `Ref` pointing to a named record.
     pub fn new(name: impl Into<String>) -> Self {
         Ref { name: name.into() }
     }
@@ -379,8 +399,11 @@ impl std::fmt::Display for Ref {
 /// being folded into either.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum FieldType {
+    /// A scalar type slot.
     Scalar(Scalar),
+    /// A reference to a named record in the schema environment.
     Ref(Ref),
+    /// An `any` type slot accepting any legal document value without validation.
     Any,
 }
 
@@ -404,13 +427,18 @@ impl From<Ref> for FieldType {
 /// occurring `[min, max]` times (`max = None` is unbounded).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Field {
+    /// The label of the field.
     pub label: String,
+    /// The field's type.
     pub ty: FieldType,
+    /// Minimum occurrence count required.
     pub min: usize,
+    /// Maximum occurrence count allowed (`None` indicates unbounded cardinality).
     pub max: Option<usize>,
 }
 
 impl Field {
+    /// Construct a new `Field` with label, type, and cardinality bounds `[min, max]` (spec §3, §3.3).
     pub fn new(
         label: impl Into<String>,
         ty: impl Into<FieldType>,
@@ -441,6 +469,7 @@ impl Field {
         Field::new(label, ty, 1, Some(1))
     }
 
+    /// Human-readable description of this field's cardinality bounds.
     pub fn cardinality_str(&self) -> String {
         match (self.min, self.max) {
             (1, Some(1)) => "exactly 1".to_string(),
@@ -502,10 +531,12 @@ impl Record {
         Ok(Record { fields, by_label })
     }
 
+    /// The fields of this record in declaration order.
     pub fn fields(&self) -> &[Field] {
         &self.fields
     }
 
+    /// Look up a field by its label.
     pub fn field(&self, label: &str) -> Option<&Field> {
         self.by_label.get(label).map(|&i| &self.fields[i])
     }
@@ -519,14 +550,20 @@ impl Record {
 /// reference's `Error.code` values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorCode {
+    /// A field was found in the document that is not defined on the record.
     UnexpectedField,
+    /// The number of field occurrences fell outside `[min, max]`.
     Cardinality,
+    /// A value did not match the expected type.
     TypeMismatch,
+    /// A `null` value was encountered for a non-nullable field.
     NullNotAllowed,
+    /// A record was encountered where a scalar was expected, or vice-versa.
     ShapeMismatch,
 }
 
 impl ErrorCode {
+    /// Stable error code string matching `omnist-spec` §5.
     pub fn as_str(&self) -> &'static str {
         match self {
             ErrorCode::UnexpectedField => "unexpected-field",
@@ -541,8 +578,11 @@ impl ErrorCode {
 /// One validation failure: where, what, and a stable code.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidationError {
+    /// The path where the validation error occurred.
     pub path: String,
+    /// Human-readable error description.
     pub message: String,
+    /// Stable machine-readable error code.
     pub code: ErrorCode,
 }
 
@@ -554,14 +594,17 @@ pub struct ValidationResult {
 }
 
 impl ValidationResult {
+    /// Create an empty validation result.
     pub fn new() -> Self {
         ValidationResult::default()
     }
 
+    /// Returns `true` if there are no validation errors.
     pub fn ok(&self) -> bool {
         self.errors.is_empty()
     }
 
+    /// Slice of all validation errors collected during validation.
     pub fn errors(&self) -> &[ValidationError] {
         &self.errors
     }
@@ -615,7 +658,7 @@ impl std::fmt::Display for ValidationResult {
 /// corpus, `omnist/tests/parity.rs`, before merge): `Date`/`Time`/
 /// `Datetime` match **either** the real `document::Scalar` variant **or**
 /// a plain `Str` whose text independently shape-validates
-/// ([`is_iso_date`]/[`is_iso_time`]/[`is_iso_datetime`]) -- Python's own
+/// (`is_iso_date`/`is_iso_time`/`is_iso_datetime`) -- Python's own
 /// `matches_kind` does exactly this hybrid check (a real `datetime.date`
 /// object, or a string `_is_iso`-shaped for one), so a JSON- or
 /// XML-sourced document with a date-shaped string field genuinely
@@ -669,9 +712,13 @@ pub(crate) fn value_kind_name(v: &DocScalar) -> &'static str {
 // ---------------------------------------------------------------------------
 
 /// A resolved field type: a record (via a `Ref`), a bare `Scalar`, or `Any`.
+/// A resolved field type: a record (via a `Ref`), a bare `Scalar`, or `Any`.
 pub enum Resolved<'a> {
+    /// A resolved record in the schema environment.
     Record(&'a Record),
+    /// A resolved scalar type.
     Scalar(Scalar),
+    /// A resolved `any` type.
     Any,
 }
 
@@ -717,10 +764,12 @@ impl Schema {
         Ok(())
     }
 
+    /// Reference to the root record of the schema.
     pub fn root(&self) -> &Ref {
         &self.root
     }
 
+    /// Map of named records comprising the schema environment.
     pub fn env(&self) -> &IndexMap<String, Record> {
         &self.env
     }
@@ -779,6 +828,7 @@ impl Schema {
         res
     }
 
+    /// Returns `true` iff `cursor` conforms to this schema with 0 errors (spec §5).
     pub fn accepts(&self, cursor: &document::Cursor<'_>) -> bool {
         self.validate(cursor).ok()
     }

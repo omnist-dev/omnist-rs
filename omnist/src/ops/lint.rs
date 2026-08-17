@@ -39,9 +39,13 @@ use super::prune::satisfiable_set;
 /// `message` is a human-readable, actionable description.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LintFinding {
+    /// Stable machine-readable diagnostic code.
     pub code: &'static str,
+    /// Severity level (`"warning"` or `"info"`).
     pub severity: &'static str,
+    /// Schema location (e.g. record or field name) of the finding.
     pub location: String,
+    /// Human-readable explanation of the finding.
     pub message: String,
 }
 

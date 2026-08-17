@@ -5,7 +5,7 @@
 //!
 //! [`read_json`] parses JSON text into a [`crate::document::Value`], then
 //! builds a [`Doc`] via [`Doc::of`] -- which calls
-//! [`crate::document::check_write_depth`] internally (see `document.rs`).
+//! `crate::document::check_write_depth` internally (see `document.rs`).
 //! [`write_json`]/[`check_json`] walk an already-built `Doc` (via
 //! `Doc::to_grouped`/`Doc::root`), whose every node was depth-checked at
 //! construction time -- there is nothing left to re-guard on the way out,
@@ -106,7 +106,7 @@ pub fn write_json(
 
 /// Report what writing JSON would adjust, without producing output.
 ///
-/// Walks every leaf via the shared [`crate::formats::visit_grouped`] walker
+/// Walks every leaf via the shared `crate::formats::visit_grouped` walker
 /// (issue #51) rather than a bespoke `collect_leaves` pass; the path
 /// `String` that ends up in a [`crate::report::Adjustment`] is only built
 /// for the (rare) NaN/Infinity leaf -- not for every leaf up front (issue

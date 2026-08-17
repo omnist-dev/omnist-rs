@@ -5,12 +5,20 @@ on:
     paths:
       - "book.toml"
       - "src/**"
+      - "omnist/**"
+      - "omnist-cli/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
       - ".github/workflows/book.yml"
   push:
     branches: [main]
     paths:
       - "book.toml"
       - "src/**"
+      - "omnist/**"
+      - "omnist-cli/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
       - ".github/workflows/book.yml"
 
 permissions:
@@ -27,12 +35,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
       - name: install mdbook
         uses: peaceiris/actions-mdbook@v2
         with:
           mdbook-version: "latest"
       - name: mdbook build
         run: mdbook build
+      - name: generate rustdoc
+        run: |
+          cargo doc --no-deps --workspace
+          mkdir -p book/api
+          cp -r target/doc/* book/api/
       - name: add custom domain CNAME
         run: echo "rs.omnist.dev" > book/CNAME
       - name: upload pages artifact

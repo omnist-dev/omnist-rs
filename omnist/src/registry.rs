@@ -12,8 +12,7 @@
 //! `omnist-cli` `Fmt` enum's approach, or a `match` over the five builtins)
 //! can't express "register a new format at runtime under an arbitrary
 //! name," so this module reaches for the same dynamic-dispatch idiom Rust
-//! uses in place of Python's first-class functions: `Arc<dyn Fn(...) + Send
-//! + Sync>` trait objects, keyed by name in an `IndexMap` behind an
+//! uses in place of Python's first-class functions: `Arc<dyn Fn(...) + Send + Sync>` trait objects, keyed by name in an `IndexMap` behind an
 //! `RwLock` inside a `OnceLock` (this crate's only piece of global mutable
 //! state). `Arc` (not `Box`) so [`get_format`] can hand back an owned,
 //! independently usable [`Format`] without holding the registry lock across
@@ -77,9 +76,13 @@ pub type CheckFn = dyn Fn(&Doc) -> WriteReport + Send + Sync;
 /// `test_plugin_without_check_raises_on_check_format`.
 #[derive(Clone)]
 pub struct Format {
+    /// Registered format name (e.g. `"json"`).
     pub name: String,
+    /// Text to `Doc` reader callable.
     pub read: Arc<ReadFn>,
+    /// `Doc` to text writer callable.
     pub write: Arc<WriteFn>,
+    /// Optional `Doc` write simulation callable.
     pub check: Option<Arc<CheckFn>>,
 }
 
@@ -148,7 +151,7 @@ pub fn register_format(fmt: Format) {
 /// mirrors Python's `get_format`'s `f"unknown format {name!r}; registered:
 /// {known}"` message. Unlike Python, there is no `"(none)"` fallback for an
 /// empty registry: [`register_format`] only ever adds entries and the five
-/// builtins always register on first access (see [`builtins`]), so the
+/// builtins always register on first access (see `builtins`), so the
 /// registry can never actually be empty here -- an untestable dead branch
 /// for that case was deliberately not carried over (playbook's "unreachable
 /// dead code" gap classification), rather than kept under an unreachable

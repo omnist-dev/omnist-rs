@@ -65,7 +65,9 @@ use crate::schema::{Field, FieldType, Record, Ref, Scalar, ScalarKind, Schema};
 /// `AnyFallback` dataclass.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AnyFallback {
+    /// The path location of the field opened as `any`.
     pub location: String,
+    /// Description of why the field fell back to `any`.
     pub reason: String,
 }
 
