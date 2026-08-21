@@ -717,7 +717,6 @@ pub(crate) fn value_kind_name(v: &DocScalar) -> &'static str {
 // ---------------------------------------------------------------------------
 
 /// A resolved field type: a record (via a `Ref`), a bare `Scalar`, or `Any`.
-/// A resolved field type: a record (via a `Ref`), a bare `Scalar`, or `Any`.
 pub enum Resolved<'a> {
     /// A resolved record in the schema environment.
     Record(&'a Record),

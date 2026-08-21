@@ -91,13 +91,12 @@
 //! implementation for an oversized hex/octal/binary literal to reach
 //! `Scalar::Int` uncapped the way Python's arbitrary-precision `int` does.
 //! This is a **disclosed divergence from Python**, not parity: kept
-//! deliberately rather than special-cased away, because (a) `Scalar::Int`
-//! is `i64`-backed regardless of the literal's original radix, so an
-//! "uncapped hex" path would still have to fail *somewhere* for anything
+//! deliberately rather than special-cased away, because (a) TOML 1.0 itself
+//! specifies 64-bit signed integers and `toml_edit` enforces 64-bit bounds
+//! at parse time, so an "uncapped hex" path would still fail for anything
 //! over `i64::MAX`, and (b) capping the digit run uniformly preserves the
 //! same superlinear-conversion DoS protection `json.rs`/`yaml.rs` apply,
-//! without carving out a radix-specific exemption this port has no
-//! representational way to honor past 64 bits anyway.
+//! without carving out a radix-specific exemption.
 //!
 //! Where this module's implementation had to diverge from `json.rs`'s
 //! straight-line reuse: **`toml_edit` itself enforces a strict 64-bit

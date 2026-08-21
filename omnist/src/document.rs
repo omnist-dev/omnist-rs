@@ -20,15 +20,13 @@
 //!   possible, so the whole bug class is closed by the type system rather
 //!   than checked at runtime (see the workflow playbook's "what NOT to
 //!   carry over unexamined").
-//! - **No integer-digit guard.** Python's `_check_int_digits` defends
+//! - **Integer-digit security cap.** Python's `_check_int_digits` defends
 //!   against `str()`-converting an arbitrary-precision `int` with
-//!   thousands of digits (a superlinear operation). This port's `Scalar`
-//!   uses `i64`, which tops out at 19 digits — nowhere near the 4300-digit
-//!   cap — so the guard would be permanently-dead code with no reachable
-//!   branch to test (the TypeScript port kept a dormant version of this
-//!   check under an explicit coverage-ignore for parity; this port omits
-//!   it entirely rather than ship untestable dead code for a guard that
-//!   can't fire for `i64`).
+//!   thousands of digits (a superlinear operation). Since issue #104,
+//!   `Scalar::Int` is backed by arbitrary-precision `num_bigint::BigInt`,
+//!   and format decoders (JSON, YAML, TOML) enforce the security cap
+//!   (`crate::limits::MAX_INT_DIGITS`, 4300 digits) during lexing/parsing
+//!   before BigInt construction.
 //!
 //! Observable behavior for everything else (construction, depth guard,
 //! edge ordering, mutation semantics) matches the Python spec.

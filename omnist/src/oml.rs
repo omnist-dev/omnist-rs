@@ -29,7 +29,7 @@
 //! construction until actually needed -- a Python-performance-specific
 //! design (see the module's PR #168 for the profile that motivated it), not
 //! a behavioral requirement. This port uses a straightforward hand-written
-//! recursive-descent scanner/parser over `Vec<char>` instead: idiomatic
+//! recursive-descent scanner/parser over byte-indexed `&str` instead: idiomatic
 //! Rust, and there's no equivalent hot-path reason to defer decoding here.
 //! Observable behavior (parse results, round-trips, error content) matches
 //! the Python reference; exact error wording does not need to.
