@@ -418,3 +418,40 @@ fn any_field_passes_scalar_and_object_nodes_through_untouched() {
     let out2 = materialize(&object_node, Some(&schema)).unwrap();
     assert_eq!(out2, object_node);
 }
+
+
+#[test]
+fn test_bigint_to_number_exact_precision() {
+    let fields = vec![Field::required("x", NUMBER).unwrap()];
+    let root = Record::new(fields).unwrap();
+    let mut env = IndexMap::new();
+    env.insert("Root".to_string(), root);
+    let schema = Schema::new(Ref::new("Root"), env).unwrap();
+
+    let max_exact = 1_i64 << 53; // 9007199254740992 (2^53)
+    let inexact = max_exact + 1; // 9007199254740993 (2^53 + 1)
+
+    // 2^53: exactly representable in f64
+    let n1 = edges(vec![("x", leaf(DocScalar::Int(num_bigint::BigInt::from(max_exact))))]);
+    assert!(materialize(&n1, Some(&schema)).is_ok());
+
+    // -(2^53): exactly representable in f64
+    let n1_neg = edges(vec![("x", leaf(DocScalar::Int(num_bigint::BigInt::from(-max_exact))))]);
+    assert!(materialize(&n1_neg, Some(&schema)).is_ok());
+
+    // 2^53 + 1: NOT exactly representable in f64
+    let n2 = edges(vec![("x", leaf(DocScalar::Int(num_bigint::BigInt::from(inexact))))]);
+    let err = materialize(&n2, Some(&schema)).unwrap_err();
+    assert!(err.errors().iter().any(|e| e.code == ErrorCode::TypeMismatch && e.path == "$.x"));
+
+    // -(2^53 + 1): NOT exactly representable in f64
+    let n2_neg = edges(vec![("x", leaf(DocScalar::Int(num_bigint::BigInt::from(-inexact))))]);
+    let err_neg = materialize(&n2_neg, Some(&schema)).unwrap_err();
+    assert!(err_neg.errors().iter().any(|e| e.code == ErrorCode::TypeMismatch && e.path == "$.x"));
+
+    // Value beyond finite f64 range (e.g. 10^400)
+    let huge: num_bigint::BigInt = "1".repeat(400).parse().unwrap();
+    let n_huge = edges(vec![("x", leaf(DocScalar::Int(huge)))]);
+    let err_huge = materialize(&n_huge, Some(&schema)).unwrap_err();
+    assert!(err_huge.errors().iter().any(|e| e.code == ErrorCode::TypeMismatch && e.path == "$.x"));
+}

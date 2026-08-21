@@ -218,14 +218,20 @@ fn try_upgrade(value: &DocScalar, kind: ScalarKind) -> Option<DocScalar> {
                 None
             }
         }
-        // "number" always ends up a Float, even if it arrived as an Int --
-        // matches the Python reference's unconditional `float(value)`.
-        // `BigInt::to_f64` saturates to +/-infinity for a magnitude
-        // beyond f64's finite range rather than failing -- matches this
-        // codebase's existing Float model, which already renders
-        // `inf`/`-inf` as first-class values (see `formats::float_fmt`).
+        // Issue #115: upgrading BigInt to number (f64) requires value-exact
+        // conversion -- reject if the value is non-finite or loses precision
+        // when round-tripped back to BigInt.
         (ScalarKind::Number, DocScalar::Int(i)) => {
-            Some(DocScalar::Float(i.to_f64().unwrap_or(f64::INFINITY)))
+            if let Some(f) = i.to_f64() {
+                if f.is_finite() {
+                    if let Some(round_tripped) = num_bigint::BigInt::from_f64(f) {
+                        if &round_tripped == i {
+                            return Some(DocScalar::Float(f));
+                        }
+                    }
+                }
+            }
+            None
         }
         (ScalarKind::Number, DocScalar::Float(_)) => Some(value.clone()),
         // Issue #105: upgrading a plain string to Date/Time/Datetime now
