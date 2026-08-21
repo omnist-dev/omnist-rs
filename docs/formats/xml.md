@@ -67,9 +67,9 @@ reports it: XML has no native typed literals, so it reads back as a
 string, not its original type (`check_xml`'s `value.stringified`
 adjustment).
 
-## Schema-guided pretyping (spec ?2.2 / issue #114)
+## Schema-guided pretyping (spec §2.2 / issue #114)
 
-Because XML text is untyped and `materialize` strictly rejects coercing plain strings to `boolean`/`integer`/`number`, [`read_xml_with_schema`] performs schema-guided pretyping on the raw XML tree before materialization (spec ?2.2 / issue #114).
+Because XML text is untyped and `materialize` strictly rejects coercing plain strings to `boolean`/`integer`/`number`, [`read_xml_with_schema`] performs schema-guided pretyping on the raw XML tree before materialization (spec §2.2 / issue #114).
 
 ```rust
 use omnist::formats::xml::read_xml_with_schema;
