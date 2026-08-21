@@ -109,9 +109,13 @@ pub fn extract(s: &Schema, keep: &[&str]) -> Result<Schema, SchemaError> {
         let (label, record_name) = first_offender.expect(
             "root invalidated implies step 1 recorded an offender before propagation began",
         );
-        return Err(SchemaError::new(format!(
-            "no valid subschema: removing label {label:?} deletes a mandatory field of record {record_name:?}"
-        )));
+        return Err(SchemaError::new(
+            format!("{record_name}.{label}"),
+            "algebra.extract-invalidates-root",
+            format!(
+                "no valid subschema: removing label {label:?} deletes a mandatory field of record {record_name:?}"
+            ),
+        ));
     }
 
     // Step 5: drop invalidated records and any fields (mandatory or not)

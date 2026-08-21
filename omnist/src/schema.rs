@@ -299,9 +299,11 @@ impl ScalarKind {
             .find(|k| k.as_str() == name)
             .ok_or_else(|| {
                 let names: Vec<&str> = ScalarKind::ALL.iter().map(|k| k.as_str()).collect();
-                SchemaError::new(format!(
-                    "unknown scalar {name:?}; expected one of {names:?}"
-                ))
+                SchemaError::new(
+                    name,
+                    "schema.unknown-type",
+                    format!("unknown scalar {name:?}; expected one of {names:?}"),
+                )
             })
     }
 }
@@ -449,9 +451,11 @@ impl Field {
         if let Some(max) = max
             && max < min
         {
-            return Err(SchemaError::new(format!(
-                "field {label:?} has an invalid cardinality [{min},{max}]"
-            )));
+            return Err(SchemaError::new(
+                label.clone(),
+                "schema.invalid-cardinality",
+                format!("field {label:?} has an invalid cardinality [{min},{max}]"),
+            ));
         }
         Ok(Field {
             label,
@@ -522,10 +526,11 @@ impl Record {
         let mut by_label = IndexMap::with_capacity(fields.len());
         for (i, f) in fields.iter().enumerate() {
             if by_label.insert(f.label.clone(), i).is_some() {
-                return Err(SchemaError::new(format!(
-                    "duplicate field label {:?} in a record",
-                    f.label
-                )));
+                return Err(SchemaError::new(
+                    &f.label,
+                    "schema.duplicate-field",
+                    format!("duplicate field label {:?} in a record", f.label),
+                ));
             }
         }
         Ok(Record { fields, by_label })
@@ -748,17 +753,22 @@ impl Schema {
     fn check_reserved_names(env: &IndexMap<String, Record>) -> Result<(), SchemaError> {
         for name in env.keys() {
             if name == "any" {
-                return Err(SchemaError::new(format!(
-                    "'any' is a reserved type name and cannot be used as a record name \
-                     (record {name:?})"
-                )));
+                return Err(SchemaError::new(
+                    "any",
+                    "schema.reserved-name",
+                    format!(
+                        "'any' is a reserved type name and cannot be used as a record name                          (record {name:?})"
+                    ),
+                ));
             }
             if ScalarKind::ALL.iter().any(|k| k.as_str() == name) {
-                return Err(SchemaError::new(format!(
-                    "{name:?} is a reserved scalar name; a record cannot be defined with \
-                     this name, or it could never be referenced (a bare name in a type \
-                     position always means the builtin scalar)"
-                )));
+                return Err(SchemaError::new(
+                    name,
+                    "schema.reserved-name",
+                    format!(
+                        "{name:?} is a reserved scalar name; a record cannot be defined with                          this name, or it could never be referenced (a bare name in a type                          position always means the builtin scalar)"
+                    ),
+                ));
             }
         }
         Ok(())
@@ -775,17 +785,23 @@ impl Schema {
     }
 
     fn check_refs(&self) -> Result<(), SchemaError> {
-        let walk = |r: &Ref| -> Result<(), SchemaError> {
-            if !self.env.contains_key(&r.name) {
-                return Err(SchemaError::new(format!("unknown type {:?}", r.name)));
-            }
-            Ok(())
-        };
-        walk(&self.root)?;
-        for rec in self.env.values() {
+        if !self.env.contains_key(&self.root.name) {
+            return Err(SchemaError::new(
+                "$",
+                "schema.unknown-type",
+                format!("unknown type {:?}", self.root.name),
+            ));
+        }
+        for (rec_name, rec) in &self.env {
             for f in rec.fields() {
-                if let FieldType::Ref(r) = &f.ty {
-                    walk(r)?;
+                if let FieldType::Ref(r) = &f.ty
+                    && !self.env.contains_key(&r.name)
+                {
+                    return Err(SchemaError::new(
+                        format!("{rec_name}.{}", f.label),
+                        "schema.unknown-type",
+                        format!("unknown type {:?}", r.name),
+                    ));
                 }
             }
         }

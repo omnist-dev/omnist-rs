@@ -31,7 +31,7 @@ use regex::Regex;
 use std::sync::LazyLock;
 
 use crate::error::SchemaError;
-use crate::schema::{Field, Record, Ref, Scalar, ScalarKind, Schema};
+use crate::schema::{Field, FieldType, Record, Ref, Scalar, ScalarKind, Schema};
 
 // ---------------------------------------------------------------------------
 // Tokenizer
@@ -80,28 +80,21 @@ fn tokenize(text: &str) -> Result<Vec<Tok>, SchemaError> {
     let mut i = 0usize;
     while i < text.len() {
         let Some(m) = TOKEN_RE.captures(&text[i..]) else {
-            // `i` is always either `0` or a previous iteration's
-            // `whole.len()` -- a match length reported by the `regex`
-            // crate against `&str` input -- so it always lands on a char
-            // boundary. `text[i..]` can't panic here, and `.chars().next()`
-            // always yields a char (the loop guard `i < text.len()` rules
-            // out an empty remainder).
             let ch = text[i..].chars().next().unwrap();
-            return Err(SchemaError::new(format!(
-                "unexpected character {ch:?} at {i}"
-            )));
+            return Err(SchemaError::new(
+                "$",
+                "schema.invalid-syntax",
+                format!("unexpected character {ch:?} at {i}"),
+            ));
         };
-        // The regex has no anchor, so a match not starting at 0 means the
-        // characters at `i` didn't match any alternative.
         let whole = m.get(0).unwrap();
         if whole.start() != 0 {
-            // Same char-boundary invariant as above: `i` hasn't changed
-            // since the last successful match (or loop start), so it's
-            // still a valid boundary and the slice/next() can't fail.
             let ch = text[i..].chars().next().unwrap();
-            return Err(SchemaError::new(format!(
-                "unexpected character {ch:?} at {i}"
-            )));
+            return Err(SchemaError::new(
+                "$",
+                "schema.invalid-syntax",
+                format!("unexpected character {ch:?} at {i}"),
+            ));
         }
         let start = i;
         i += whole.len();
@@ -140,8 +133,8 @@ fn unquote(s: &str) -> String {
     let mut chars = inner.chars();
     while let Some(c) = chars.next() {
         if c == '\\' {
-            if let Some(next) = chars.next() {
-                out.push(next);
+            if let Some(escaped) = chars.next() {
+                out.push(escaped);
             }
         } else {
             out.push(c);
@@ -153,24 +146,6 @@ fn unquote(s: &str) -> String {
 // ---------------------------------------------------------------------------
 // Parser
 // ---------------------------------------------------------------------------
-
-/// A field's type as produced by the parser, before being wired into
-/// [`Field::new`].
-enum ParsedType {
-    Scalar(Scalar),
-    Ref(Ref),
-    Any,
-}
-
-impl From<ParsedType> for crate::schema::FieldType {
-    fn from(t: ParsedType) -> Self {
-        match t {
-            ParsedType::Scalar(s) => s.into(),
-            ParsedType::Ref(r) => r.into(),
-            ParsedType::Any => crate::schema::FieldType::Any,
-        }
-    }
-}
 
 struct Parser {
     toks: Vec<Tok>,
@@ -195,10 +170,11 @@ impl Parser {
     fn expect_punct(&mut self, text: &str) -> Result<Tok, SchemaError> {
         let t = self.next_tok();
         if t.kind != TokKind::Punct || t.text != text {
-            return Err(SchemaError::new(format!(
-                "expected {text:?} at {}, got {:?}",
-                t.pos, t.text
-            )));
+            return Err(SchemaError::new(
+                "$",
+                "schema.invalid-syntax",
+                format!("expected {text:?} at {}, got {:?}", t.pos, t.text),
+            ));
         }
         Ok(t)
     }
@@ -206,10 +182,11 @@ impl Parser {
     fn expect_name(&mut self) -> Result<Tok, SchemaError> {
         let t = self.next_tok();
         if t.kind != TokKind::Name {
-            return Err(SchemaError::new(format!(
-                "expected a name at {}, got {:?}",
-                t.pos, t.text
-            )));
+            return Err(SchemaError::new(
+                "$",
+                "schema.invalid-syntax",
+                format!("expected a name at {}, got {:?}", t.pos, t.text),
+            ));
         }
         Ok(t)
     }
@@ -226,14 +203,19 @@ impl Parser {
                 self.next_tok();
                 root = Some(self.expect_name()?.text);
             } else {
-                return Err(SchemaError::new(format!(
-                    "expected 'record' or 'root' at {}, got {:?}",
-                    t.pos, t.text
-                )));
+                return Err(SchemaError::new(
+                    "$",
+                    "schema.invalid-syntax",
+                    format!("expected 'record' or 'root' at {}, got {:?}", t.pos, t.text),
+                ));
             }
         }
         let Some(root) = root else {
-            return Err(SchemaError::new("a schema must declare a root"));
+            return Err(SchemaError::new(
+                "$",
+                "schema.no-root",
+                "a schema must declare a root",
+            ));
         };
         Schema::new(Ref::new(root), env)
     }
@@ -246,37 +228,54 @@ impl Parser {
         name_pos: usize,
     ) -> Result<(), SchemaError> {
         if name == "any" {
-            return Err(SchemaError::new(format!(
-                "'any' is a reserved type name and cannot be used as a record name at {name_pos}"
-            )));
+            return Err(SchemaError::new(
+                "any",
+                "schema.reserved-name",
+                format!(
+                    "'any' is a reserved type name and cannot be used as a record name at {name_pos}"
+                ),
+            ));
         }
         if ScalarKind::ALL.iter().any(|k| k.as_str() == name) {
-            return Err(SchemaError::new(format!(
-                "{name:?} is a reserved scalar name; a record cannot be defined with \
-                 this name, or it could never be referenced (a bare name in a type \
-                 position always means the builtin scalar)"
-            )));
+            return Err(SchemaError::new(
+                &name,
+                "schema.reserved-name",
+                format!(
+                    "{name:?} is a reserved scalar name; a record cannot be defined with                      this name, or it could never be referenced (a bare name in a type                      position always means the builtin scalar)"
+                ),
+            ));
         }
         if env.contains_key(&name) {
-            return Err(SchemaError::new(format!("duplicate definition {name:?}")));
+            return Err(SchemaError::new(
+                &name,
+                "schema.duplicate-record",
+                format!("duplicate definition {name:?}"),
+            ));
         }
         env.insert(name, rec);
         Ok(())
     }
 
-    /// Parses a `record NAME { ... }` block. The caller (`parse_schema`'s
-    /// main loop) only invokes this after peeking a `Name` token whose text
-    /// is exactly `"record"`, so consuming that token here can never fail --
-    /// there is no reachable error path for a mismatched keyword, unlike
-    /// `expect_name`/`expect_punct` which validate tokens the caller hasn't
-    /// already checked.
+    /// Parses a `record NAME { ... }` block.
     fn parse_record(&mut self) -> Result<(String, Record, usize), SchemaError> {
-        self.next_tok(); // guaranteed to be the `record` keyword, see above.
+        self.next_tok(); // guaranteed to be the `record` keyword
         let name_tok = self.expect_name()?;
         self.expect_punct("{")?;
         let mut fields = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
         while self.peek().text != "}" {
-            fields.push(self.parse_field()?);
+            let f = self.parse_field(&name_tok.text)?;
+            if !seen.insert(f.label.clone()) {
+                return Err(SchemaError::new(
+                    &name_tok.text,
+                    "schema.duplicate-field",
+                    format!(
+                        "duplicate field label {:?} in record {:?}",
+                        f.label, name_tok.text
+                    ),
+                ));
+            }
+            fields.push(f);
             if self.peek().text == "," {
                 self.next_tok();
             } else {
@@ -288,86 +287,144 @@ impl Parser {
         Ok((name_tok.text.clone(), rec, name_tok.pos))
     }
 
-    fn parse_field(&mut self) -> Result<Field, SchemaError> {
+    fn parse_field(&mut self, rec_name: &str) -> Result<Field, SchemaError> {
         let label_tok = self.next_tok();
         if label_tok.kind != TokKind::String {
-            return Err(SchemaError::new(format!(
-                "expected a quoted field name at {}, got {:?}",
-                label_tok.pos, label_tok.text
-            )));
+            return Err(SchemaError::new(
+                rec_name,
+                "schema.unquoted-label",
+                format!(
+                    "expected a quoted field name at {}, got {:?}",
+                    label_tok.pos, label_tok.text
+                ),
+            ));
         }
         let label = unquote(&label_tok.text);
         let (min, max) = if self.peek().text == "[" {
-            self.parse_cardinality()?
+            self.parse_cardinality(rec_name, &label)?
         } else {
             (1, Some(1))
         };
         self.expect_punct(":")?;
-        let ty = self.parse_type()?;
+        let ty = self.parse_type(rec_name, &label)?;
         Field::new(label, ty, min, max)
     }
 
-    fn parse_cardinality(&mut self) -> Result<(usize, Option<usize>), SchemaError> {
+    fn parse_cardinality(
+        &mut self,
+        rec_name: &str,
+        label: &str,
+    ) -> Result<(usize, Option<usize>), SchemaError> {
         self.expect_punct("[")?;
-        let mut first: Option<usize> = None;
-        if self.peek().kind == TokKind::Number {
-            first = Some(self.parse_cardinality_int()?);
+        let path = format!("{rec_name}.{label}");
+        if self.peek().text == "]" {
+            return Err(SchemaError::new(
+                path,
+                "schema.empty-cardinality",
+                format!("empty cardinality at {}", self.peek().pos),
+            ));
         }
+        let first = if self.peek().text == "," {
+            None
+        } else {
+            Some(self.parse_cardinality_int(rec_name, label)?)
+        };
         let (lo, hi) = if self.peek().text == "," {
             self.next_tok();
-            let mut second: Option<usize> = None;
-            if self.peek().kind == TokKind::Number {
-                second = Some(self.parse_cardinality_int()?);
-            }
+            let second = if self.peek().text == "]" {
+                None
+            } else {
+                Some(self.parse_cardinality_int(rec_name, label)?)
+            };
             (first.unwrap_or(0), second)
         } else {
-            let Some(first) = first else {
-                return Err(SchemaError::new(format!(
-                    "empty cardinality at {}",
-                    self.peek().pos
-                )));
-            };
-            (first, Some(first))
+            let bound = first.unwrap();
+            (bound, Some(bound))
         };
         self.expect_punct("]")?;
+        if let Some(hi) = hi
+            && hi < lo
+        {
+            return Err(SchemaError::new(
+                path,
+                "schema.invalid-cardinality",
+                format!("invalid cardinality range [{lo}, {hi}]"),
+            ));
+        }
         Ok((lo, hi))
     }
 
-    fn parse_cardinality_int(&mut self) -> Result<usize, SchemaError> {
+    fn parse_cardinality_int(&mut self, rec_name: &str, label: &str) -> Result<usize, SchemaError> {
         let t = self.next_tok();
+        let path = format!("{rec_name}.{label}");
         if t.text.contains('.') {
-            return Err(SchemaError::new(format!(
-                "cardinality must be a whole number, got {:?} at {}",
-                t.text, t.pos
-            )));
+            return Err(SchemaError::new(
+                path,
+                "schema.non-integer-cardinality",
+                format!(
+                    "cardinality must be a whole number, got {:?} at {}",
+                    t.text, t.pos
+                ),
+            ));
+        }
+        if t.text.starts_with('-') {
+            return Err(SchemaError::new(
+                path,
+                "schema.invalid-cardinality",
+                format!(
+                    "cardinality must be a non-negative whole number, got {:?} at {}",
+                    t.text, t.pos
+                ),
+            ));
         }
         t.text.parse::<usize>().map_err(|_| {
-            SchemaError::new(format!(
-                "cardinality must be a non-negative whole number, got {:?} at {}",
-                t.text, t.pos
-            ))
+            SchemaError::new(
+                path,
+                "schema.non-integer-cardinality",
+                format!(
+                    "cardinality must be a non-negative whole number, got {:?} at {}",
+                    t.text, t.pos
+                ),
+            )
         })
     }
 
-    fn parse_type(&mut self) -> Result<ParsedType, SchemaError> {
+    fn parse_type(&mut self, rec_name: &str, label: &str) -> Result<FieldType, SchemaError> {
         let t = self.next_tok();
+        let path = format!("{rec_name}.{label}");
         if t.kind != TokKind::Name {
-            return Err(SchemaError::new(format!(
-                "expected a scalar name or a reference at {}, got {:?} (enums and \
-                 literal-valued fields are not supported -- a field's type is \
-                 always one scalar or a reference to a named record)",
-                t.pos, t.text
-            )));
+            if t.kind == TokKind::String {
+                return Err(SchemaError::new(
+                    rec_name,
+                    "schema.quoted-type",
+                    format!(
+                        "expected a scalar name or a reference at {}, got {:?} (enums and                          literal-valued fields are not supported -- a field's type is                          always one scalar or a reference to a named record)",
+                        t.pos, t.text
+                    ),
+                ));
+            }
+            return Err(SchemaError::new(
+                rec_name,
+                "schema.invalid-syntax",
+                format!(
+                    "expected a scalar name or a reference at {}, got {:?} (enums and                      literal-valued fields are not supported -- a field's type is                      always one scalar or a reference to a named record)",
+                    t.pos, t.text
+                ),
+            ));
         }
         if t.text == "any" {
             if self.peek().text == "?" {
                 let q = self.next_tok();
-                return Err(SchemaError::new(format!(
-                    "'any' already includes null; 'any?' is redundant at {}",
-                    q.pos
-                )));
+                return Err(SchemaError::new(
+                    path,
+                    "schema.nullable-any",
+                    format!(
+                        "'any' already includes null; 'any?' is redundant at {}",
+                        q.pos
+                    ),
+                ));
             }
-            return Ok(ParsedType::Any);
+            return Ok(FieldType::Any);
         }
         let mut nullable = false;
         if self.peek().text == "?" {
@@ -375,16 +432,19 @@ impl Parser {
             nullable = true;
         }
         if ScalarKind::ALL.iter().any(|k| k.as_str() == t.text) {
-            return Ok(ParsedType::Scalar(Scalar::named(&t.text, nullable)?));
+            return Ok(FieldType::Scalar(Scalar::named(&t.text, nullable)?));
         }
         if nullable {
-            return Err(SchemaError::new(format!(
-                "'?' cannot apply to the reference {:?}; use cardinality [0,1] for \
-                 an optional field",
-                t.text
-            )));
+            return Err(SchemaError::new(
+                path,
+                "schema.nullable-ref",
+                format!(
+                    "'?' cannot apply to the reference {:?}; use cardinality [0,1] for                      an optional field",
+                    t.text
+                ),
+            ));
         }
-        Ok(ParsedType::Ref(Ref::new(t.text)))
+        Ok(FieldType::Ref(Ref::new(t.text)))
     }
 }
 
@@ -758,6 +818,131 @@ mod tests {
         let err = parse_schema(r#"record any { "a": string } root any"#).unwrap_err();
         assert!(err.to_string().contains("reserved type name"));
         assert!(err.to_string().contains("cannot be used as a record name"));
+    }
+
+    // -- Tests covering every one of the 12 spec schema error codes ----------
+
+    #[test]
+    fn record_name_must_be_a_name_token() {
+        let err = parse_schema(r#"record 123 { "a": string } root X"#).unwrap_err();
+        assert_eq!(err.code, "schema.invalid-syntax");
+    }
+
+    #[test]
+    fn type_position_rejects_punctuation_token() {
+        let err = parse_schema(r#"record X { "a": : } root X"#).unwrap_err();
+        assert_eq!(err.code, "schema.invalid-syntax");
+    }
+    #[test]
+    fn test_code_schema_no_root() {
+        let err = parse_schema(r#"record X { "a": string }"#).unwrap_err();
+        assert_eq!(err.code, "schema.no-root");
+        assert_eq!(err.path, "$");
+    }
+
+    #[test]
+    fn test_code_schema_unknown_type() {
+        let err = parse_schema(r#"record X { "a": Missing } root X"#).unwrap_err();
+        assert_eq!(err.code, "schema.unknown-type");
+        assert_eq!(err.path, "X.a");
+
+        let err_root = parse_schema(r#"record X { "a": string } root Missing"#).unwrap_err();
+        assert_eq!(err_root.code, "schema.unknown-type");
+        assert_eq!(err_root.path, "$");
+    }
+
+    #[test]
+    fn test_code_schema_duplicate_record() {
+        let err = parse_schema(r#"record X { "a": string } record X { "b": string } root X"#)
+            .unwrap_err();
+        assert_eq!(err.code, "schema.duplicate-record");
+        assert_eq!(err.path, "X");
+    }
+
+    #[test]
+    fn test_code_schema_duplicate_field() {
+        let err = parse_schema(r#"record X { "a": string, "a": integer } root X"#).unwrap_err();
+        assert_eq!(err.code, "schema.duplicate-field");
+        assert_eq!(err.path, "X");
+    }
+
+    #[test]
+    fn test_code_schema_reserved_name() {
+        let err_scalar = parse_schema(r#"record string { "a": string } root string"#).unwrap_err();
+        assert_eq!(err_scalar.code, "schema.reserved-name");
+        assert_eq!(err_scalar.path, "string");
+
+        let err_any = parse_schema(r#"record any { "a": string } root any"#).unwrap_err();
+        assert_eq!(err_any.code, "schema.reserved-name");
+        assert_eq!(err_any.path, "any");
+    }
+
+    #[test]
+    fn test_code_schema_invalid_cardinality() {
+        let err_neg = parse_schema(r#"record X { "a" [-1]: string } root X"#).unwrap_err();
+        assert_eq!(err_neg.code, "schema.invalid-cardinality");
+        assert_eq!(err_neg.path, "X.a");
+
+        let err_inverted = parse_schema(r#"record X { "a" [3, 1]: string } root X"#).unwrap_err();
+        assert_eq!(err_inverted.code, "schema.invalid-cardinality");
+        assert_eq!(err_inverted.path, "X.a");
+    }
+
+    #[test]
+    fn cardinality_overflow_is_an_error() {
+        let err = parse_schema(
+            r#"record X { "a" [999999999999999999999999999999999999999]: string } root X"#,
+        )
+        .unwrap_err();
+        assert_eq!(err.code, "schema.non-integer-cardinality");
+        assert_eq!(err.path, "X.a");
+    }
+
+    #[test]
+    fn test_code_schema_non_integer_cardinality() {
+        let err = parse_schema(r#"record X { "a" [1.5]: string } root X"#).unwrap_err();
+        assert_eq!(err.code, "schema.non-integer-cardinality");
+        assert_eq!(err.path, "X.a");
+    }
+
+    #[test]
+    fn test_code_schema_empty_cardinality() {
+        let err = parse_schema(r#"record X { "a" []: string } root X"#).unwrap_err();
+        assert_eq!(err.code, "schema.empty-cardinality");
+        assert_eq!(err.path, "X.a");
+    }
+
+    #[test]
+    fn test_code_schema_unquoted_label() {
+        let err = parse_schema(r#"record X { a: string } root X"#).unwrap_err();
+        assert_eq!(err.code, "schema.unquoted-label");
+        assert_eq!(err.path, "X");
+    }
+
+    #[test]
+    fn test_code_schema_quoted_type() {
+        let err = parse_schema(r#"record X { "a": "string" } root X"#).unwrap_err();
+        assert_eq!(err.code, "schema.quoted-type");
+        assert_eq!(err.path, "X");
+    }
+
+    #[test]
+    fn test_code_schema_nullable_ref() {
+        let err = parse_schema(
+            r#"record Child { "v": string }
+               record Parent { "c": Child? }
+               root Parent"#,
+        )
+        .unwrap_err();
+        assert_eq!(err.code, "schema.nullable-ref");
+        assert_eq!(err.path, "Parent.c");
+    }
+
+    #[test]
+    fn test_code_schema_nullable_any() {
+        let err = parse_schema(r#"record X { "a": any? } root X"#).unwrap_err();
+        assert_eq!(err.code, "schema.nullable-any");
+        assert_eq!(err.path, "X.a");
     }
 
     // -- Comments interleaved with real grammar ------------------------------

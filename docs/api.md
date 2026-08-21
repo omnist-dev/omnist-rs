@@ -731,7 +731,11 @@ pub struct DocumentError {
     pub message: String,
 }
 
-pub struct SchemaError(pub String);
+pub struct SchemaError {
+    pub path: String,
+    pub code: String,
+    pub message: String,
+}
 
 pub struct ParseError {
     pub line: usize,

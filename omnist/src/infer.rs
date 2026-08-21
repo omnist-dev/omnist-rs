@@ -90,11 +90,17 @@ pub fn infer_with_report(
     allow_any: bool,
 ) -> Result<(Schema, Vec<AnyFallback>), SchemaError> {
     if samples.is_empty() {
-        return Err(SchemaError::new("cannot infer a schema from zero samples"));
+        return Err(SchemaError::new(
+            "$",
+            "algebra.infer-no-samples",
+            "cannot infer a schema from zero samples",
+        ));
     }
     for s in samples {
         if s.root().is_leaf() {
             return Err(SchemaError::new(
+                "$",
+                "algebra.infer-scalar-root",
                 "infer expects object (record) samples at the root",
             ));
         }
@@ -213,9 +219,11 @@ fn infer_type(
             });
             return Ok(FieldType::Any);
         }
-        return Err(SchemaError::new(format!(
-            "label {label:?} mixes objects and values; cannot infer one type"
-        )));
+        return Err(SchemaError::new(
+            format!("$.{label}"),
+            "algebra.infer-mixed-shape",
+            format!("label {label:?} mixes objects and values; cannot infer one type"),
+        ));
     }
     // All scalars.
     let mut names: IndexSet<&'static str> = IndexSet::new();
@@ -281,11 +289,14 @@ fn infer_type(
             });
             return Ok(FieldType::Any);
         }
-        return Err(SchemaError::new(format!(
-            "label {label:?} has values of more than one scalar ({}); cannot infer one \
-             scalar type",
-            sorted.join(", ")
-        )));
+        return Err(SchemaError::new(
+            format!("$.{label}"),
+            "algebra.infer-conflicting-scalars",
+            format!(
+                "label {label:?} has values of more than one scalar ({}); cannot infer one scalar type",
+                sorted.join(", ")
+            ),
+        ));
     }
     let kind = ScalarKind::parse(names.iter().next().unwrap())
         .expect("names only ever holds known scalar kind names, inserted above");
