@@ -78,10 +78,9 @@
 //! path-set-comparison shape used everywhere else) instead of skipping --
 //! a narrower gap than TS's, not the favorable "no gap at all" outcome:
 //! `omnist::schema::parse_schema`'s `SchemaError` (used for
-//! `osd-grammar`/`schema-wellformedness` `parse_schema` vectors) carries
-//! only a `String` message, no structured fields at all, so *those*
-//! specific syntax-failure-with-diagnostics vectors still skip, citing
-//! "SchemaError carries no structured path/code".
+//! `osd-grammar`/`schema-wellformedness` `parse_schema` vectors) now carries
+//! structured `path`, `code`, and `message` fields (issue #122), resolving
+//! the former skip branch and verifying diagnostics directly.
 //!
 //! **Formerly-unreachable temporal-write-report skip, now resolved (issue
 //! #89, found during issue #82 Step 4 triage; resolved by issue #105).**
@@ -394,18 +393,19 @@ fn run_parse_schema(v: &Json) -> VResult {
                 fail("expected failure, parse_schema succeeded")
             }
         }
-        Err(_) => {
+        Err(e) => {
             if expect_ok(v) {
                 return fail("expected success, parse_schema failed");
             }
-            // `SchemaError` (osd.rs) carries only a `String` message, no
-            // structured path/code -- see module docs. Any vector
-            // asserting specific diagnostics on a schema-syntax failure
-            // can't be checked past ok/not-ok.
-            if v["expect"]["diagnostics"].as_array().is_some() {
-                skip("SchemaError carries no structured path/code")
-            } else {
+            let expected_paths = expected_diag_paths(v);
+            if expected_paths.is_empty() {
+                return pass();
+            }
+            let actual_paths = vec![e.path.clone()];
+            if paths_match(expected_paths, actual_paths) {
                 pass()
+            } else {
+                fail("diagnostic paths differ")
             }
         }
     }
@@ -861,7 +861,7 @@ mod tests {
     /// calls directly). The exact counts are this step's honest,
     /// freshly-reproduced measurement -- history through (124, 0, 22) at
     /// 146 vectors (issue #99), then (129, 0, 23) at 152 vectors after
-    /// issue #104. Now (130, 0, 22) after issue #105 (`Scalar`/`Value`
+    /// issue #104. (130, 0, 22) after issue #105. Now (146, 0, 6) after issue #122 (`SchemaError` structured path/code)
     /// gained real `Date`/`Time`/`Datetime` variants): the
     /// `formats-json/basic/temporal-leaf-is-stringified-on-write` vector,
     /// previously skipped as structurally unreachable (issue #89, since
@@ -877,7 +877,7 @@ mod tests {
         let (passed, failed, skipped) = run_all(&suite_dir());
         assert_eq!(
             (passed, failed, skipped),
-            (130, 0, 22),
+            (146, 0, 6),
             "vector pass/fail/skip counts changed -- if this is an intentional fix or a new \
              vector, update the pinned baseline; if not, something regressed"
         );
@@ -1275,6 +1275,16 @@ mod tests {
             "operation": "parse",
             "input": {"format": "oml", "text": "nan: 1\n"},
             "expect": {"ok": false, "diagnostics": [{"path": "9:9"}]}
+        });
+        assert_eq!(dispatch(&v).status, Status::Fail);
+    }
+
+    #[test]
+    fn run_parse_schema_diagnostic_path_mismatch_fails() {
+        let v = json!({
+            "operation": "parse_schema",
+            "input": {"text": "record X { a: string } root X"},
+            "expect": {"ok": false, "diagnostics": [{"path": "$.wrong"}]}
         });
         assert_eq!(dispatch(&v).status, Status::Fail);
     }

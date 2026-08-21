@@ -36,16 +36,35 @@ impl DocumentError {
 }
 
 /// A Schema definition is invalid (bad cardinality, duplicate field label,
-/// unknown scalar/ref name) -- raised by [`crate::schema`] at construction
-/// time, mirroring Python's `SchemaError` in `~/dev/omnist/omnist/errors.py`.
+/// unknown scalar/ref name) -- raised by [`crate::schema`], [`crate::osd`],
+/// [`crate::infer`], and [`crate::ops::extract`].
+///
+/// Breaking change in issue #122: `SchemaError` now carries machine-readable
+/// `path` and `code` fields alongside human-readable `message`, matching the
+/// spec's schema well-formedness and algebra error taxonomy (spec ?8.3.3 & ?8.3.6).
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
-#[error("{0}")]
-pub struct SchemaError(pub String);
+#[error("{message}")]
+pub struct SchemaError {
+    /// The path (record/field context or "$") where the schema error occurred.
+    pub path: String,
+    /// Stable machine-readable error code (e.g. "schema.unknown-type", spec ?8.3.3).
+    pub code: String,
+    /// Human-readable error description.
+    pub message: String,
+}
 
 impl SchemaError {
-    /// Construct a new `SchemaError`.
-    pub fn new(message: impl Into<String>) -> Self {
-        Self(message.into())
+    /// Construct a structured `SchemaError` with path, code, and message.
+    pub fn new(
+        path: impl Into<String>,
+        code: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            path: path.into(),
+            code: code.into(),
+            message: message.into(),
+        }
     }
 }
 
@@ -223,14 +242,17 @@ mod tests {
 
     #[test]
     fn schema_error_display_and_eq() {
-        let e = SchemaError::new("unknown type 'Missing'");
+        let e = SchemaError::new("R.a", "schema.unknown-type", "unknown type 'Missing'");
+        assert_eq!(e.path, "R.a");
+        assert_eq!(e.code, "schema.unknown-type");
+        assert_eq!(e.message, "unknown type 'Missing'");
         assert_eq!(e.to_string(), "unknown type 'Missing'");
         assert_eq!(e.clone(), e);
     }
 
     #[test]
     fn omnist_error_wraps_schema_error_transparently() {
-        let schema_err = SchemaError::new("boom");
+        let schema_err = SchemaError::new("$", "schema.syntax", "boom");
         let wrapped: OmnistError = schema_err.clone().into();
         assert_eq!(wrapped.to_string(), schema_err.to_string());
         assert!(matches!(wrapped, OmnistError::Schema(ref inner) if *inner == schema_err));
