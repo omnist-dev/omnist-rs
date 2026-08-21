@@ -224,7 +224,6 @@ fn read_xml_raw(text: &str) -> Result<RawNode, OmnistError> {
     let mut reader = Reader::from_str(&normalized);
     reader.config_mut().trim_text(false);
     let mut buf = Vec::new();
-    let mut node_count: usize = 0;
     let root_node: RawNode = loop {
         buf.clear();
         let ev = reader
@@ -232,13 +231,12 @@ fn read_xml_raw(text: &str) -> Result<RawNode, OmnistError> {
             .map_err(|e| xml_parse_error(&reader, &normalized, &e))?;
         match ev {
             Event::Start(e) => {
-                node_count += 1;
+                let mut node_count = 1;
                 let tag = local_name(e.name());
                 let content = parse_content(&mut reader, &normalized, 1, &mut node_count)?;
                 break RawNode::Edges(vec![(tag, content)]);
             }
             Event::Empty(e) => {
-                node_count += 1;
                 let tag = local_name(e.name());
                 break RawNode::Edges(vec![(tag, RawNode::Leaf(Scalar::Str(String::new())))]);
             }
