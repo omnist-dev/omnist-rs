@@ -1353,3 +1353,21 @@ fn test_oml_depth_limit_boundary_and_consistency() {
     let err = read_oml(&invalid_oml).unwrap_err();
     assert!(err.to_string().contains("maximum depth"));
 }
+
+
+#[test]
+fn test_read_oml_node_count_limit() {
+    use crate::document::MAX_NODES;
+    use crate::oml::read_oml;
+
+    // At the limit: (MAX_NODES - 1) edges + 1 root node = MAX_NODES
+    let at_limit = "a: 0
+".repeat(MAX_NODES - 1);
+    assert!(read_oml(&at_limit).is_ok());
+
+    // One past the limit: MAX_NODES edges + 1 root node = MAX_NODES + 1
+    let past_limit = "a: 0
+".repeat(MAX_NODES);
+    let err = read_oml(&past_limit).unwrap_err();
+    assert!(err.to_string().contains("maximum node count"));
+}
