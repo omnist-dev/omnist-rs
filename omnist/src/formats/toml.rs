@@ -1086,10 +1086,13 @@ mod tests {
     #[test]
     fn integer_at_4300_digits_reads_but_overflows_i64() {
         // Live-confirmed: tomllib itself accepts a 4300-digit literal (no
-        // digit-cap error) but our Scalar::Int is i64 -- so this port's
+        // digit-cap error) but `toml_edit`'s own read-side integer type is
+        // i64-backed (see this module's doc comment) -- so this port's
         // read still fails, just with the "out of range" message, not the
         // "digit cap exceeded" one, matching json.rs's own precedent for
-        // the same representational gap.
+        // the same representational gap. `Scalar::Int` itself is
+        // arbitrary-precision (`BigInt`, issue #104) -- the ceiling here is
+        // `toml_edit`'s, not this crate's own representation.
         let text = format!("x = {}\n", "9".repeat(4300));
         let err = read_toml(&text).unwrap_err();
         assert!(matches!(err, OmnistError::Parse(ref e) if e.message.contains("out of range")));
@@ -1127,11 +1130,13 @@ mod tests {
     fn integer_literal_under_digit_cap_but_over_i64_range_is_out_of_range_error() {
         // Live-confirmed: tomllib.loads("x = 9223372036854775808") parses
         // fine in Python (arbitrary-precision int, no error at all -- this
-        // is well under the 4300-digit cap). This port's Scalar::Int is
-        // i64-only, so the same literal is rejected here as out of range --
-        // a disclosed representational limit of this Rust port, not parity
-        // with Python's real behavior, matching json.rs's own precedent for
-        // the same representational gap.
+        // is well under the 4300-digit cap). `toml_edit`'s own read-side
+        // integer type is i64-only (see this module's doc comment), so the
+        // same literal is rejected here as out of range -- a disclosed
+        // limit of the underlying `toml_edit` crate on the read path, not
+        // this crate's own `Scalar::Int` (arbitrary-precision `BigInt`,
+        // issue #104), and not parity with Python's real behavior, matching
+        // json.rs's own precedent for the same representational gap.
         let text = "x = 9223372036854775808\n"; // i64::MAX + 1, 19 digits
         let err = read_toml(text).unwrap_err();
         assert!(matches!(
