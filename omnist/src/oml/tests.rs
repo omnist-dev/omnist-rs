@@ -1337,3 +1337,37 @@ fn quoted_reserved_spelling_is_a_valid_label_and_round_trips() {
         assert_eq!(parsed, raw, "round trip mismatch for quoted {word:?}");
     }
 }
+
+#[test]
+fn test_oml_depth_limit_boundary_and_consistency() {
+    use crate::oml::{read_oml, write_oml};
+
+    // Exactly at MAX_DEPTH (200): 199 levels of "a: { " wrapping "z: 1", leaf is at depth 200
+    let valid_oml = "a: { ".repeat(199) + "z: 1" + &" }".repeat(199);
+    let raw = read_oml(&valid_oml).expect("should accept depth 200");
+    assert!(write_oml(&raw, 2).is_ok());
+
+    // Exceeds MAX_DEPTH: 200 levels of "a: { " wrapping "z: 1", leaf is at depth 201
+    let invalid_oml = "a: { ".repeat(200) + "z: 1" + &" }".repeat(200);
+    let err = read_oml(&invalid_oml).unwrap_err();
+    assert!(err.to_string().contains("maximum depth"));
+}
+
+#[test]
+fn test_read_oml_node_count_limit() {
+    use crate::document::MAX_NODES;
+    use crate::oml::read_oml;
+
+    // At the limit: (MAX_NODES - 1) edges + 1 root node = MAX_NODES
+    let at_limit = "a: 0
+"
+    .repeat(MAX_NODES - 1);
+    assert!(read_oml(&at_limit).is_ok());
+
+    // One past the limit: MAX_NODES edges + 1 root node = MAX_NODES + 1
+    let past_limit = "a: 0
+"
+    .repeat(MAX_NODES);
+    let err = read_oml(&past_limit).unwrap_err();
+    assert!(err.to_string().contains("maximum node count"));
+}

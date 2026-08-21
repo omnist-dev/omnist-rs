@@ -15,6 +15,7 @@ pub(super) struct Parser<'a> {
     kind: TokKind,
     start: usize,
     end: usize,
+    node_count: usize,
 }
 
 impl<'a> Parser<'a> {
@@ -25,7 +26,22 @@ impl<'a> Parser<'a> {
             kind,
             start,
             end,
+            node_count: 0,
         })
+    }
+
+    fn charge_node(&mut self, pos: usize) -> Result<(), ParseError> {
+        self.node_count += 1;
+        if self.node_count > document::MAX_NODES {
+            return Err(self.sc.error_at(
+                pos,
+                format!(
+                    "document exceeds the maximum node count ({})",
+                    document::MAX_NODES
+                ),
+            ));
+        }
+        Ok(())
     }
 
     fn advance(&mut self) -> Result<(TokKind, usize, usize), ParseError> {
@@ -53,10 +69,12 @@ impl<'a> Parser<'a> {
     pub(super) fn parse_document(&mut self) -> Result<RawNode, ParseError> {
         self.skip_sep()?;
         let node = if matches!(self.kind, TokKind::Eof) {
+            self.charge_node(self.start)?;
             RawNode::Edges(vec![])
         } else if matches!(self.kind, TokKind::LBrace) {
             self.parse_brace_value(0)?
         } else if self.looks_like_edge() {
+            self.charge_node(self.start)?;
             RawNode::Edges(self.parse_node_edges(0)?)
         } else {
             self.parse_scalar()?
@@ -112,12 +130,13 @@ impl<'a> Parser<'a> {
                     ),
                 ));
             }
+            let child_depth = depth + 1;
             if matches!(self.kind, TokKind::LBracket) {
-                for element in self.parse_array(depth)? {
+                for element in self.parse_array(child_depth)? {
                     edges.push((label.clone(), element));
                 }
             } else {
-                edges.push((label, self.parse_value(depth)?));
+                edges.push((label, self.parse_value(child_depth)?));
             }
             if matches!(self.kind, TokKind::RBrace | TokKind::Eof) {
                 break;
@@ -164,7 +183,21 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn check_depth(&self, depth: usize) -> Result<(), ParseError> {
+        if depth > document::MAX_DEPTH {
+            return Err(self.sc.error_at(
+                self.start,
+                format!(
+                    "nesting exceeds the maximum depth ({})",
+                    document::MAX_DEPTH
+                ),
+            ));
+        }
+        Ok(())
+    }
+
     fn parse_value(&mut self, depth: usize) -> Result<RawNode, ParseError> {
+        self.check_depth(depth)?;
         if matches!(self.kind, TokKind::LBrace) {
             self.parse_brace_value(depth)
         } else {
@@ -173,19 +206,11 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_brace_value(&mut self, depth: usize) -> Result<RawNode, ParseError> {
-        if depth + 1 > document::MAX_DEPTH {
-            return Err(ParseError::new(
-                0,
-                0,
-                format!(
-                    "nesting exceeds the maximum depth ({})",
-                    document::MAX_DEPTH
-                ),
-            ));
-        }
+        self.check_depth(depth)?;
+        self.charge_node(self.start)?;
         self.advance()?; // consume '{'
         self.skip_sep()?;
-        let edges = self.parse_node_edges(depth + 1)?;
+        let edges = self.parse_node_edges(depth)?;
         self.skip_sep()?;
         let (close_kind, close_start, close_end) = self.advance()?;
         if !matches!(close_kind, TokKind::RBrace) {
@@ -254,6 +279,7 @@ impl<'a> Parser<'a> {
     /// date/time/datetime-*shaped* text), which stays a plain
     /// `Scalar::Str`.
     fn parse_scalar(&mut self) -> Result<RawNode, ParseError> {
+        self.charge_node(self.start)?;
         let (kind, start, end) = self.advance()?;
         match kind {
             TokKind::Str(s) => Ok(RawNode::Leaf(Scalar::Str(s))),

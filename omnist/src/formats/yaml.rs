@@ -416,17 +416,17 @@ fn resolve_merges(node: &Raw, depth: usize) -> Result<Raw, OmnistError> {
             // for those is `raw_to_value`'s `IndexMap::insert`'s job, exactly
             // like `json.rs`'s reader). Among the merge sources themselves,
             // first-listed source wins a collision (YAML merge spec).
-            let own_labels: Vec<&str> =
+            let own_labels: std::collections::HashSet<&str> =
                 own.iter().filter_map(|(k, _)| scalar_key_text(k)).collect();
-            let mut merged_seen: Vec<&str> = Vec::new();
+            let mut merged_seen: std::collections::HashSet<&str> =
+                std::collections::HashSet::with_capacity(merged_from.len());
             let mut result = own.clone();
             for (k, v) in &merged_from {
                 let label = scalar_key_text(k);
-                if let Some(label) = label {
-                    if own_labels.contains(&label) || merged_seen.contains(&label) {
-                        continue;
-                    }
-                    merged_seen.push(label);
+                if let Some(label) = label
+                    && (own_labels.contains(label) || !merged_seen.insert(label))
+                {
+                    continue;
                 }
                 result.push((k.clone(), v.clone()));
             }
@@ -2632,5 +2632,45 @@ mod tests {
             &mut out,
         );
         assert_eq!(out, "\n  - 1\n  - 2\n");
+    }
+
+    #[test]
+    fn test_yaml_merge_key_deduplication_order() {
+        let src = r#"
+base1: &b1
+  a: 1
+  b: 2
+  dup: "from_b1"
+base2: &b2
+  b: 20
+  c: 3
+  dup: "from_b2"
+child:
+  <<: [*b1, *b2]
+  own: 0
+  a: 100
+"#;
+        let doc = read_yaml(src).unwrap();
+        let root = doc.root();
+        let child = root.get_one("child").unwrap();
+        let labels = child.labels();
+        // own keys first ("own", "a"), then merged keys in order ("b", "dup", "c")
+        assert_eq!(labels, vec!["own", "a", "b", "dup", "c"]);
+        assert_eq!(
+            *child.get_one("a").unwrap().value().unwrap(),
+            Scalar::Int((100).into())
+        );
+        assert_eq!(
+            *child.get_one("b").unwrap().value().unwrap(),
+            Scalar::Int((2).into())
+        );
+        assert_eq!(
+            *child.get_one("dup").unwrap().value().unwrap(),
+            Scalar::Str("from_b1".into())
+        );
+        assert_eq!(
+            *child.get_one("c").unwrap().value().unwrap(),
+            Scalar::Int((3).into())
+        );
     }
 }

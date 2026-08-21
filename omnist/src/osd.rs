@@ -434,13 +434,26 @@ fn osd_record(name: &str, rec: &Record, indent: Option<usize>) -> String {
     out.join("\n")
 }
 
+fn quote_label(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        if c == '\\' || c == '"' {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out.push('"');
+    out
+}
+
 fn osd_field(f: &Field) -> String {
     let card = if (f.min, f.max) == (1, Some(1)) {
         String::new()
     } else {
         format!(" {}", osd_cardinality(f.min, f.max))
     };
-    format!("\"{}\"{card}: {}", f.label, osd_type(&f.ty))
+    format!("{}{card}: {}", quote_label(&f.label), osd_type(&f.ty))
 }
 
 fn osd_cardinality(lo: usize, hi: Option<usize>) -> String {
@@ -821,5 +834,32 @@ mod tests {
         .unwrap();
         assert_eq!(to_osd(&schema, None), "record X {  } root X\n");
         assert_eq!(to_osd(&schema, Some(2)), "record X {\n}\nroot X\n");
+    }
+
+    #[test]
+    fn test_osd_writer_quote_backslash_escaping() {
+        use crate::schema::{Field, INTEGER, Record, Ref, Schema};
+        use indexmap::IndexMap;
+
+        let test_labels = ["a\"b", "a\\b", "a\"b\\c", r#"quote"and\backslash"together"#];
+        for label in test_labels {
+            let field = Field::required(label, INTEGER).unwrap();
+            let record = Record::new(vec![field]).unwrap();
+            let mut env = IndexMap::new();
+            env.insert("Root".to_string(), record);
+            let schema = Schema::new(Ref::new("Root"), env).unwrap();
+
+            // Test pretty OSD
+            let osd_pretty = to_osd(&schema, Some(4));
+            let parsed_pretty = parse_schema(&osd_pretty).expect("pretty OSD should re-parse");
+            let rec_pretty = parsed_pretty.env().get("Root").unwrap();
+            assert_eq!(rec_pretty.fields()[0].label, label);
+
+            // Test compact OSD
+            let osd_compact = to_osd(&schema, None);
+            let parsed_compact = parse_schema(&osd_compact).expect("compact OSD should re-parse");
+            let rec_compact = parsed_compact.env().get("Root").unwrap();
+            assert_eq!(rec_compact.fields()[0].label, label);
+        }
     }
 }
