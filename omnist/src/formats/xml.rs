@@ -342,7 +342,7 @@ pub fn read_xml(text: &str) -> Result<Doc, OmnistError> {
 }
 
 /// Parse XML text into a [`Doc`] with schema-guided pretyping of boolean,
-/// integer, and number scalar fields (spec ?2.2 / issue #114).
+/// integer, and number scalar fields (spec §2.2 / issue #114).
 pub fn read_xml_with_schema(text: &str, schema: &Schema) -> Result<Doc, OmnistError> {
     let raw = read_xml_raw(text)?;
     let pretyped = xml_pretype(raw, schema, &FieldType::Ref(schema.root().clone()));
