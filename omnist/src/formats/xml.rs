@@ -182,10 +182,7 @@ fn xml_pretype_scalar(node: RawNode, s: &crate::schema::Scalar) -> RawNode {
                 } else {
                     val.as_str()
                 };
-                let int_digits = digits
-                    .split(|c| c == '.' || c == 'e' || c == 'E')
-                    .next()
-                    .unwrap_or(digits);
+                let int_digits = digits.split(['.', 'e', 'E']).next().unwrap_or(digits);
                 if int_digits.len() <= crate::formats::int_cap::MAX_INT_DIGITS {
                     let f: f64 = val
                         .parse()
