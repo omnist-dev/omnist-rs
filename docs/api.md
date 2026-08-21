@@ -478,6 +478,7 @@ the report.
 ```rust
 // omnist::formats::xml
 pub fn read_xml(text: &str) -> Result<Doc, OmnistError>;
+pub fn read_xml_with_schema(text: &str, schema: &Schema) -> Result<Doc, OmnistError>;
 pub fn write_xml(doc: &Doc, strict: bool, report: Option<&mut WriteReport>)
     -> Result<String, WriteError>;
 pub fn check_xml(doc: &Doc) -> WriteReport;

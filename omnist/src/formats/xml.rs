@@ -73,13 +73,15 @@
 //! (`_xml_to_node` no longer infers scalar kind from text shape); this
 //! module's fix mirrors that commit.
 //!
-//! Schema-guided pretyping -- recovering `boolean`/`integer`/`number` from
-//! XML's untyped text *before* `materialize` sees it, so a schema-typed
-//! read can still get real numbers/bools instead of only strings, the way
-//! Python's `_xml_pretype` does when `read_xml(text, schema=...)` is
-//! called -- is a distinct, not-yet-ported feature. [`read_xml`] here has
-//! no schema parameter at all yet, so there is nothing to pretype; typing
-//! happens exclusively at `materialize`, same as every other format.
+//! ## Schema-guided pretyping (issue #114)
+//!
+//! Because XML text carries no native type information and `materialize`
+//! intentionally never coerces plain strings to `integer`/`number`/`boolean`
+//! scalars, [`read_xml_with_schema`] performs schema-guided pretyping of
+//! `boolean`, `integer`, and `number` fields before materialization,
+//! mirroring Python's `_xml_pretype`. Fields typed `any`, date/time/datetime,
+//! and mismatched text stay strings for normal stage-2 validation/materialization
+//! reporting.
 //!
 //! ## All-occurrences sanitization (omnist-ts#36 regression)
 //!
@@ -129,15 +131,98 @@ use crate::error::{DocumentError, OmnistError, ParseError};
 use crate::formats::float_fmt;
 use crate::formats::textpos::line_col_bytes;
 use crate::report::{Severity, WriteReport};
+use crate::schema::{FieldType, Resolved, ScalarKind, Schema};
 use indexmap::IndexMap;
 use quick_xml::Reader;
 use quick_xml::events::Event;
 
 // ============================================================== Reader
 
-/// Parse XML text into a [`Doc`], preserving element order/interleaving
-/// exactly (see this module's doc comment).
-pub fn read_xml(text: &str) -> Result<Doc, OmnistError> {
+static XML_INT_RE: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"^-?(0|[1-9]\d*)$").unwrap());
+
+static XML_NUM_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"^-?(0|[1-9]\d*)(\.\d+)?([eE][+-]?\d+)?$").unwrap()
+});
+
+fn xml_pretype_scalar(node: RawNode, s: &crate::schema::Scalar) -> RawNode {
+    let RawNode::Leaf(Scalar::Str(ref val)) = node else {
+        return node;
+    };
+    match s.kind() {
+        ScalarKind::Boolean => {
+            if val == "true" {
+                RawNode::Leaf(Scalar::Bool(true))
+            } else if val == "false" {
+                RawNode::Leaf(Scalar::Bool(false))
+            } else {
+                node
+            }
+        }
+        ScalarKind::Integer => {
+            if XML_INT_RE.is_match(val) {
+                let digits = if let Some(stripped) = val.strip_prefix('-') {
+                    stripped
+                } else {
+                    val.as_str()
+                };
+                if digits.len() <= crate::formats::int_cap::MAX_INT_DIGITS {
+                    let i: num_bigint::BigInt = val
+                        .parse()
+                        .expect("XML_INT_RE guarantees valid integer literal");
+                    return RawNode::Leaf(Scalar::Int(i));
+                }
+            }
+            node
+        }
+        ScalarKind::Number => {
+            if XML_NUM_RE.is_match(val) {
+                let digits = if let Some(stripped) = val.strip_prefix('-') {
+                    stripped
+                } else {
+                    val.as_str()
+                };
+                let int_digits = digits
+                    .split(|c| c == '.' || c == 'e' || c == 'E')
+                    .next()
+                    .unwrap_or(digits);
+                if int_digits.len() <= crate::formats::int_cap::MAX_INT_DIGITS {
+                    let f: f64 = val
+                        .parse()
+                        .expect("XML_NUM_RE guarantees valid float literal");
+                    return RawNode::Leaf(Scalar::Float(f));
+                }
+            }
+            node
+        }
+        _ => node,
+    }
+}
+
+fn xml_pretype(node: RawNode, schema: &Schema, ty: &FieldType) -> RawNode {
+    let d = schema.resolve(ty);
+    match d {
+        Resolved::Any => node,
+        Resolved::Scalar(s) => xml_pretype_scalar(node, &s),
+        Resolved::Record(rec) => {
+            let RawNode::Edges(edges) = node else {
+                return node;
+            };
+            let mut out = Vec::with_capacity(edges.len());
+            for (label, child) in edges {
+                let pretyped_child = if let Some(field) = rec.field(&label) {
+                    xml_pretype(child, schema, &field.ty)
+                } else {
+                    child
+                };
+                out.push((label, pretyped_child));
+            }
+            RawNode::Edges(out)
+        }
+    }
+}
+
+fn read_xml_raw(text: &str) -> Result<RawNode, OmnistError> {
     let normalized = normalize_line_endings(text);
     let mut reader = Reader::from_str(&normalized);
     reader.config_mut().trim_text(false);
@@ -248,7 +333,23 @@ pub fn read_xml(text: &str) -> Result<Doc, OmnistError> {
         }
     }
 
-    let doc = Doc::from_raw(root_node)?;
+    Ok(root_node)
+}
+
+/// Parse XML text into a [`Doc`], preserving element order/interleaving
+/// exactly (see this module's doc comment).
+pub fn read_xml(text: &str) -> Result<Doc, OmnistError> {
+    let raw = read_xml_raw(text)?;
+    let doc = Doc::from_raw(raw)?;
+    Ok(doc)
+}
+
+/// Parse XML text into a [`Doc`] with schema-guided pretyping of boolean,
+/// integer, and number scalar fields (spec ?2.2 / issue #114).
+pub fn read_xml_with_schema(text: &str, schema: &Schema) -> Result<Doc, OmnistError> {
+    let raw = read_xml_raw(text)?;
+    let pretyped = xml_pretype(raw, schema, &FieldType::Ref(schema.root().clone()));
+    let doc = Doc::from_raw(pretyped)?;
     Ok(doc)
 }
 

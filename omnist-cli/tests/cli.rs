@@ -1230,3 +1230,33 @@ fn format_stdin_dash_with_invalid_utf8_hits_read_input_stdin_error_path() {
 // comment) after empirically confirming a real write failure (broken pipe,
 // `/dev/full`) panics *inside* the preceding `print!` call, never at the
 // `flush()` call -- so there was no live branch left to exercise.
+#[test]
+fn validate_xml_with_schema_pretypes_and_succeeds() {
+    let xml = fixture(
+        "val_xml_in.xml",
+        "<order><id>A1</id><qty>3</qty><price>9.99</price><active>true</active></order>",
+    );
+    let osd = fixture(
+        "val_xml_schema.osd",
+        "record Order { \"id\": string, \"qty\": integer, \"price\": number, \"active\": boolean } record Root { \"order\": Order } root Root",
+    );
+    let r = run(&["validate", &xml, "--from", "xml", "--schema", &osd]);
+    assert_eq!(r.code, 0, "stderr: {}", r.stderr);
+}
+
+#[test]
+fn convert_xml_with_schema_pretypes_to_json() {
+    let xml = fixture(
+        "conv_xml_in.xml",
+        "<order><qty>3</qty><price>9.99</price></order>",
+    );
+    let osd = fixture(
+        "conv_xml_schema.osd",
+        "record Order { \"qty\": integer, \"price\": number } record Root { \"order\": Order } root Root",
+    );
+    let r = run(&[
+        "convert", &xml, "--from", "xml", "--to", "json", "--schema", &osd,
+    ]);
+    assert_eq!(r.code, 0, "stderr: {}", r.stderr);
+    assert!(r.stdout.contains("\"qty\": 3"));
+}

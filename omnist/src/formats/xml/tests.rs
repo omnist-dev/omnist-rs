@@ -9,6 +9,14 @@ fn leaf_str(s: &str) -> RawNode {
     RawNode::Leaf(Scalar::Str(s.to_string()))
 }
 
+fn leaf(s: Scalar) -> RawNode {
+    RawNode::Leaf(s)
+}
+
+fn leaf_bool(b: bool) -> RawNode {
+    RawNode::Leaf(Scalar::Bool(b))
+}
+
 /// Only meaningful on the *write* side now (omnist-rs#86: `read_xml` never
 /// produces `Scalar::Int` -- every leaf it builds is a `Scalar::Str`). Kept
 /// for constructing `Doc`s to feed into `write_xml`/`check_xml`.
@@ -906,4 +914,226 @@ fn test_xml_epilog_general_ref_rejected() {
         err.to_string()
             .contains("unexpected text after root element")
     );
+}
+// ---------------------------------------------------------------------------
+// Issue #114: XML schema-guided pretyping
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_xml_pretype_boolean() {
+    let schema_text = "record Data { \"b_true\": boolean, \"b_false\": boolean, \"b_invalid1\": boolean, \"b_invalid2\": boolean } record Root { \"data\": Data } root Root";
+    let schema = crate::osd::parse_schema(schema_text).unwrap();
+    let xml = "<data><b_true>true</b_true><b_false>false</b_false><b_invalid1>True</b_invalid1><b_invalid2>1</b_invalid2></data>";
+    let doc = read_xml_with_schema(xml, &schema).unwrap();
+    assert_eq!(
+        doc.to_raw(),
+        edges(vec![(
+            "data",
+            edges(vec![
+                ("b_true", leaf_bool(true)),
+                ("b_false", leaf_bool(false)),
+                ("b_invalid1", leaf_str("True")),
+                ("b_invalid2", leaf_str("1")),
+            ])
+        )])
+    );
+}
+
+#[test]
+fn test_xml_pretype_integer() {
+    let schema_text = "record Data { \"zero\": integer, \"neg_zero\": integer, \"pos\": integer, \"neg\": integer, \"lead_zero\": integer, \"non_digit\": integer } record Root { \"data\": Data } root Root";
+    let schema = crate::osd::parse_schema(schema_text).unwrap();
+    let xml = "<data><zero>0</zero><neg_zero>-0</neg_zero><pos>42</pos><neg>-123</neg><lead_zero>007</lead_zero><non_digit>abc</non_digit></data>";
+    let doc = read_xml_with_schema(xml, &schema).unwrap();
+    assert_eq!(
+        doc.to_raw(),
+        edges(vec![(
+            "data",
+            edges(vec![
+                ("zero", leaf(Scalar::Int((0).into()))),
+                ("neg_zero", leaf(Scalar::Int((0).into()))),
+                ("pos", leaf(Scalar::Int((42).into()))),
+                ("neg", leaf(Scalar::Int((-123).into()))),
+                ("lead_zero", leaf_str("007")),
+                ("non_digit", leaf_str("abc")),
+            ])
+        )])
+    );
+}
+
+#[test]
+fn test_xml_pretype_number() {
+    let schema_text = "record Data { \"num1\": number, \"num2\": number, \"exp1\": number, \"exp2\": number, \"invalid\": number } record Root { \"data\": Data } root Root";
+    let schema = crate::osd::parse_schema(schema_text).unwrap();
+    let xml = "<data><num1>3.14</num1><num2>-0.5</num2><exp1>1e6</exp1><exp2>-2.5E-3</exp2><invalid>1.2.3</invalid></data>";
+    let doc = read_xml_with_schema(xml, &schema).unwrap();
+    assert_eq!(
+        doc.to_raw(),
+        edges(vec![(
+            "data",
+            edges(vec![
+                ("num1", leaf(Scalar::Float(3.14))),
+                ("num2", leaf(Scalar::Float(-0.5))),
+                ("exp1", leaf(Scalar::Float(1000000.0))),
+                ("exp2", leaf(Scalar::Float(-0.0025))),
+                ("invalid", leaf_str("1.2.3")),
+            ])
+        )])
+    );
+}
+
+#[test]
+fn test_xml_pretype_digit_cap_oversized_literal_stays_string() {
+    use crate::formats::int_cap::MAX_INT_DIGITS;
+    let schema_text = "record Data { \"big_int\": integer, \"big_num\": number } record Root { \"data\": Data } root Root";
+    let schema = crate::osd::parse_schema(schema_text).unwrap();
+    let oversized = "9".repeat(MAX_INT_DIGITS + 1);
+    let xml =
+        format!("<data><big_int>{oversized}</big_int><big_num>{oversized}.5</big_num></data>");
+    let doc = read_xml_with_schema(&xml, &schema).unwrap();
+    assert_eq!(
+        doc.to_raw(),
+        edges(vec![(
+            "data",
+            edges(vec![
+                ("big_int", leaf_str(&oversized)),
+                ("big_num", leaf_str(&format!("{oversized}.5"))),
+            ])
+        )])
+    );
+}
+
+#[test]
+fn test_xml_pretype_any_and_unknown_fields_untouched() {
+    let schema_text = "record Data { \"any_field\": any, \"known\": integer } record Root { \"data\": Data } root Root";
+    let schema = crate::osd::parse_schema(schema_text).unwrap();
+    let xml = "<data><any_field><nested>42</nested><flag>true</flag></any_field><known>10</known><unknown_field>99</unknown_field></data>";
+    let doc = read_xml_with_schema(xml, &schema).unwrap();
+    assert_eq!(
+        doc.to_raw(),
+        edges(vec![(
+            "data",
+            edges(vec![
+                (
+                    "any_field",
+                    edges(vec![("nested", leaf_str("42")), ("flag", leaf_str("true")),])
+                ),
+                ("known", leaf(Scalar::Int((10).into()))),
+                ("unknown_field", leaf_str("99")),
+            ])
+        )])
+    );
+}
+
+#[test]
+fn test_xml_pretype_spec_order_worked_example() {
+    let schema_osd = r#"
+record Address  { "street": string, "city": string }
+record LineItem { "sku": string, "qty": integer, "price": number }
+
+record Order {
+    "id":           string,
+    "status":       string,
+    "total":        number,
+    "address":      Address,
+    "items" [1,]:   LineItem,
+    "coupon" [0,1]: string,
+}
+
+record Root { "order": Order }
+root Root
+"#;
+    let schema = crate::osd::parse_schema(schema_osd).unwrap();
+    let xml = r#"<order>
+  <id>A1</id>
+  <status>shipped</status>
+  <total>29.97</total>
+  <address><street>1 Main</street><city>London</city></address>
+  <items><sku>W</sku><qty>3</qty><price>9.99</price></items>
+  <items><sku>G</sku><qty>1</qty><price>9.99</price></items>
+</order>"#;
+
+    let doc = read_xml_with_schema(xml, &schema).unwrap();
+    assert_eq!(
+        doc.to_raw(),
+        edges(vec![(
+            "order",
+            edges(vec![
+                ("id", leaf_str("A1")),
+                ("status", leaf_str("shipped")),
+                ("total", leaf(Scalar::Float(29.97))),
+                (
+                    "address",
+                    edges(vec![
+                        ("street", leaf_str("1 Main")),
+                        ("city", leaf_str("London")),
+                    ])
+                ),
+                (
+                    "items",
+                    edges(vec![
+                        ("sku", leaf_str("W")),
+                        ("qty", leaf(Scalar::Int((3).into()))),
+                        ("price", leaf(Scalar::Float(9.99))),
+                    ])
+                ),
+                (
+                    "items",
+                    edges(vec![
+                        ("sku", leaf_str("G")),
+                        ("qty", leaf(Scalar::Int((1).into()))),
+                        ("price", leaf(Scalar::Float(9.99))),
+                    ])
+                ),
+            ])
+        )])
+    );
+
+    // Validate passes cleanly
+    assert!(schema.validate(&doc.root()).ok());
+}
+
+#[test]
+fn test_plain_read_xml_unaffected_by_schema_pretyping() {
+    let xml = "<order><qty>3</qty><total>29.97</total><flag>true</flag></order>";
+    let doc = read_xml(xml).unwrap();
+    // Plain read_xml always yields strings
+    assert_eq!(
+        doc.to_raw(),
+        edges(vec![(
+            "order",
+            edges(vec![
+                ("qty", leaf_str("3")),
+                ("total", leaf_str("29.97")),
+                ("flag", leaf_str("true")),
+            ])
+        )])
+    );
+}
+
+#[test]
+fn test_xml_pretype_whitebox_non_string_and_non_edges() {
+    let schema = crate::osd::parse_schema("record Root { \"x\": integer } root Root").unwrap();
+    // Already non-str leaf stays untouched
+    let leaf_node = leaf(Scalar::Int((5).into()));
+    let pretyped_leaf = super::xml_pretype(
+        leaf_node.clone(),
+        &schema,
+        &crate::schema::FieldType::Scalar(crate::schema::INTEGER),
+    );
+    assert_eq!(pretyped_leaf, leaf_node);
+
+    // Leaf passed to Record type resolution returns node
+    let pretyped_rec_on_leaf = super::xml_pretype(
+        leaf_node.clone(),
+        &schema,
+        &crate::schema::FieldType::Ref(schema.root().clone()),
+    );
+    assert_eq!(pretyped_rec_on_leaf, leaf_node);
+}
+#[test]
+fn test_xml_pretype_read_xml_with_schema_parse_error() {
+    let schema = crate::osd::parse_schema("record Root { \"x\": integer } root Root").unwrap();
+    let err = read_xml_with_schema("<unclosed>", &schema).unwrap_err();
+    assert!(err.to_string().contains("invalid XML"));
 }

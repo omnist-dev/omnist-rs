@@ -1,6 +1,6 @@
 # XML
 
-`omnist::formats::xml::{read_xml, write_xml, check_xml}`. Ported from
+`omnist::formats::xml::{read_xml, read_xml_with_schema, write_xml, check_xml}`. Ported from
 `~/dev/omnist/omnist/formats.py`'s `read_xml`/`write_xml`/`check_xml`; see
 [`omnist/src/formats/xml.rs`](../../omnist/src/formats/xml.rs)'s module doc
 for the full detail.
@@ -60,15 +60,49 @@ coincides with Python's `ElementTree`-based behavior for the common case
 XML's grammar carries no type information -- `<m>1</m>` and `<m>hi</m>` are
 syntactically identical, a bare text node. `read_xml` builds every leaf as
 a plain string unconditionally; no int/float/bool inference happens at
-parse time. Typing is `materialize`'s job, under a schema, exactly as for
-the other formats.
-
-An earlier version of this module type-inferred leaf text (bool/int/float)
-at parse time, contradicting this and diverging from Python's reference
-`read_xml` -- fixed as `omnist-rs#86` (Python fixed the identical bug in
-its own `read_xml` as `omnist#288`).
+parse time.
 
 Writing a non-string scalar (`bool`/`int`/`float`) to XML now honestly
 reports it: XML has no native typed literals, so it reads back as a
 string, not its original type (`check_xml`'s `value.stringified`
 adjustment).
+
+## Schema-guided pretyping (spec ?2.2 / issue #114)
+
+Because XML text is untyped and `materialize` strictly rejects coercing plain strings to `boolean`/`integer`/`number`, [`read_xml_with_schema`] performs schema-guided pretyping on the raw XML tree before materialization (spec ?2.2 / issue #114).
+
+```rust
+use omnist::formats::xml::read_xml_with_schema;
+use omnist::osd::parse_schema;
+
+let schema_osd = r#"
+record Address  { "street": string, "city": string }
+record LineItem { "sku": string, "qty": integer, "price": number }
+
+record Order {
+    "id":           string,
+    "status":       string,
+    "total":        number,
+    "address":      Address,
+    "items" [1,]:   LineItem,
+    "coupon" [0,1]: string,
+}
+
+record Root { "order": Order }
+root Root
+"#;
+let schema = parse_schema(schema_osd).unwrap();
+
+let xml = r#"<order>
+  <id>A1</id>
+  <status>shipped</status>
+  <total>29.97</total>
+  <address><street>1 Main</street><city>London</city></address>
+  <items><sku>W</sku><qty>3</qty><price>9.99</price></items>
+  <items><sku>G</sku><qty>1</qty><price>9.99</price></items>
+</order>"#;
+
+let doc = read_xml_with_schema(xml, &schema).unwrap();
+assert!(schema.validate(&doc.root()).ok());
+```
+<!-- doc-illustrative -->
