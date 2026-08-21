@@ -30,3 +30,7 @@ harness = false
 [[bench]]
 name = "writer_grouped_tree"
 harness = false
+
+[[bench]]
+name = "record_partial_eq"
+harness = false
