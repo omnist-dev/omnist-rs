@@ -491,12 +491,19 @@ fn io_fail(json: bool, message: &str) -> i32 {
 // Format dispatch helpers
 // ---------------------------------------------------------------------------
 
-fn read_by_fmt(fmt: Fmt, text: &str) -> Result<Doc, OmnistError> {
+fn read_by_fmt(
+    fmt: Fmt,
+    text: &str,
+    schema: Option<&omnist::schema::Schema>,
+) -> Result<Doc, OmnistError> {
     match fmt {
         Fmt::Json => omnist::formats::json::read_json(text),
         Fmt::Yaml => omnist::formats::yaml::read_yaml(text),
         Fmt::Toml => omnist::formats::toml::read_toml(text),
-        Fmt::Xml => omnist::formats::xml::read_xml(text),
+        Fmt::Xml => match schema {
+            Some(s) => omnist::formats::xml::read_xml_with_schema(text, s),
+            None => omnist::formats::xml::read_xml(text),
+        },
         Fmt::Oml => {
             let raw = omnist::oml::read_oml(text)?;
             Ok(Doc::from_raw(raw)?)
@@ -723,16 +730,19 @@ fn cmd_convert(args: ConvertArgs) -> i32 {
         Ok(t) => t,
         Err(e) => return io_fail(args.json, &e),
     };
-    let mut doc = match read_by_fmt(args.from, &text) {
+    let schema = match args.schema.as_deref() {
+        Some(path) => match parse_schema_file(path, args.json) {
+            Ok(s) => Some(s),
+            Err(code) => return code,
+        },
+        None => None,
+    };
+    let mut doc = match read_by_fmt(args.from, &text, schema.as_ref()) {
         Ok(d) => d,
         Err(e) => return generic_fail(args.json, &e),
     };
-    if let Some(schema_path) = &args.schema {
-        let schema = match parse_schema_file(schema_path, args.json) {
-            Ok(s) => s,
-            Err(code) => return code,
-        };
-        let materialized = match omnist::materialize::materialize(&doc.to_raw(), Some(&schema)) {
+    if let Some(schema) = &schema {
+        let materialized = match omnist::materialize::materialize(&doc.to_raw(), Some(schema)) {
             Ok(r) => r,
             Err(e) => return generic_fail(args.json, &OmnistError::Materialize(e)),
         };
@@ -786,7 +796,7 @@ fn cmd_check(args: CheckArgs) -> i32 {
         Ok(t) => t,
         Err(e) => return io_fail(args.json, &e),
     };
-    let doc = match read_by_fmt(args.from, &text) {
+    let doc = match read_by_fmt(args.from, &text, None) {
         Ok(d) => d,
         Err(e) => return generic_fail(args.json, &e),
     };
@@ -806,17 +816,17 @@ fn cmd_check(args: CheckArgs) -> i32 {
 }
 
 fn cmd_validate(args: ValidateArgs) -> i32 {
+    let schema = match parse_schema_file(&args.schema, args.json) {
+        Ok(s) => s,
+        Err(code) => return code,
+    };
     let text = match read_input(&args.input) {
         Ok(t) => t,
         Err(e) => return io_fail(args.json, &e),
     };
-    let doc = match read_by_fmt(args.from, &text) {
+    let doc = match read_by_fmt(args.from, &text, Some(&schema)) {
         Ok(d) => d,
         Err(e) => return generic_fail(args.json, &e),
-    };
-    let schema = match parse_schema_file(&args.schema, args.json) {
-        Ok(s) => s,
-        Err(code) => return code,
     };
     let result = schema.validate(&doc.root());
     if args.json {
@@ -851,7 +861,7 @@ fn cmd_infer(args: InferArgs) -> i32 {
             Ok(t) => t,
             Err(e) => return io_fail(args.json, &e),
         };
-        match read_by_fmt(args.from, &text) {
+        match read_by_fmt(args.from, &text, None) {
             Ok(d) => docs.push(d),
             Err(e) => return generic_fail(args.json, &e),
         }
