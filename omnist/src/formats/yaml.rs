@@ -902,8 +902,8 @@ pub fn write_yaml(
     strict: bool,
     report: Option<&mut WriteReport>,
 ) -> Result<String, WriteError> {
-    let rep = check_yaml(doc);
     let grouped = doc.to_grouped();
+    let rep = check_yaml_grouped(&grouped);
     let mut out = String::new();
     write_node(&grouped, 0, &mut out, true);
     if out.ends_with('\n') {
@@ -916,10 +916,14 @@ pub fn write_yaml(
 /// adjustment YAML ever needs is forcing double-quoted style for a U+0085
 /// (NEL) string/label -- see this module's doc comment.
 pub fn check_yaml(doc: &Doc) -> WriteReport {
-    let mut rep = WriteReport::new();
     let grouped = doc.to_grouped();
+    check_yaml_grouped(&grouped)
+}
+
+fn check_yaml_grouped(grouped: &Value) -> WriteReport {
+    let mut rep = WriteReport::new();
     let mut path = String::from("$");
-    crate::formats::visit_grouped(&grouped, &mut path, &mut |visited, path| match visited {
+    crate::formats::visit_grouped(grouped, &mut path, &mut |visited, path| match visited {
         crate::formats::Visited::Edge { label } if label.contains('\u{0085}') => {
             rep.add(
                 path,

@@ -96,8 +96,8 @@ pub fn write_json(
     strict: bool,
     report: Option<&mut WriteReport>,
 ) -> Result<String, WriteError> {
-    let rep = check_json(doc);
     let grouped = doc.to_grouped();
+    let rep = check_json_grouped(&grouped);
     let prepared = if strict { grouped } else { prepare(grouped) };
     let mut out = String::new();
     write_value(&prepared, indent, 0, &mut out);
@@ -112,10 +112,14 @@ pub fn write_json(
 /// for the (rare) NaN/Infinity leaf -- not for every leaf up front (issue
 /// #44), since `visit_grouped` reuses one path buffer for the whole walk.
 pub fn check_json(doc: &Doc) -> WriteReport {
-    let mut rep = WriteReport::new();
     let grouped = doc.to_grouped();
+    check_json_grouped(&grouped)
+}
+
+fn check_json_grouped(grouped: &Value) -> WriteReport {
+    let mut rep = WriteReport::new();
     let mut path = String::from("$");
-    crate::formats::visit_grouped(&grouped, &mut path, &mut |visited, path| {
+    crate::formats::visit_grouped(grouped, &mut path, &mut |visited, path| {
         let crate::formats::Visited::Node { value } = visited else {
             return;
         };

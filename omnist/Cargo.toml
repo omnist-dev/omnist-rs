@@ -26,3 +26,7 @@ serde_json = { version = "1", features = ["preserve_order"] }
 [[bench]]
 name = "yaml_merge"
 harness = false
+
+[[bench]]
+name = "writer_grouped_tree"
+harness = false
