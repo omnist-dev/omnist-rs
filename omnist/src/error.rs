@@ -41,13 +41,13 @@ impl DocumentError {
 ///
 /// Breaking change in issue #122: `SchemaError` now carries machine-readable
 /// `path` and `code` fields alongside human-readable `message`, matching the
-/// spec's schema well-formedness and algebra error taxonomy (spec ?8.3.3 & ?8.3.6).
+/// spec's schema well-formedness and algebra error taxonomy (spec §8.3.3 & §8.3.6).
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 #[error("{message}")]
 pub struct SchemaError {
     /// The path (record/field context or "$") where the schema error occurred.
     pub path: String,
-    /// Stable machine-readable error code (e.g. "schema.unknown-type", spec ?8.3.3).
+    /// Stable machine-readable error code (e.g. "schema.unknown-type", spec §8.3.3).
     pub code: String,
     /// Human-readable error description.
     pub message: String,
