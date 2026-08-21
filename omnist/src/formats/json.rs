@@ -280,6 +280,7 @@ struct Parser<'a> {
     text: &'a str,
     n: usize,
     pos: usize,
+    depth: usize,
 }
 
 impl<'a> Parser<'a> {
@@ -292,7 +293,7 @@ impl<'a> Parser<'a> {
         // boundary, so every `text[pos..]`/`text.get(pos..)` slice below is
         // safe.
         let n = text.len();
-        Parser { text, n, pos: 0 }
+        Parser { text, n, pos: 0, depth: 0 }
     }
 
     fn error_at(&self, pos: usize, msg: String) -> ParseError {
@@ -382,11 +383,19 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_object(&mut self) -> Result<Value, ParseError> {
+        self.depth += 1;
+        if self.depth > crate::document::MAX_DEPTH {
+            return Err(self.error_at(
+                self.pos,
+                format!("nesting exceeds the maximum depth ({})", crate::document::MAX_DEPTH),
+            ));
+        }
         self.expect('{')?;
         let mut map: IndexMap<String, Value> = IndexMap::new();
         self.skip_ws();
         if self.peek() == Some('}') {
             self.pos += 1;
+            self.depth -= 1;
             return Ok(Value::Object(map));
         }
         loop {
@@ -415,15 +424,24 @@ impl<'a> Parser<'a> {
                 _ => return Err(self.error_at(self.pos, "expected ',' or '}'".to_string())),
             }
         }
+        self.depth -= 1;
         Ok(Value::Object(map))
     }
 
     fn parse_array(&mut self) -> Result<Value, ParseError> {
+        self.depth += 1;
+        if self.depth > crate::document::MAX_DEPTH {
+            return Err(self.error_at(
+                self.pos,
+                format!("nesting exceeds the maximum depth ({})", crate::document::MAX_DEPTH),
+            ));
+        }
         self.expect('[')?;
         let mut items = Vec::new();
         self.skip_ws();
         if self.peek() == Some(']') {
             self.pos += 1;
+            self.depth -= 1;
             return Ok(Value::Array(items));
         }
         loop {
@@ -441,6 +459,7 @@ impl<'a> Parser<'a> {
                 _ => return Err(self.error_at(self.pos, "expected ',' or ']'".to_string())),
             }
         }
+        self.depth -= 1;
         Ok(Value::Array(items))
     }
 
@@ -1325,4 +1344,12 @@ mod tests {
         let text = write_json(&doc, None, false, None).unwrap();
         assert_eq!(text, r#"{"a": 1, "b": "x", "c": [1, 2, 3]}"#);
     }
+
+    #[test]
+    fn test_deeply_nested_json_depth_limit() {
+        let nested = "[".repeat(50_000) + &"]".repeat(50_000);
+        let err = read_json(&nested).unwrap_err();
+        assert!(err.to_string().contains("maximum depth"));
+    }
+
 }
