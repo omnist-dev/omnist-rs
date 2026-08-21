@@ -83,7 +83,7 @@ fn tokenize(text: &str) -> Result<Vec<Tok>, SchemaError> {
             let ch = text[i..].chars().next().unwrap();
             return Err(SchemaError::new(
                 "$",
-                "schema.invalid-syntax",
+                "parse.unexpected-token",
                 format!("unexpected character {ch:?} at {i}"),
             ));
         };
@@ -92,7 +92,7 @@ fn tokenize(text: &str) -> Result<Vec<Tok>, SchemaError> {
             let ch = text[i..].chars().next().unwrap();
             return Err(SchemaError::new(
                 "$",
-                "schema.invalid-syntax",
+                "parse.unexpected-token",
                 format!("unexpected character {ch:?} at {i}"),
             ));
         }
@@ -172,7 +172,7 @@ impl Parser {
         if t.kind != TokKind::Punct || t.text != text {
             return Err(SchemaError::new(
                 "$",
-                "schema.invalid-syntax",
+                "parse.unexpected-token",
                 format!("expected {text:?} at {}, got {:?}", t.pos, t.text),
             ));
         }
@@ -184,7 +184,7 @@ impl Parser {
         if t.kind != TokKind::Name {
             return Err(SchemaError::new(
                 "$",
-                "schema.invalid-syntax",
+                "parse.unexpected-token",
                 format!("expected a name at {}, got {:?}", t.pos, t.text),
             ));
         }
@@ -205,7 +205,7 @@ impl Parser {
             } else {
                 return Err(SchemaError::new(
                     "$",
-                    "schema.invalid-syntax",
+                    "parse.unexpected-token",
                     format!("expected 'record' or 'root' at {}, got {:?}", t.pos, t.text),
                 ));
             }
@@ -405,7 +405,7 @@ impl Parser {
             }
             return Err(SchemaError::new(
                 rec_name,
-                "schema.invalid-syntax",
+                "parse.unexpected-token",
                 format!(
                     "expected a scalar name or a reference at {}, got {:?} (enums and                      literal-valued fields are not supported -- a field's type is                      always one scalar or a reference to a named record)",
                     t.pos, t.text
@@ -825,13 +825,13 @@ mod tests {
     #[test]
     fn record_name_must_be_a_name_token() {
         let err = parse_schema(r#"record 123 { "a": string } root X"#).unwrap_err();
-        assert_eq!(err.code, "schema.invalid-syntax");
+        assert_eq!(err.code, "parse.unexpected-token");
     }
 
     #[test]
     fn type_position_rejects_punctuation_token() {
         let err = parse_schema(r#"record X { "a": : } root X"#).unwrap_err();
-        assert_eq!(err.code, "schema.invalid-syntax");
+        assert_eq!(err.code, "parse.unexpected-token");
     }
     #[test]
     fn test_code_schema_no_root() {
