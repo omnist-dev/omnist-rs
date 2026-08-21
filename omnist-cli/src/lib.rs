@@ -686,23 +686,26 @@ fn cmd_format(args: FormatArgs) -> i32 {
     if args.arrays {
         return fail(args.json, ARRAYS_UNSUPPORTED_MSG, &[], 2);
     }
-    // No `Doc::from_raw`/`.to_raw()` round-trip here: `format` reads and
-    // re-writes OML only, so `raw` (already the exact shape `write_oml`
-    // wants) goes straight back out. `read_oml` already enforces the same
-    // `MAX_DEPTH` guard `write_oml` re-checks (see `oml.rs`'s module doc),
-    // so re-serializing what was *just* read successfully can never itself
-    // hit the depth guard -- confirmed the same way `infer.rs` confirmed
-    // its own now-absent depth check was unreachable (see that module's
-    // doc comment): there is no way to get a `raw` here that didn't just
-    // pass this exact check a few lines up.
-    let text_out = if args.compact {
-        omnist::oml::write_oml_compact(&raw)
+    cmd_format_raw(&raw, args.output.as_deref(), args.compact, args.json)
+}
+
+fn cmd_format_raw(
+    raw: &omnist::document::RawNode,
+    output: Option<&str>,
+    compact: bool,
+    json: bool,
+) -> i32 {
+    let res = if compact {
+        omnist::oml::write_oml_compact(raw)
     } else {
-        omnist::oml::write_oml(&raw, 2)
-    }
-    .expect("read_oml already enforced the depth guard write_oml re-checks");
-    if let Err(e) = write_output(args.output.as_deref(), text_out) {
-        return io_fail(args.json, &e);
+        omnist::oml::write_oml(raw, 2)
+    };
+    let text_out = match res {
+        Ok(t) => t,
+        Err(e) => return io_fail(json, &e.to_string()),
+    };
+    if let Err(e) = write_output(output, text_out) {
+        return io_fail(json, &e);
     }
     0
 }
@@ -1060,5 +1063,84 @@ mod tests {
     #[test]
     fn version_line_includes_crate_version() {
         assert_eq!(version_line(), format!("omnist {}", omnist::VERSION));
+    }
+
+    #[test]
+    fn cmd_format_in_process_coverage() {
+        // Direct in-process unit tests for cmd_format arms
+        let tmp = std::env::temp_dir().join(format!("omnist-unit-fmt-{}.oml", std::process::id()));
+        std::fs::write(&tmp, "a: 1\n").unwrap();
+        let tmp_str = tmp.to_string_lossy().to_string();
+
+        let code_ok = cmd_format(FormatArgs {
+            input: tmp_str.clone(),
+            compact: false,
+            arrays: false,
+            output: None,
+            json: false,
+        });
+        assert_eq!(code_ok, 0);
+
+        let code_compact = cmd_format(FormatArgs {
+            input: tmp_str.clone(),
+            compact: true,
+            arrays: false,
+            output: None,
+            json: true,
+        });
+        assert_eq!(code_compact, 0);
+
+        let code_arrays = cmd_format(FormatArgs {
+            input: tmp_str,
+            compact: false,
+            arrays: true,
+            output: None,
+            json: false,
+        });
+        assert_eq!(code_arrays, 2);
+
+        let code_missing = cmd_format(FormatArgs {
+            input: "/nonexistent/path/xyz.oml".to_string(),
+            compact: false,
+            arrays: false,
+            output: None,
+            json: false,
+        });
+        assert_eq!(code_missing, 2);
+
+        let bad_tmp =
+            std::env::temp_dir().join(format!("omnist-unit-bad-{}.oml", std::process::id()));
+        std::fs::write(&bad_tmp, "a: {\n").unwrap();
+        let code_parse_err = cmd_format(FormatArgs {
+            input: bad_tmp.to_string_lossy().to_string(),
+            compact: false,
+            arrays: false,
+            output: None,
+            json: false,
+        });
+        assert_eq!(code_parse_err, 2);
+    }
+
+    #[test]
+    fn cmd_format_raw_defensively_handles_write_error_directly() {
+        // White-box test of the write error arm: `read_oml` enforces MAX_DEPTH (200),
+        // so `write_oml`'s depth check is unreachable through `cmd_format`'s standard
+        // text parse path -- call `cmd_format_raw` directly with an artificially deep
+        // RawNode (depth > 200) to prove the error arm formats cleanly via `io_fail`
+        // without panicking (matches `document.rs:1130` precedent).
+        let mut deep = omnist::document::RawNode::Leaf(omnist::document::Scalar::Int(1.into()));
+        for _ in 0..205 {
+            deep = omnist::document::RawNode::Edges(vec![("a".to_string(), deep)]);
+        }
+        let code_pretty = cmd_format_raw(&deep, None, false, false);
+        assert_eq!(code_pretty, 2);
+        let code_compact = cmd_format_raw(&deep, None, true, true);
+        assert_eq!(code_compact, 2);
+
+        // Also exercise write_output failure path in-process
+        let normal = omnist::document::RawNode::Leaf(omnist::document::Scalar::Int(1.into()));
+        let code_write_err =
+            cmd_format_raw(&normal, Some("/nonexistent_dir_123/bad.oml"), false, false);
+        assert_eq!(code_write_err, 2);
     }
 }
