@@ -807,25 +807,103 @@ fn unrecognized_named_entity_is_a_parse_error() {
     );
 }
 
+#[test]
+fn test_xml_epilog_second_root_start_event_rejected() {
+    let err = read_xml("<root></root><second></second>").unwrap_err();
+    assert!(err.to_string().contains("multiple root elements"));
+}
 
 #[test]
-fn test_xml_rejects_leading_trailing_and_multi_root() {
-    // Exact repro from issue #119: leading garbage, second root element, and trailing content
-    assert!(read_xml("garbage<a/><b/>trailing").is_err());
+fn test_xml_epilog_second_root_empty_event_rejected() {
+    let err = read_xml("<root></root><second/>").unwrap_err();
+    assert!(err.to_string().contains("multiple root elements"));
+}
 
-    // Multiple root elements
-    let err_multi = read_xml("<a/><b/>").unwrap_err();
-    assert!(err_multi.to_string().contains("multiple root elements") || err_multi.to_string().contains("invalid XML"));
+#[test]
+fn test_xml_epilog_non_whitespace_text_rejected() {
+    let err = read_xml("<root></root>trailing").unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("unexpected text after root element")
+    );
+}
 
-    // Leading non-whitespace text
-    let err_leading = read_xml("garbage<a/>").unwrap_err();
-    assert!(err_leading.to_string().contains("invalid XML"));
+#[test]
+fn test_xml_epilog_non_whitespace_cdata_rejected() {
+    let err = read_xml("<root></root><![CDATA[trailing]]>").unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("unexpected text after root element")
+    );
+}
 
-    // Trailing non-whitespace text
-    let err_trailing = read_xml("<a/>trailing").unwrap_err();
-    assert!(err_trailing.to_string().contains("invalid XML"));
+#[test]
+fn test_xml_epilog_legal_comments_pi_doctype_skipped() {
+    let src = "<root></root><!-- trailing comment --><?pi target?><!DOCTYPE note>";
+    let doc = read_xml(src).unwrap();
+    assert_eq!(doc.to_raw(), edges(vec![("root", leaf_str(""))]));
+}
 
-    // Valid XML with legal comments, whitespace, and PI before and after root
-    let valid = "<?xml version=\"1.0\"?>\n<!-- comment -->\n<a/>\n<!-- trailing comment -->\n";
-    assert!(read_xml(valid).is_ok());
+#[test]
+fn test_xml_epilog_whitespace_text_and_cdata_skipped() {
+    let src = "<root></root>   \n\t  <![CDATA[   \n ]]>  ";
+    let doc = read_xml(src).unwrap();
+    assert_eq!(doc.to_raw(), edges(vec![("root", leaf_str(""))]));
+}
+
+#[test]
+fn test_xml_prolog_non_whitespace_cdata_rejected() {
+    let err = read_xml("<![CDATA[leading]]><root></root>").unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("unexpected text outside root element")
+    );
+}
+
+#[test]
+fn test_xml_prolog_whitespace_cdata_skipped() {
+    let src = "<![CDATA[   ]]><root></root>";
+    let doc = read_xml(src).unwrap();
+    assert_eq!(doc.to_raw(), edges(vec![("root", leaf_str(""))]));
+}
+
+#[test]
+fn test_xml_repro_garbage_multi_root_trailing_rejected() {
+    let err = read_xml("garbage<a/><b/>trailing").unwrap_err();
+    assert!(err.to_string().contains("invalid XML"));
+}
+#[test]
+fn test_xml_prolog_decl_comment_pi_doctype_skipped() {
+    let src = "<?xml version=\"1.0\"?>\n<!-- c -->\n<?pi target?>\n<!DOCTYPE root>\n<root/>";
+    let doc = read_xml(src).unwrap();
+    assert_eq!(doc.to_raw(), edges(vec![("root", leaf_str(""))]));
+}
+
+#[test]
+fn test_xml_prolog_unexpected_end_event_rejected() {
+    let err = read_xml("</closing><root/>").unwrap_err();
+    assert!(err.to_string().contains("invalid XML"));
+}
+
+#[test]
+fn test_xml_epilog_unexpected_end_event_rejected() {
+    let err = read_xml("<root/></closing>").unwrap_err();
+    assert!(err.to_string().contains("invalid XML"));
+}
+#[test]
+fn test_xml_prolog_general_ref_rejected() {
+    let err = read_xml("&amp;<root/>").unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("unexpected text outside root element")
+    );
+}
+
+#[test]
+fn test_xml_epilog_general_ref_rejected() {
+    let err = read_xml("<root/>&amp;").unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("unexpected text after root element")
+    );
 }

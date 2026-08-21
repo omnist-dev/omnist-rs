@@ -293,7 +293,12 @@ impl<'a> Parser<'a> {
         // boundary, so every `text[pos..]`/`text.get(pos..)` slice below is
         // safe.
         let n = text.len();
-        Parser { text, n, pos: 0, depth: 0 }
+        Parser {
+            text,
+            n,
+            pos: 0,
+            depth: 0,
+        }
     }
 
     fn error_at(&self, pos: usize, msg: String) -> ParseError {
@@ -387,7 +392,10 @@ impl<'a> Parser<'a> {
         if self.depth > crate::document::MAX_DEPTH {
             return Err(self.error_at(
                 self.pos,
-                format!("nesting exceeds the maximum depth ({})", crate::document::MAX_DEPTH),
+                format!(
+                    "nesting exceeds the maximum depth ({})",
+                    crate::document::MAX_DEPTH
+                ),
             ));
         }
         self.expect('{')?;
@@ -433,7 +441,10 @@ impl<'a> Parser<'a> {
         if self.depth > crate::document::MAX_DEPTH {
             return Err(self.error_at(
                 self.pos,
-                format!("nesting exceeds the maximum depth ({})", crate::document::MAX_DEPTH),
+                format!(
+                    "nesting exceeds the maximum depth ({})",
+                    crate::document::MAX_DEPTH
+                ),
             ));
         }
         self.expect('[')?;
@@ -1352,5 +1363,4 @@ mod tests {
         let err = read_json(&nested).unwrap_err();
         assert!(err.to_string().contains("maximum depth"));
     }
-
 }

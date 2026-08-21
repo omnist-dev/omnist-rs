@@ -155,10 +155,7 @@ pub fn read_xml(text: &str) -> Result<Doc, OmnistError> {
             }
             Event::Empty(e) => {
                 let tag = local_name(e.name());
-                break RawNode::Edges(vec![(
-                    tag,
-                    RawNode::Leaf(Scalar::Str(String::new())),
-                )]);
+                break RawNode::Edges(vec![(tag, RawNode::Leaf(Scalar::Str(String::new())))]);
             }
             Event::Eof => {
                 return Err(located_error(
@@ -185,15 +182,19 @@ pub fn read_xml(text: &str) -> Result<Doc, OmnistError> {
                     ));
                 }
             }
-            Event::Decl(_) | Event::Comment(_) | Event::PI(_) | Event::DocType(_) => {
-                // Legal prolog events: skip.
-            }
-            _ => {
+            Event::GeneralRef(_) => {
                 return Err(located_error(
                     &reader,
                     &normalized,
-                    "invalid XML: unexpected event in prolog",
+                    "invalid XML: unexpected text outside root element",
                 ));
+            }
+            Event::Decl(_)
+            | Event::Comment(_)
+            | Event::PI(_)
+            | Event::DocType(_)
+            | Event::End(_) => {
+                // Legal prolog events: skip.
             }
         }
     };
@@ -223,7 +224,18 @@ pub fn read_xml(text: &str) -> Result<Doc, OmnistError> {
                     ));
                 }
             }
-            Event::Comment(_) | Event::PI(_) | Event::DocType(_) | Event::Decl(_) => {
+            Event::GeneralRef(_) => {
+                return Err(located_error(
+                    &reader,
+                    &normalized,
+                    "invalid XML: unexpected text after root element",
+                ));
+            }
+            Event::Comment(_)
+            | Event::PI(_)
+            | Event::DocType(_)
+            | Event::Decl(_)
+            | Event::End(_) => {
                 // Legal epilog events: skip.
             }
             Event::Start(_) | Event::Empty(_) => {
@@ -231,13 +243,6 @@ pub fn read_xml(text: &str) -> Result<Doc, OmnistError> {
                     &reader,
                     &normalized,
                     "invalid XML: multiple root elements found",
-                ));
-            }
-            _ => {
-                return Err(located_error(
-                    &reader,
-                    &normalized,
-                    "invalid XML: unexpected event after root element",
                 ));
             }
         }

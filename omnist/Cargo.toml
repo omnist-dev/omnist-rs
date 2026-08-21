@@ -21,7 +21,7 @@ num-traits = "0.2"
 proptest = "1"
 # Fixture-corpus replay only (issue #40): the harness reads a JSON corpus
 # extracted from the live Python test suite. Not used by any non-test code.
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
 
 [[bench]]
 name = "yaml_merge"

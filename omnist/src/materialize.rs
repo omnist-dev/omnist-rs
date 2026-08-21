@@ -222,14 +222,12 @@ fn try_upgrade(value: &DocScalar, kind: ScalarKind) -> Option<DocScalar> {
         // conversion -- reject if the value is non-finite or loses precision
         // when round-tripped back to BigInt.
         (ScalarKind::Number, DocScalar::Int(i)) => {
-            if let Some(f) = i.to_f64() {
-                if f.is_finite() {
-                    if let Some(round_tripped) = num_bigint::BigInt::from_f64(f) {
-                        if &round_tripped == i {
-                            return Some(DocScalar::Float(f));
-                        }
-                    }
-                }
+            if let Some(f) = i.to_f64()
+                && f.is_finite()
+                && let Some(round_tripped) = num_bigint::BigInt::from_f64(f)
+                && &round_tripped == i
+            {
+                return Some(DocScalar::Float(f));
             }
             None
         }
