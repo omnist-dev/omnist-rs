@@ -142,7 +142,7 @@ pub fn read_xml(text: &str) -> Result<Doc, OmnistError> {
     let mut reader = Reader::from_str(&normalized);
     reader.config_mut().trim_text(false);
     let mut buf = Vec::new();
-    loop {
+    let root_node: RawNode = loop {
         buf.clear();
         let ev = reader
             .read_event_into(&mut buf)
@@ -151,16 +151,14 @@ pub fn read_xml(text: &str) -> Result<Doc, OmnistError> {
             Event::Start(e) => {
                 let tag = local_name(e.name());
                 let content = parse_content(&mut reader, &normalized, 1)?;
-                let doc = Doc::from_raw(RawNode::Edges(vec![(tag, content)]))?;
-                return Ok(doc);
+                break RawNode::Edges(vec![(tag, content)]);
             }
             Event::Empty(e) => {
                 let tag = local_name(e.name());
-                let doc = Doc::from_raw(RawNode::Edges(vec![(
+                break RawNode::Edges(vec![(
                     tag,
                     RawNode::Leaf(Scalar::Str(String::new())),
-                )]))?;
-                return Ok(doc);
+                )]);
             }
             Event::Eof => {
                 return Err(located_error(
@@ -169,10 +167,84 @@ pub fn read_xml(text: &str) -> Result<Doc, OmnistError> {
                     "invalid XML: no root element found",
                 ));
             }
-            // Decl/Comment/PI/DocType/whitespace-only prolog text: skip.
-            _ => continue,
+            Event::Text(t) => {
+                if !t.iter().all(|b| b.is_ascii_whitespace()) {
+                    return Err(located_error(
+                        &reader,
+                        &normalized,
+                        "invalid XML: unexpected text outside root element",
+                    ));
+                }
+            }
+            Event::CData(t) => {
+                if !t.iter().all(|b| b.is_ascii_whitespace()) {
+                    return Err(located_error(
+                        &reader,
+                        &normalized,
+                        "invalid XML: unexpected text outside root element",
+                    ));
+                }
+            }
+            Event::Decl(_) | Event::Comment(_) | Event::PI(_) | Event::DocType(_) => {
+                // Legal prolog events: skip.
+            }
+            _ => {
+                return Err(located_error(
+                    &reader,
+                    &normalized,
+                    "invalid XML: unexpected event in prolog",
+                ));
+            }
+        }
+    };
+
+    loop {
+        buf.clear();
+        let ev = reader
+            .read_event_into(&mut buf)
+            .map_err(|e| xml_parse_error(&reader, &normalized, &e))?;
+        match ev {
+            Event::Eof => break,
+            Event::Text(t) => {
+                if !t.iter().all(|b| b.is_ascii_whitespace()) {
+                    return Err(located_error(
+                        &reader,
+                        &normalized,
+                        "invalid XML: unexpected text after root element",
+                    ));
+                }
+            }
+            Event::CData(t) => {
+                if !t.iter().all(|b| b.is_ascii_whitespace()) {
+                    return Err(located_error(
+                        &reader,
+                        &normalized,
+                        "invalid XML: unexpected text after root element",
+                    ));
+                }
+            }
+            Event::Comment(_) | Event::PI(_) | Event::DocType(_) | Event::Decl(_) => {
+                // Legal epilog events: skip.
+            }
+            Event::Start(_) | Event::Empty(_) => {
+                return Err(located_error(
+                    &reader,
+                    &normalized,
+                    "invalid XML: multiple root elements found",
+                ));
+            }
+            _ => {
+                return Err(located_error(
+                    &reader,
+                    &normalized,
+                    "invalid XML: unexpected event after root element",
+                ));
+            }
         }
     }
+
+    let doc = Doc::from_raw(root_node)?;
+    Ok(doc)
 }
 
 /// Reads the content of an already-opened element (the matching `Start`

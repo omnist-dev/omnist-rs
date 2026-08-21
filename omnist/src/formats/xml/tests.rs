@@ -806,3 +806,26 @@ fn unrecognized_named_entity_is_a_parse_error() {
         "got {err:?}"
     );
 }
+
+
+#[test]
+fn test_xml_rejects_leading_trailing_and_multi_root() {
+    // Exact repro from issue #119: leading garbage, second root element, and trailing content
+    assert!(read_xml("garbage<a/><b/>trailing").is_err());
+
+    // Multiple root elements
+    let err_multi = read_xml("<a/><b/>").unwrap_err();
+    assert!(err_multi.to_string().contains("multiple root elements") || err_multi.to_string().contains("invalid XML"));
+
+    // Leading non-whitespace text
+    let err_leading = read_xml("garbage<a/>").unwrap_err();
+    assert!(err_leading.to_string().contains("invalid XML"));
+
+    // Trailing non-whitespace text
+    let err_trailing = read_xml("<a/>trailing").unwrap_err();
+    assert!(err_trailing.to_string().contains("invalid XML"));
+
+    // Valid XML with legal comments, whitespace, and PI before and after root
+    let valid = "<?xml version=\"1.0\"?>\n<!-- comment -->\n<a/>\n<!-- trailing comment -->\n";
+    assert!(read_xml(valid).is_ok());
+}
