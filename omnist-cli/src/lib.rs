@@ -695,12 +695,15 @@ fn cmd_format(args: FormatArgs) -> i32 {
     // its own now-absent depth check was unreachable (see that module's
     // doc comment): there is no way to get a `raw` here that didn't just
     // pass this exact check a few lines up.
-    let text_out = if args.compact {
+    let res = if args.compact {
         omnist::oml::write_oml_compact(&raw)
     } else {
         omnist::oml::write_oml(&raw, 2)
-    }
-    .expect("read_oml already enforced the depth guard write_oml re-checks");
+    };
+    let text_out = match res {
+        Ok(t) => t,
+        Err(e) => return io_fail(args.json, &e.to_string()),
+    };
     if let Err(e) = write_output(args.output.as_deref(), text_out) {
         return io_fail(args.json, &e);
     }

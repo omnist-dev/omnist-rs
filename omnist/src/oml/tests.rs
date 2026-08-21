@@ -1337,3 +1337,19 @@ fn quoted_reserved_spelling_is_a_valid_label_and_round_trips() {
         assert_eq!(parsed, raw, "round trip mismatch for quoted {word:?}");
     }
 }
+
+
+#[test]
+fn test_oml_depth_limit_boundary_and_consistency() {
+    use crate::oml::{read_oml, write_oml};
+
+    // Exactly at MAX_DEPTH (200): 199 levels of "a: { " wrapping "z: 1", leaf is at depth 200
+    let valid_oml = "a: { ".repeat(199) + "z: 1" + &" }".repeat(199);
+    let raw = read_oml(&valid_oml).expect("should accept depth 200");
+    assert!(write_oml(&raw, 2).is_ok());
+
+    // Exceeds MAX_DEPTH: 200 levels of "a: { " wrapping "z: 1", leaf is at depth 201
+    let invalid_oml = "a: { ".repeat(200) + "z: 1" + &" }".repeat(200);
+    let err = read_oml(&invalid_oml).unwrap_err();
+    assert!(err.to_string().contains("maximum depth"));
+}

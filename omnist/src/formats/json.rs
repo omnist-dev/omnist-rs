@@ -774,7 +774,7 @@ mod tests {
     }
 
     #[test]
-    fn nesting_past_max_depth_is_a_document_error() {
+    fn nesting_past_max_depth_is_a_parse_error() {
         let mut text = String::new();
         for _ in 0..=crate::document::MAX_DEPTH {
             text.push_str(r#"{"a":"#);
@@ -784,7 +784,8 @@ mod tests {
             text.push('}');
         }
         let err = read_json(&text).unwrap_err();
-        assert!(matches!(err, OmnistError::Document(_)), "got {err:?}");
+        assert!(matches!(err, OmnistError::Parse(_)), "got {err:?}");
+        assert!(err.to_string().contains("maximum depth"));
     }
 
     #[test]
