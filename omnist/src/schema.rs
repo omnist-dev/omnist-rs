@@ -794,14 +794,14 @@ impl Schema {
         }
         for (rec_name, rec) in &self.env {
             for f in rec.fields() {
-                if let FieldType::Ref(r) = &f.ty {
-                    if !self.env.contains_key(&r.name) {
-                        return Err(SchemaError::new(
-                            format!("{rec_name}.{}", f.label),
-                            "schema.unknown-type",
-                            format!("unknown type {:?}", r.name),
-                        ));
-                    }
+                if let FieldType::Ref(r) = &f.ty
+                    && !self.env.contains_key(&r.name)
+                {
+                    return Err(SchemaError::new(
+                        format!("{rec_name}.{}", f.label),
+                        "schema.unknown-type",
+                        format!("unknown type {:?}", r.name),
+                    ));
                 }
             }
         }

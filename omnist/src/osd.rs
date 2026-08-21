@@ -342,14 +342,14 @@ impl Parser {
             (bound, Some(bound))
         };
         self.expect_punct("]")?;
-        if let Some(hi) = hi {
-            if hi < lo {
-                return Err(SchemaError::new(
-                    path,
-                    "schema.invalid-cardinality",
-                    format!("invalid cardinality range [{lo}, {hi}]"),
-                ));
-            }
+        if let Some(hi) = hi
+            && hi < lo
+        {
+            return Err(SchemaError::new(
+                path,
+                "schema.invalid-cardinality",
+                format!("invalid cardinality range [{lo}, {hi}]"),
+            ));
         }
         Ok((lo, hi))
     }
