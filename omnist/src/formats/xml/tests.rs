@@ -965,14 +965,14 @@ fn test_xml_pretype_integer() {
 fn test_xml_pretype_number() {
     let schema_text = "record Data { \"num1\": number, \"num2\": number, \"exp1\": number, \"exp2\": number, \"invalid\": number } record Root { \"data\": Data } root Root";
     let schema = crate::osd::parse_schema(schema_text).unwrap();
-    let xml = "<data><num1>3.14</num1><num2>-0.5</num2><exp1>1e6</exp1><exp2>-2.5E-3</exp2><invalid>1.2.3</invalid></data>";
+    let xml = "<data><num1>3.25</num1><num2>-0.5</num2><exp1>1e6</exp1><exp2>-2.5E-3</exp2><invalid>1.2.3</invalid></data>";
     let doc = read_xml_with_schema(xml, &schema).unwrap();
     assert_eq!(
         doc.to_raw(),
         edges(vec![(
             "data",
             edges(vec![
-                ("num1", leaf(Scalar::Float(3.14))),
+                ("num1", leaf(Scalar::Float(3.25))),
                 ("num2", leaf(Scalar::Float(-0.5))),
                 ("exp1", leaf(Scalar::Float(1000000.0))),
                 ("exp2", leaf(Scalar::Float(-0.0025))),
