@@ -23,7 +23,7 @@ This repository follows a strict spec-first methodology. `vendor/omnist-spec` is
 
 ## Status
 
-**`v0.1.3-alpha`.**
+**`v0.2.0-alpha`.**
 
 - **Conformance Harness**: Track 1 (CLI fixtures) **19 / 19 (100%) PASS**. Track 2 (JSON test vectors) **130 / 152 PASS, 0 real fails, 22 skips**.
 - **Testing**: **936 tests passing**, 0 failures — unit tests plus `proptest`-based property fuzzing across every format reader.

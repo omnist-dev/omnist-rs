@@ -1,6 +1,6 @@
 [package]
 name = "omnist"
-version = "0.1.3-alpha"
+version = "0.2.0-alpha"
 edition = "2024"
 description = "One data model, many formats: read, validate, and write JSON, YAML, TOML, XML, and OML. (Rust port of https://github.com/omnist-dev/omnist)"
 license = "Apache-2.0"
