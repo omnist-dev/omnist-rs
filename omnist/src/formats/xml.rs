@@ -126,7 +126,7 @@
 //! "non-table root" precedent).
 
 use crate::WriteError;
-use crate::document::{Doc, MAX_DEPTH, RawNode, Scalar};
+use crate::document::{Doc, MAX_DEPTH, MAX_NODES, RawNode, Scalar};
 use crate::error::{DocumentError, OmnistError, ParseError};
 use crate::formats::float_fmt;
 use crate::formats::textpos::line_col_bytes;
@@ -224,6 +224,7 @@ fn read_xml_raw(text: &str) -> Result<RawNode, OmnistError> {
     let mut reader = Reader::from_str(&normalized);
     reader.config_mut().trim_text(false);
     let mut buf = Vec::new();
+    let mut node_count: usize = 0;
     let root_node: RawNode = loop {
         buf.clear();
         let ev = reader
@@ -231,11 +232,13 @@ fn read_xml_raw(text: &str) -> Result<RawNode, OmnistError> {
             .map_err(|e| xml_parse_error(&reader, &normalized, &e))?;
         match ev {
             Event::Start(e) => {
+                node_count += 1;
                 let tag = local_name(e.name());
-                let content = parse_content(&mut reader, &normalized, 1)?;
+                let content = parse_content(&mut reader, &normalized, 1, &mut node_count)?;
                 break RawNode::Edges(vec![(tag, content)]);
             }
             Event::Empty(e) => {
+                node_count += 1;
                 let tag = local_name(e.name());
                 break RawNode::Edges(vec![(tag, RawNode::Leaf(Scalar::Str(String::new())))]);
             }
@@ -359,6 +362,7 @@ fn parse_content(
     reader: &mut Reader<&[u8]>,
     source: &str,
     depth: usize,
+    node_count: &mut usize,
 ) -> Result<RawNode, OmnistError> {
     if depth > MAX_DEPTH {
         return Err(DocumentError::new(
@@ -377,11 +381,27 @@ fn parse_content(
             .map_err(|e| xml_parse_error(reader, source, &e))?;
         match ev {
             Event::Start(e) => {
+                *node_count += 1;
+                if *node_count > MAX_NODES {
+                    return Err(DocumentError::new(
+                        "$",
+                        format!("document exceeds the maximum node count ({MAX_NODES})"),
+                    )
+                    .into());
+                }
                 let tag = local_name(e.name());
-                let child = parse_content(reader, source, depth + 1)?;
+                let child = parse_content(reader, source, depth + 1, node_count)?;
                 children.push((tag, child));
             }
             Event::Empty(e) => {
+                *node_count += 1;
+                if *node_count > MAX_NODES {
+                    return Err(DocumentError::new(
+                        "$",
+                        format!("document exceeds the maximum node count ({MAX_NODES})"),
+                    )
+                    .into());
+                }
                 let tag = local_name(e.name());
                 children.push((tag, RawNode::Leaf(Scalar::Str(String::new()))));
             }
