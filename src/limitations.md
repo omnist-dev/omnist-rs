@@ -1,6 +1,6 @@
 # Limitations & stability
 
-## Alpha status: `0.1.0-alpha`, per this project's versioning rule
+## Alpha status: `0.2.0-alpha`, per this project's versioning rule
 
 The Rust port's first feature-complete milestone (issue #28) plus its own
 conformance-test harness against
@@ -14,31 +14,14 @@ them); accumulating further features or fixes alone never moves it past
 `-alpha` on its own. Treat every public API in this crate as subject to
 change without a deprecation cycle until that further sign-off happens.
 
-## The `any`-type scoping gap (deferred, not forgotten)
+## The `any`-type support (landed)
 
 Python's schema model has an `AnyType`/`ANY` type and an `allow_any` option
 several APIs (`osd`, schema algebra, inference) use as a fallback when a
-precise type can't otherwise be resolved. This Rust port's
-`omnist::schema` module (issue #6) **deliberately does not implement
-`any`** -- its inclusion in the public API is an explicitly deferred design
-question pending user sign-off, not an oversight. The same scoping choice
-threads through every module that would otherwise need it:
-
-- `omnist::osd` still recognizes `"any"` as a reserved schema-text keyword
-  (so it can't be used as a record name), but using it as a field's type
-  returns a clear `SchemaError` explaining it isn't supported yet, rather
-  than silently misparsing.
-- `omnist::infer::infer` has no `allow_any` fallback: a label whose samples
-  mix objects and scalars, or whose scalars disagree on kind outside the
-  integer/number subset relation, returns a `SchemaError` instead of
-  silently degrading to `any`.
-- The CLI's `infer --allow-any` flag is accepted by the argument parser
-  (matching Python's surface) but returns the same "not supported yet"
-  error rather than doing something different from plain `infer`.
-
-Closing this gap is 1.0-gating work, not a bug to fix incrementally --
-see the sibling `omnist` project's own `any`-openness decision, which this
-port's scoping deliberately mirrors rather than resolves independently.
+precise type can't otherwise be resolved. In this Rust port, `FieldType::Any`
+is fully supported across `omnist::schema`, `omnist::osd` parsing (`record X { "a": any }`),
+and `omnist::infer` (with `allow_any` fallback mode when schemas have ambiguous
+types or mixed structures, also wired into the CLI's `infer --allow-any` flag).
 
 ## `Scalar::Int` is arbitrary-precision (issue #104)
 
