@@ -171,6 +171,14 @@ catch a signature that changed while the name stayed the same (e.g.
 `Int(i64)` → `Int(BigInt)`); that half is still on the "update it in the
 same PR" discipline above, not a mechanical check.
 
+**Mechanical identifier and claim sweep on core model changes (issue #123).**
+Whenever a core model type changes (e.g. its internal representation like
+`i64` -> `BigInt`, an added/removed variant, or a parser refactor like
+`Vec<char>` -> byte-indexed `&str`), in addition to human review for semantic
+claims, mechanically grep the entire repository (`git grep -rn '<old_claim>'`)
+for stale doc comments and prose claims justifying old architectural choices
+(such as justifying the absence of guards based on an outdated `i64` assumption).
+
 ## When the port disagrees with upstream Python or TypeScript
 
 Porting will surface cases where this implementation's behavior differs
