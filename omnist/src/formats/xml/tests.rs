@@ -1137,3 +1137,25 @@ fn test_xml_pretype_read_xml_with_schema_parse_error() {
     let err = read_xml_with_schema("<unclosed>", &schema).unwrap_err();
     assert!(err.to_string().contains("invalid XML"));
 }
+
+#[test]
+fn test_read_xml_node_count_limit_empty_elements() {
+    use crate::document::MAX_NODES;
+    // At limit: 1 doc root + 1 xml root + (MAX_NODES - 2) children = MAX_NODES
+    let at_limit = format!("<root>{}</root>", "<a/>".repeat(MAX_NODES - 2));
+    assert!(read_xml(&at_limit).is_ok());
+
+    // One past limit during event streaming: 1 xml root + MAX_NODES children = MAX_NODES + 1
+    let past_limit = format!("<root>{}</root>", "<a/>".repeat(MAX_NODES));
+    let err = read_xml(&past_limit).unwrap_err();
+    assert!(err.to_string().contains("maximum node count"));
+}
+
+#[test]
+fn test_read_xml_node_count_limit_start_elements() {
+    use crate::document::MAX_NODES;
+    // One past limit during event streaming with start elements: 1 xml root + MAX_NODES children
+    let past_limit = format!("<root>{}</root>", "<a>1</a>".repeat(MAX_NODES));
+    let err = read_xml(&past_limit).unwrap_err();
+    assert!(err.to_string().contains("maximum node count"));
+}
