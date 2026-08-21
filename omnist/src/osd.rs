@@ -147,8 +147,6 @@ fn unquote(s: &str) -> String {
 // Parser
 // ---------------------------------------------------------------------------
 
-
-
 struct Parser {
     toks: Vec<Tok>,
     i: usize,
@@ -892,7 +890,10 @@ mod tests {
 
     #[test]
     fn cardinality_overflow_is_an_error() {
-        let err = parse_schema(r#"record X { "a" [999999999999999999999999999999999999999]: string } root X"#).unwrap_err();
+        let err = parse_schema(
+            r#"record X { "a" [999999999999999999999999999999999999999]: string } root X"#,
+        )
+        .unwrap_err();
         assert_eq!(err.code, "schema.non-integer-cardinality");
         assert_eq!(err.path, "X.a");
     }
