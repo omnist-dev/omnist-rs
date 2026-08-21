@@ -5,7 +5,12 @@ use std::time::Instant;
 
 fn make_unique_keys_doc(n: usize) -> Doc {
     let edges = (0..n)
-        .map(|i| (format!("key_{i}"), RawNode::Leaf(Scalar::Int((i as i64).into()))))
+        .map(|i| {
+            (
+                format!("key_{i}"),
+                RawNode::Leaf(Scalar::Int((i as i64).into())),
+            )
+        })
         .collect();
     Doc::from_raw(RawNode::Edges(edges)).unwrap()
 }
@@ -14,7 +19,10 @@ fn make_repeated_keys_doc(keys: usize, reps: usize) -> Doc {
     let mut edges = Vec::with_capacity(keys * reps);
     for i in 0..reps {
         for k in 0..keys {
-            edges.push((format!("key_{k}"), RawNode::Leaf(Scalar::Int((i as i64).into()))));
+            edges.push((
+                format!("key_{k}"),
+                RawNode::Leaf(Scalar::Int((i as i64).into())),
+            ));
         }
     }
     Doc::from_raw(RawNode::Edges(edges)).unwrap()
@@ -62,8 +70,20 @@ fn main() {
     }
     let yaml_repeated_ms = (start.elapsed().as_micros() as f64 / iters as f64) / 1000.0;
 
-    println!("JSON unique keys (5,000):     {:>8.3} ms / iter", json_unique_ms);
-    println!("JSON repeated keys (5,000):   {:>8.3} ms / iter", json_repeated_ms);
-    println!("YAML unique keys (5,000):     {:>8.3} ms / iter", yaml_unique_ms);
-    println!("YAML repeated keys (5,000):   {:>8.3} ms / iter", yaml_repeated_ms);
+    println!(
+        "JSON unique keys (5,000):     {:>8.3} ms / iter",
+        json_unique_ms
+    );
+    println!(
+        "JSON repeated keys (5,000):   {:>8.3} ms / iter",
+        json_repeated_ms
+    );
+    println!(
+        "YAML unique keys (5,000):     {:>8.3} ms / iter",
+        yaml_unique_ms
+    );
+    println!(
+        "YAML repeated keys (5,000):   {:>8.3} ms / iter",
+        yaml_repeated_ms
+    );
 }
