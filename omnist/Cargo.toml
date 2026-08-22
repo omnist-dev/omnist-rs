@@ -38,3 +38,7 @@ harness = false
 [[bench]]
 name = "toml_writer"
 harness = false
+
+[[bench]]
+name = "xml_writer"
+harness = false

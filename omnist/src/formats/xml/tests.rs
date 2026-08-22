@@ -1159,3 +1159,111 @@ fn test_read_xml_node_count_limit_start_elements() {
     let err = read_xml(&past_limit).unwrap_err();
     assert!(err.to_string().contains("maximum node count"));
 }
+
+#[test]
+fn write_xml_empty_string_leaf_renders_self_closing_tag() {
+    let doc = Doc::from_raw(RawNode::Edges(vec![(
+        "root".to_string(),
+        RawNode::Leaf(Scalar::Str("".to_string())),
+    )]))
+    .unwrap();
+    let xml = write_xml(&doc, false, None).unwrap();
+    assert_eq!(xml, "<root />");
+}
+
+#[test]
+fn write_xml_empty_internal_node_renders_self_closing_tag() {
+    let doc = Doc::from_raw(RawNode::Edges(vec![(
+        "root".to_string(),
+        RawNode::Edges(vec![]),
+    )]))
+    .unwrap();
+    let xml = write_xml(&doc, false, None).unwrap();
+    assert_eq!(xml, "<root />");
+}
+
+#[test]
+fn cursor_internal_edges_on_leaf_returns_err() {
+    let doc = Doc::from_raw(RawNode::Leaf(Scalar::Int(10.into()))).unwrap();
+    assert!(doc.root().internal_edges().is_err());
+}
+
+#[test]
+fn write_xml_scalar_leaf_roundtrips() {
+    let doc = Doc::from_raw(RawNode::Edges(vec![(
+        "root".to_string(),
+        RawNode::Leaf(Scalar::Str("hello".to_string())),
+    )]))
+    .unwrap();
+    let xml = write_xml(&doc, false, None).unwrap();
+    assert_eq!(xml, "<root>hello</root>");
+}
+
+#[test]
+fn write_xml_nested_elements_preserves_trailing_newline() {
+    let doc = Doc::from_raw(RawNode::Edges(vec![(
+        "root".to_string(),
+        RawNode::Edges(vec![(
+            "child".to_string(),
+            RawNode::Leaf(Scalar::Str("val".to_string())),
+        )]),
+    )]))
+    .unwrap();
+    let xml = write_xml(&doc, false, None).unwrap();
+    assert!(xml.ends_with('\n'));
+}
+
+#[test]
+fn doc_check_format_xml_delegates_to_check_xml() {
+    let doc = Doc::from_raw(RawNode::Edges(vec![(
+        "root".to_string(),
+        RawNode::Leaf(Scalar::Null),
+    )]))
+    .unwrap();
+    let rep = doc.check_format("xml").unwrap();
+    assert_eq!(rep.adjustments().len(), 1);
+}
+
+#[test]
+fn doc_to_format_xml_delegates_to_write_xml() {
+    let doc = Doc::from_raw(RawNode::Edges(vec![(
+        "root".to_string(),
+        RawNode::Leaf(Scalar::Str("ok".to_string())),
+    )]))
+    .unwrap();
+    let text = doc.to_format("xml").unwrap();
+    assert_eq!(text, "<root>ok</root>");
+}
+
+#[test]
+fn write_xml_temporal_scalars() {
+    let doc_date = Doc::from_raw(RawNode::Edges(vec![(
+        "root".to_string(),
+        RawNode::Leaf(Scalar::Date("2024-01-01".to_string())),
+    )]))
+    .unwrap();
+    assert_eq!(
+        write_xml(&doc_date, false, None).unwrap(),
+        "<root>2024-01-01</root>"
+    );
+
+    let doc_time = Doc::from_raw(RawNode::Edges(vec![(
+        "root".to_string(),
+        RawNode::Leaf(Scalar::Time("12:00:00".to_string())),
+    )]))
+    .unwrap();
+    assert_eq!(
+        write_xml(&doc_time, false, None).unwrap(),
+        "<root>12:00:00</root>"
+    );
+
+    let doc_dt = Doc::from_raw(RawNode::Edges(vec![(
+        "root".to_string(),
+        RawNode::Leaf(Scalar::Datetime("2024-01-01T12:00:00Z".to_string())),
+    )]))
+    .unwrap();
+    assert_eq!(
+        write_xml(&doc_dt, false, None).unwrap(),
+        "<root>2024-01-01T12:00:00Z</root>"
+    );
+}

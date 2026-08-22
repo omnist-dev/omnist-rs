@@ -126,7 +126,7 @@
 //! "non-table root" precedent).
 
 use crate::WriteError;
-use crate::document::{Doc, MAX_DEPTH, MAX_NODES, RawNode, Scalar};
+use crate::document::{Cursor, Doc, MAX_DEPTH, MAX_NODES, RawNode, Scalar};
 use crate::error::{DocumentError, OmnistError, ParseError};
 use crate::formats::float_fmt;
 use crate::formats::textpos::line_col_bytes;
@@ -540,19 +540,20 @@ pub fn write_xml(
     strict: bool,
     report: Option<&mut WriteReport>,
 ) -> Result<String, WriteError> {
-    let raw = doc.to_raw();
-    let RawNode::Edges(edges) = &raw else {
+    let root = doc.root();
+    let Ok(edges) = root.internal_edges() else {
         return Err(single_root_error());
     };
     if edges.len() != 1 {
         return Err(single_root_error());
     }
     let mut rep = WriteReport::new();
-    scan_xml_into(&raw, "$", &mut rep);
-    let (tag, content) = &edges[0];
+    scan_xml_cursor(&root, "$", &mut rep);
+    let (tag, child_id) = &edges[0];
+    let child_cursor = root.seek(*child_id);
     let mut out = String::new();
-    write_element(tag, content, 0, &mut out);
-    if !matches!(content, RawNode::Edges(e) if !e.is_empty()) && out.ends_with('\n') {
+    write_element(tag, &child_cursor, 0, &mut out);
+    if !matches!(child_cursor.internal_edges(), Ok(e) if !e.is_empty()) && out.ends_with('\n') {
         out.pop();
     }
     crate::report::finish_write(out, rep, strict, report)
@@ -571,7 +572,7 @@ fn single_root_error() -> WriteError {
 /// with no root-shape guard of its own).
 pub fn check_xml(doc: &Doc) -> WriteReport {
     let mut rep = WriteReport::new();
-    scan_xml_into(&doc.to_raw(), "$", &mut rep);
+    scan_xml_cursor(&doc.root(), "$", &mut rep);
     rep
 }
 
@@ -600,9 +601,9 @@ impl crate::formats::Codec for Xml {
     }
 }
 
-fn scan_xml_into(node: &RawNode, path: &str, rep: &mut WriteReport) {
-    match node {
-        RawNode::Edges(edges) => {
+fn scan_xml_cursor(cursor: &Cursor, path: &str, rep: &mut WriteReport) {
+    match cursor.internal_edges() {
+        Ok(edges) => {
             if edges.is_empty() {
                 rep.add(
                     path,
@@ -613,14 +614,8 @@ fn scan_xml_into(node: &RawNode, path: &str, rep: &mut WriteReport) {
                 );
                 return;
             }
-            // `IndexMap`, not `HashMap`: `ops/mod.rs`'s no-`HashMap`
-            // convention is for anything feeding canonical output, and
-            // while iteration order is never observed here (each entry is
-            // looked up by its own label), an ordered map keeps that
-            // determinism argument local instead of requiring the reader to
-            // re-derive it (issue #51).
             let mut counts: IndexMap<&str, usize> = IndexMap::new();
-            for (label, child) in edges {
+            for (label, child_id) in edges {
                 let entry = counts.entry(label.as_str()).or_insert(0);
                 let i = *entry;
                 *entry += 1;
@@ -633,10 +628,14 @@ fn scan_xml_into(node: &RawNode, path: &str, rep: &mut WriteReport) {
                         Severity::Warning,
                     );
                 }
-                scan_xml_into(child, &p, rep);
+                let child = cursor.seek(*child_id);
+                scan_xml_cursor(&child, &p, rep);
             }
         }
-        RawNode::Leaf(scalar) => scan_leaf(scalar, path, rep),
+        Err(_) => {
+            let scalar = cursor.value().unwrap();
+            scan_leaf(scalar, path, rep);
+        }
     }
 }
 
@@ -691,24 +690,26 @@ fn scan_leaf(scalar: &Scalar, path: &str, rep: &mut WriteReport) {
     }
 }
 
-fn write_element(tag: &str, content: &RawNode, level: usize, out: &mut String) {
+fn write_element(tag: &str, content: &Cursor, level: usize, out: &mut String) {
     let indent = "  ".repeat(level);
     out.push_str(&indent);
     out.push('<');
     out.push_str(&xml_name(tag));
-    match content {
-        RawNode::Edges(edges) if !edges.is_empty() => {
+    match content.internal_edges() {
+        Ok(edges) if !edges.is_empty() => {
             out.push_str(">\n");
-            for (label, child) in edges {
-                write_element(label, child, level + 1, out);
+            for (label, child_id) in edges {
+                let child = content.seek(*child_id);
+                write_element(label, &child, level + 1, out);
             }
             out.push_str(&indent);
             out.push_str("</");
             out.push_str(&xml_name(tag));
             out.push_str(">\n");
         }
-        RawNode::Edges(_) => out.push_str(" />\n"),
-        RawNode::Leaf(scalar) => {
+        Ok(_) => out.push_str(" />\n"),
+        Err(_) => {
+            let scalar = content.value().unwrap();
             let text = xml_sanitize(&xml_text(scalar));
             if text.is_empty() {
                 out.push_str(" />\n");

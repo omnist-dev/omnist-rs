@@ -590,6 +590,13 @@ impl<'a> Cursor<'a> {
     /// `schema.rs`'s `conform_record` (the validate hot path), which reuses
     /// one path buffer for the whole tree walk instead of allocating one
     /// `String` per edge regardless of whether that edge ever needs one.
+    pub(crate) fn internal_edges(&self) -> Result<&'a [(String, NodeId)], DocumentError> {
+        match &self.doc.entry(self.id).data {
+            NodeData::Internal(edges) => Ok(edges),
+            NodeData::Leaf(_) => Err(DocumentError::new(&self.path, "a leaf has no edges")),
+        }
+    }
+
     pub(crate) fn raw_edges(&self) -> Result<Vec<(&'a str, usize, NodeId)>, DocumentError> {
         match &self.doc.entry(self.id).data {
             NodeData::Internal(edges) => {
