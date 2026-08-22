@@ -122,7 +122,7 @@ impl<'a> Scanner<'a> {
     fn word_boundary_ok(&self, end: usize) -> bool {
         !self
             .byte_at(end)
-            .is_some_and(|b| b.is_ascii_alphanumeric() || b == b'-')
+            .is_some_and(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
     }
 
     /// Advance past (and describe) the next significant token.
