@@ -1,8 +1,20 @@
 # omnist-rs
 
+[![Crates.io](https://img.shields.io/crates/v/omnist.svg)](https://crates.io/crates/omnist)
+[![docs.rs](https://img.shields.io/docsrs/omnist)](https://docs.rs/omnist)
+
 From-scratch Rust port of the [Omnist data-interchange specification](https://github.com/omnist-dev/omnist-spec).
 
 Docs: [rs.omnist.dev](https://rs.omnist.dev) — includes generated [rustdoc API reference](https://rs.omnist.dev/api/omnist/index.html)
+
+## Install
+
+```toml
+[dependencies]
+omnist = "0.2.0-alpha"
+```
+
+Published on [crates.io](https://crates.io/crates/omnist); API reference on [docs.rs](https://docs.rs/omnist).
 
 ## Methodology
 

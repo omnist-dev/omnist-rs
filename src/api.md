@@ -10,8 +10,10 @@ reproduced verbatim. For *why* each operation behaves the way it does, see
 [omnist-spec](https://github.com/omnist-dev/omnist-spec) sections (the
 normative behavior).
 
-`omnist` has `publish = false` in `Cargo.toml`, so there is no docs.rs page
-for this crate -- this is the closest equivalent. All items below are
+`omnist` is published on [crates.io](https://crates.io/crates/omnist), so
+[docs.rs/omnist](https://docs.rs/omnist) is the canonical generated API
+reference; this page and the rustdoc mirror above are curated
+alternatives, not a substitute for the real thing. All items below are
 re-exported at the crate root or reachable through their listed module path
 (`omnist::document::Doc`, `omnist::materialize`, etc).
 
