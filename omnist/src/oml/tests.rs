@@ -1310,6 +1310,28 @@ fn bare_lowercase_nan_inf_neg_inf_cannot_be_a_label() {
 }
 
 #[test]
+fn a_label_starting_with_nan_or_inf_but_continuing_with_underscore_is_a_real_identifier() {
+    // Regression: `word_boundary_ok` (scanner.rs) checked
+    // alphanumeric-or-'-' to decide whether "nan"/"inf" ends a reserved
+    // float keyword, but identifier continuation (`scan_word`'s own loop)
+    // also allows '_' -- so a label like `nan_` was wrongly tokenized as
+    // the keyword `nan` (TokKind::Float(NAN)) followed by a stray `_`,
+    // instead of the single identifier `nan_`. Found by proptest fuzzing
+    // (fuzz.rs::oml_round_trips) against a real Value with an object field
+    // labeled "nan_".
+    for label in ["nan_", "inf_", "nan_x", "infinity_ish"] {
+        let doc = read_oml(&format!("a: {{ {label}: 1 }}")).unwrap();
+        let RawNode::Edges(edges) = &doc else {
+            panic!("expected edges")
+        };
+        let RawNode::Edges(inner) = &edges[0].1 else {
+            panic!("expected edges")
+        };
+        assert_eq!(inner[0].0, label, "label {label:?} was mis-tokenized");
+    }
+}
+
+#[test]
 fn quoted_reserved_spelling_is_a_valid_label_and_round_trips() {
     // Grammar-doc conformance, mirroring Python's
     // `test_oml_ex9_nan_is_a_number_token_never_a_label` /
