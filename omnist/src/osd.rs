@@ -102,7 +102,15 @@ fn tokenize(text: &str) -> Result<Vec<Tok>, SchemaError> {
             continue;
         }
         let (kind, matched) = if let Some(g) = m.name("string") {
-            (TokKind::String, g.as_str())
+            let s = g.as_str();
+            if let Some(c) = s.chars().find(|&c| (c as u32) < 0x20) {
+                return Err(SchemaError::new(
+                    "$",
+                    "parse.control-character",
+                    format!("control character U+{:04X} in string at {start}", c as u32),
+                ));
+            }
+            (TokKind::String, s)
         } else if let Some(g) = m.name("number") {
             (TokKind::Number, g.as_str())
         } else if let Some(g) = m.name("name") {
@@ -559,6 +567,23 @@ mod tests {
             })
             .collect();
         assert_eq!(kinds, vec!["root", "X", "eof"]);
+    }
+
+    #[test]
+    fn tokenizer_rejects_literal_control_character_in_string() {
+        let err = parse_schema("record R {\n    \"\x01\": string,\n}\nroot R\n").unwrap_err();
+        assert_eq!(err.code, "parse.control-character");
+        assert_eq!(err.path, "$");
+        assert!(err.message.contains("control character U+0001 in string"));
+    }
+
+    #[test]
+    fn tokenizer_allows_escaped_control_characters_and_printable_strings() {
+        let schema = parse_schema(
+            "record R {\n    \"hello\\nworld\": string,\n    \"foo\\tbar\": integer,\n}\nroot R\n",
+        )
+        .unwrap();
+        assert_eq!(schema.root().name, "R");
     }
 
     #[test]
