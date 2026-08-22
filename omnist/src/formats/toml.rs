@@ -421,8 +421,62 @@ pub fn write_toml(
 pub fn check_toml(doc: &Doc) -> WriteReport {
     let mut rep = WriteReport::new();
     let grouped = doc.to_grouped();
-    let _ = strip_nulls(grouped, "$", &mut rep);
+    check_toml_grouped(&grouped, "$", &mut rep);
     rep
+}
+
+fn check_toml_grouped(node: &Value, path: &str, rep: &mut WriteReport) {
+    match node {
+        Value::Object(map) => {
+            for (label, child) in map {
+                match child {
+                    Value::Null => {
+                        rep.add(
+                            crate::report::child_path(path, label, 0),
+                            "null.omitted",
+                            "null value dropped (TOML has no null)",
+                            Severity::Warning,
+                        );
+                    }
+                    Value::Array(items) => {
+                        for (i, item) in items.iter().enumerate() {
+                            let p = crate::report::child_path(path, label, i);
+                            if matches!(item, Value::Null) {
+                                rep.add(
+                                    p,
+                                    "null.omitted",
+                                    "null value dropped (TOML has no null)",
+                                    Severity::Warning,
+                                );
+                            } else {
+                                check_toml_grouped(item, &p, rep);
+                            }
+                        }
+                    }
+                    other => {
+                        let p = crate::report::child_path(path, label, 0);
+                        check_toml_grouped(other, &p, rep);
+                    }
+                }
+            }
+        }
+        Value::Array(items) => {
+            for (i, item) in items.iter().enumerate() {
+                let p = crate::report::child_path(path, "", i);
+                if matches!(item, Value::Null) {
+                    rep.add(
+                        p,
+                        "null.omitted",
+                        "null value dropped (TOML has no null)",
+                        Severity::Warning,
+                    );
+                } else {
+                    check_toml_grouped(item, &p, rep);
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Marker type implementing [`crate::formats::Codec`] for TOML -- adapts
@@ -620,6 +674,41 @@ mod tests {
 
     fn obj(pairs: Vec<(&str, Value)>) -> Value {
         Value::Object(pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
+    }
+
+    #[test]
+    fn check_toml_reports_null_omitted_across_objects_and_arrays() {
+        let doc = doc_of(obj(vec![
+            ("null_field", Value::Null),
+            (
+                "nested",
+                obj(vec![
+                    ("inner_null", Value::Null),
+                    ("valid", Value::Int(1.into())),
+                ]),
+            ),
+            (
+                "arr",
+                Value::Array(vec![
+                    Value::Null,
+                    Value::Int(2.into()),
+                    obj(vec![("arr_inner_null", Value::Null)]),
+                ]),
+            ),
+        ]));
+        let rep = check_toml(&doc);
+        assert_eq!(rep.adjustments().len(), 4);
+        assert_eq!(rep.adjustments()[0].path, "$.null_field");
+        assert_eq!(rep.adjustments()[0].code, "null.omitted");
+    }
+
+    #[test]
+    fn check_toml_grouped_handles_array_root() {
+        let arr = Value::Array(vec![Value::Null, Value::Int(42.into())]);
+        let mut rep = WriteReport::new();
+        check_toml_grouped(&arr, "$", &mut rep);
+        assert_eq!(rep.adjustments().len(), 1);
+        assert_eq!(rep.adjustments()[0].path, "$.");
     }
 
     #[test]
