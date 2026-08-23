@@ -405,6 +405,7 @@ pub fn write_toml(
     report: Option<&mut WriteReport>,
 ) -> Result<String, WriteError> {
     let mut rep = WriteReport::new();
+    add_interleaving_diagnostic(doc, &mut rep);
     let grouped = doc.to_grouped();
     let stripped = strip_nulls(grouped, "$", &mut rep);
     let Value::Object(map) = &stripped else {
@@ -417,9 +418,26 @@ pub fn write_toml(
     crate::report::finish_write(out, rep, strict, report)
 }
 
+/// `format.interleaving-lost` (spec Sec8.3.8, D-3) is a whole-document
+/// diagnostic that depends on the original `Doc`'s edge order, lost by the
+/// time `to_grouped` runs -- so it is detected separately via
+/// `Doc::has_interleaving_loss` rather than folded into the grouped-`Value`
+/// scanners below.
+fn add_interleaving_diagnostic(doc: &Doc, rep: &mut WriteReport) {
+    if doc.has_interleaving_loss() {
+        rep.add(
+            "$",
+            "format.interleaving-lost",
+            "cross-label interleaving could not be written; same-label edges were grouped",
+            Severity::Warning,
+        );
+    }
+}
+
 /// Report what writing TOML would adjust, without producing output.
 pub fn check_toml(doc: &Doc) -> WriteReport {
     let mut rep = WriteReport::new();
+    add_interleaving_diagnostic(doc, &mut rep);
     let grouped = doc.to_grouped();
     check_toml_grouped(&grouped, "$", &mut rep);
     rep
@@ -1451,5 +1469,75 @@ mod tests {
             *doc2.root().get_one("a").unwrap().value().unwrap(),
             Scalar::Str("back\\slash cr\r back\u{08}space form\u{0c}feed ctl\u{01}".to_string())
         );
+    }
+
+    // ---------------------------------------------- D-3: format.interleaving-lost
+    // (issue #156, spec Sec8.3.8. Same MUST as formats-json/basic/
+    // cross-label-interleaving-lost-and-reported -- TOML shares JSON's
+    // `to_grouped` grouping, so the loss and the report are identical
+    // in shape; see json.rs's mirrored tests.)
+
+    fn interleaved_doc() -> Doc {
+        Doc::from_raw(crate::document::RawNode::Edges(vec![
+            (
+                "m".to_string(),
+                crate::document::RawNode::Leaf(Scalar::Str("A".to_string())),
+            ),
+            (
+                "x".to_string(),
+                crate::document::RawNode::Leaf(Scalar::Str("X".to_string())),
+            ),
+            (
+                "m".to_string(),
+                crate::document::RawNode::Leaf(Scalar::Str("B".to_string())),
+            ),
+        ]))
+        .unwrap()
+    }
+
+    fn contiguous_repeat_doc() -> Doc {
+        Doc::from_raw(crate::document::RawNode::Edges(vec![
+            (
+                "m".to_string(),
+                crate::document::RawNode::Leaf(Scalar::Str("A".to_string())),
+            ),
+            (
+                "m".to_string(),
+                crate::document::RawNode::Leaf(Scalar::Str("B".to_string())),
+            ),
+            (
+                "x".to_string(),
+                crate::document::RawNode::Leaf(Scalar::Str("X".to_string())),
+            ),
+        ]))
+        .unwrap()
+    }
+
+    #[test]
+    fn reports_interleaving_lost_on_write() {
+        let doc = interleaved_doc();
+        let mut report = crate::report::WriteReport::new();
+        write_toml(&doc, false, Some(&mut report)).unwrap();
+        let adjustments = report.adjustments();
+        assert_eq!(adjustments.len(), 1);
+        assert_eq!(adjustments[0].path, "$");
+        assert_eq!(adjustments[0].code, "format.interleaving-lost");
+        assert_eq!(adjustments[0].severity, crate::report::Severity::Warning);
+    }
+
+    #[test]
+    fn check_toml_reports_interleaving_lost() {
+        let rep = check_toml(&interleaved_doc());
+        assert_eq!(rep.adjustments().len(), 1);
+        assert_eq!(rep.adjustments()[0].code, "format.interleaving-lost");
+    }
+
+    #[test]
+    fn contiguous_repeated_label_does_not_report_interleaving_lost() {
+        let doc = contiguous_repeat_doc();
+        let mut report = crate::report::WriteReport::new();
+        write_toml(&doc, false, Some(&mut report)).unwrap();
+        assert!(report.is_empty());
+        assert!(check_toml(&doc).is_empty());
     }
 }

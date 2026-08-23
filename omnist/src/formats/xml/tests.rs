@@ -1267,3 +1267,59 @@ fn write_xml_temporal_scalars() {
         "<root>2024-01-01T12:00:00Z</root>"
     );
 }
+
+// ------------------------------------------------------- reader: D-3 diagnostics
+// (issue #156: format.attribute-dropped / format.namespace-dropped, spec
+// Sec8.3.8. See formats-xml/basic/attributes-are-dropped-on-read and
+// formats-xml/basic/namespace-prefix-is-dropped-on-read in the conformance
+// suite for the normative vectors this mirrors.)
+
+#[test]
+fn reports_attribute_dropped_on_read() {
+    let mut report = crate::report::WriteReport::new();
+    let doc = read_xml_report("<a x=\"1\"><b>hi</b></a>", Some(&mut report)).unwrap();
+    assert_eq!(
+        doc.to_raw(),
+        edges(vec![("a", edges(vec![("b", leaf_str("hi"))]))])
+    );
+    let adjustments = report.adjustments();
+    assert_eq!(adjustments.len(), 1);
+    assert_eq!(adjustments[0].path, "$.a");
+    assert_eq!(adjustments[0].code, "format.attribute-dropped");
+    assert_eq!(adjustments[0].severity, crate::report::Severity::Warning);
+}
+
+#[test]
+fn reports_namespace_dropped_on_read() {
+    let mut report = crate::report::WriteReport::new();
+    let doc = read_xml_report("<a><ns:b>hi</ns:b></a>", Some(&mut report)).unwrap();
+    assert_eq!(
+        doc.to_raw(),
+        edges(vec![("a", edges(vec![("b", leaf_str("hi"))]))])
+    );
+    let adjustments = report.adjustments();
+    assert_eq!(adjustments.len(), 1);
+    assert_eq!(adjustments[0].path, "$.a.b");
+    assert_eq!(adjustments[0].code, "format.namespace-dropped");
+    assert_eq!(adjustments[0].severity, crate::report::Severity::Warning);
+}
+
+#[test]
+fn no_diagnostics_when_nothing_is_dropped() {
+    let mut report = crate::report::WriteReport::new();
+    let doc = read_xml_report("<a><b>hi</b></a>", Some(&mut report)).unwrap();
+    assert_eq!(
+        doc.to_raw(),
+        edges(vec![("a", edges(vec![("b", leaf_str("hi"))]))])
+    );
+    assert!(report.is_empty());
+}
+
+#[test]
+fn read_xml_report_with_no_report_behaves_like_read_xml() {
+    let doc = read_xml_report("<a x=\"1\"><ns:b>hi</ns:b></a>", None).unwrap();
+    assert_eq!(
+        doc.to_raw(),
+        edges(vec![("a", edges(vec![("b", leaf_str("hi"))]))])
+    );
+}

@@ -97,11 +97,28 @@ pub fn write_json(
     report: Option<&mut WriteReport>,
 ) -> Result<String, WriteError> {
     let grouped = doc.to_grouped();
-    let rep = check_json_grouped(&grouped);
+    let mut rep = check_json_grouped(&grouped);
+    add_interleaving_diagnostic(doc, &mut rep);
     let prepared = if strict { grouped } else { prepare(grouped) };
     let mut out = String::new();
     write_value(&prepared, indent, 0, &mut out);
     crate::report::finish_write(out, rep, strict, report)
+}
+
+/// `format.interleaving-lost` (spec Sec8.3.8, D-3) is a whole-document
+/// diagnostic that depends on the original `Doc`'s edge order, not on the
+/// already-grouped `Value` `check_json_grouped` scans -- so it is detected
+/// separately via `Doc::has_interleaving_loss` and added here rather than
+/// folded into that grouped-`Value` walk.
+fn add_interleaving_diagnostic(doc: &Doc, rep: &mut WriteReport) {
+    if doc.has_interleaving_loss() {
+        rep.add(
+            "$",
+            "format.interleaving-lost",
+            "cross-label interleaving could not be written; same-label edges were grouped",
+            Severity::Warning,
+        );
+    }
 }
 
 /// Report what writing JSON would adjust, without producing output.
@@ -113,7 +130,9 @@ pub fn write_json(
 /// #44), since `visit_grouped` reuses one path buffer for the whole walk.
 pub fn check_json(doc: &Doc) -> WriteReport {
     let grouped = doc.to_grouped();
-    check_json_grouped(&grouped)
+    let mut rep = check_json_grouped(&grouped);
+    add_interleaving_diagnostic(doc, &mut rep);
+    rep
 }
 
 fn check_json_grouped(grouped: &Value) -> WriteReport {
@@ -1366,5 +1385,80 @@ mod tests {
         let nested = "[".repeat(50_000) + &"]".repeat(50_000);
         let err = read_json(&nested).unwrap_err();
         assert!(err.to_string().contains("maximum depth"));
+    }
+
+    // ---------------------------------------------- D-3: format.interleaving-lost
+    // (issue #156, spec Sec8.3.8. See
+    // formats-json/basic/cross-label-interleaving-lost-and-reported in the
+    // conformance suite for the normative vector this mirrors; the same MUST
+    // applies to YAML/TOML for the identical grouping reason -- see the
+    // matching tests in yaml.rs/toml.rs.)
+
+    fn interleaved_doc() -> Doc {
+        // [(m,A),(x,X),(m,B)]: m's two edges are not contiguous.
+        Doc::from_raw(crate::document::RawNode::Edges(vec![
+            (
+                "m".to_string(),
+                crate::document::RawNode::Leaf(Scalar::Str("A".to_string())),
+            ),
+            (
+                "x".to_string(),
+                crate::document::RawNode::Leaf(Scalar::Str("X".to_string())),
+            ),
+            (
+                "m".to_string(),
+                crate::document::RawNode::Leaf(Scalar::Str("B".to_string())),
+            ),
+        ]))
+        .unwrap()
+    }
+
+    fn contiguous_repeat_doc() -> Doc {
+        // [(m,A),(m,B),(x,X)]: m's two edges are contiguous -- not interleaved.
+        Doc::from_raw(crate::document::RawNode::Edges(vec![
+            (
+                "m".to_string(),
+                crate::document::RawNode::Leaf(Scalar::Str("A".to_string())),
+            ),
+            (
+                "m".to_string(),
+                crate::document::RawNode::Leaf(Scalar::Str("B".to_string())),
+            ),
+            (
+                "x".to_string(),
+                crate::document::RawNode::Leaf(Scalar::Str("X".to_string())),
+            ),
+        ]))
+        .unwrap()
+    }
+
+    #[test]
+    fn reports_interleaving_lost_on_write() {
+        let doc = interleaved_doc();
+        let mut report = crate::report::WriteReport::new();
+        let text = write_json(&doc, None, false, Some(&mut report)).unwrap();
+        assert_eq!(text, r#"{"m": ["A", "B"], "x": "X"}"#);
+        let adjustments = report.adjustments();
+        assert_eq!(adjustments.len(), 1);
+        assert_eq!(adjustments[0].path, "$");
+        assert_eq!(adjustments[0].code, "format.interleaving-lost");
+        assert_eq!(adjustments[0].severity, Severity::Warning);
+    }
+
+    #[test]
+    fn check_json_reports_interleaving_lost() {
+        let rep = check_json(&interleaved_doc());
+        assert_eq!(rep.adjustments().len(), 1);
+        assert_eq!(rep.adjustments()[0].code, "format.interleaving-lost");
+    }
+
+    #[test]
+    fn contiguous_repeated_label_does_not_report_interleaving_lost() {
+        let doc = contiguous_repeat_doc();
+        let mut report = crate::report::WriteReport::new();
+        let text = write_json(&doc, None, false, Some(&mut report)).unwrap();
+        assert_eq!(text, r#"{"m": ["A", "B"], "x": "X"}"#);
+        assert!(report.is_empty());
+        assert!(check_json(&doc).is_empty());
     }
 }

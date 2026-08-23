@@ -450,6 +450,44 @@ impl Doc {
         self.grouped_at(self.root)
     }
 
+    /// `true` iff [`Doc::to_grouped`]'s grouping (same-label edges
+    /// collapsed into an array, in first-seen order) changes the relative
+    /// order of edges anywhere in the document -- i.e. some node has two
+    /// edges under the same label with a *different* label's edge between
+    /// them (`[(m,A),(x,X),(m,B)]`), as opposed to a label merely
+    /// repeating contiguously (`[(m,A),(m,B),(x,X)]`), which grouping
+    /// reorders nothing for. Used by the JSON-family writers
+    /// (`json.rs`/`yaml.rs`/`toml.rs`, all built on `to_grouped`) to emit
+    /// `format.interleaving-lost` (spec Sec8.3.8, D-3) at the whole-document
+    /// path `$`, since the loss isn't localized to one label's edges.
+    pub(crate) fn has_interleaving_loss(&self) -> bool {
+        self.node_has_interleaving_loss(self.root)
+    }
+
+    fn node_has_interleaving_loss(&self, id: NodeId) -> bool {
+        match &self.entry(id).data {
+            NodeData::Leaf(_) => false,
+            NodeData::Internal(edges) => {
+                let mut closed: std::collections::HashSet<&str> = std::collections::HashSet::new();
+                let mut prev_label: Option<&str> = None;
+                for (label, _) in edges {
+                    if let Some(p) = prev_label
+                        && p != label.as_str()
+                    {
+                        closed.insert(p);
+                    }
+                    if closed.contains(label.as_str()) {
+                        return true;
+                    }
+                    prev_label = Some(label.as_str());
+                }
+                edges
+                    .iter()
+                    .any(|(_, child)| self.node_has_interleaving_loss(*child))
+            }
+        }
+    }
+
     // Note: unlike `build_node`/`data_at`, this has no depth parameter --
     // it walks an already-validated tree (every node was depth-checked at
     // construction time), so there's nothing left to guard here.
