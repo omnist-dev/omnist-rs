@@ -209,7 +209,15 @@ impl Parser {
                 self.define(&mut env, name, rec, name_pos)?;
             } else if t.kind == TokKind::Name && t.text == "root" {
                 self.next_tok();
-                root = Some(self.expect_name()?.text);
+                let name = self.expect_name()?.text;
+                if root.is_some() {
+                    return Err(SchemaError::new(
+                        "$",
+                        "schema.duplicate-root",
+                        "a schema must declare exactly one root",
+                    ));
+                }
+                root = Some(name);
             } else {
                 return Err(SchemaError::new(
                     "$",
@@ -862,6 +870,18 @@ mod tests {
     fn test_code_schema_no_root() {
         let err = parse_schema(r#"record X { "a": string }"#).unwrap_err();
         assert_eq!(err.code, "schema.no-root");
+        assert_eq!(err.path, "$");
+    }
+
+    #[test]
+    fn test_code_schema_duplicate_root() {
+        let src = "record R { \"a\": string, }
+record S { \"b\": string, }
+root R
+root S
+";
+        let err = parse_schema(src).unwrap_err();
+        assert_eq!(err.code, "schema.duplicate-root");
         assert_eq!(err.path, "$");
     }
 
