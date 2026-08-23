@@ -13,7 +13,7 @@
 //! target-blind shape key (`("any",)`); `subschema` treats `any` on the
 //! superschema side as absorbing everything, and `any` only on the
 //! subschema side as never compatible with a non-`any` target; `lint`'s
-//! `any-field` check inventories every `Any`-typed field in the schema.
+//! `lint.any-field` check inventories every `Any`-typed field in the schema.
 //!
 //! ## Determinism
 //!

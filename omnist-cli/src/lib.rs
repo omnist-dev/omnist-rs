@@ -423,7 +423,7 @@ fn extract_errors(e: &OmnistError) -> Vec<(String, String, String)> {
             .map(|ve| {
                 (
                     ve.path.clone(),
-                    ve.code.as_str().to_string(),
+                    ve.code.as_str(omnist::schema::ErrorFamily::Materialize).to_string(),
                     ve.message.clone(),
                 )
             })
@@ -837,7 +837,7 @@ fn cmd_validate(args: ValidateArgs) -> i32 {
         let errors: Vec<serde_json::Value> = result
             .errors()
             .iter()
-            .map(|e| serde_json::json!({"path": e.path, "code": e.code.as_str(), "message": e.message}))
+            .map(|e| serde_json::json!({"path": e.path, "code": e.code.as_str(omnist::schema::ErrorFamily::Validate), "message": e.message}))
             .collect();
         println!(
             "{}",
