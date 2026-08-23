@@ -839,7 +839,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn vector_count_is_152() {
+    fn vector_count_is_153() {
         // 146 -> 152 via vendor/omnist-spec v0.1.1-alpha -> commit f93c569
         // (issue #104: arbitrary-precision `Scalar::Int`). The submodule
         // pin bump brings in several bundled, otherwise-unrelated
@@ -851,8 +851,11 @@ mod tests {
         // vector-by-vector here since several are genuinely unrelated to
         // this fix, matching this file's own precedent (issue #99's pin
         // bump bundled an unrelated NaN/Infinity vector the same way).
+        // 152 -> 153 via vendor/omnist-spec commit 964af7b (issue #154 /
+        // D-2: a second `root` declaration is now a normative error,
+        // `schema.duplicate-root`).
         let vectors = iter_vectors(&suite_dir());
-        assert_eq!(vectors.len(), 152);
+        assert_eq!(vectors.len(), 153);
     }
 
     /// Full-suite regression guard: runs every real vector through every
@@ -861,13 +864,15 @@ mod tests {
     /// calls directly). The exact counts are this step's honest,
     /// freshly-reproduced measurement -- history through (124, 0, 22) at
     /// 146 vectors (issue #99), then (129, 0, 23) at 152 vectors after
-    /// issue #104. (130, 0, 22) after issue #105. Now (146, 0, 6) after issue #122 (`SchemaError` structured path/code)
+    /// issue #104. (130, 0, 22) after issue #105. (146, 0, 6) after issue #122 (`SchemaError` structured path/code)
     /// gained real `Date`/`Time`/`Datetime` variants): the
     /// `formats-json/basic/temporal-leaf-is-stringified-on-write` vector,
     /// previously skipped as structurally unreachable (issue #89, since
     /// `Scalar` had no temporal variant to preserve through
     /// `decode_scalar`), now passes for real -- confirmed via a fresh
-    /// `[PASS]` line in the harness's own output, not assumed. Every
+    /// `[PASS]` line in the harness's own output, not assumed. Now
+    /// (147, 0, 6) after issue #154 (D-2: duplicate `root` is now a
+    /// normative error, `schema.duplicate-root`). Every
     /// count here is freshly reproduced by running the harness, not
     /// computed by hand. Pinned so a future change that silently
     /// regresses pass/fail/skip counts is caught, not a "this must
@@ -877,7 +882,7 @@ mod tests {
         let (passed, failed, skipped) = run_all(&suite_dir());
         assert_eq!(
             (passed, failed, skipped),
-            (146, 0, 6),
+            (147, 0, 6),
             "vector pass/fail/skip counts changed -- if this is an intentional fix or a new \
              vector, update the pinned baseline; if not, something regressed"
         );
