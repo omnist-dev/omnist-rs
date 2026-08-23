@@ -219,7 +219,8 @@ fn convert_schema_conformance_failure_json_shape_has_structured_errors() {
         r.stdout
     );
     assert!(
-        r.stdout.contains("\"code\": \"materialize.inexact-conversion\""),
+        r.stdout
+            .contains("\"code\": \"materialize.inexact-conversion\""),
         "stdout: {}",
         r.stdout
     );

@@ -423,7 +423,9 @@ fn extract_errors(e: &OmnistError) -> Vec<(String, String, String)> {
             .map(|ve| {
                 (
                     ve.path.clone(),
-                    ve.code.as_str(omnist::schema::ErrorFamily::Materialize).to_string(),
+                    ve.code
+                        .as_str(omnist::schema::ErrorFamily::Materialize)
+                        .to_string(),
                     ve.message.clone(),
                 )
             })
