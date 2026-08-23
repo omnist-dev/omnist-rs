@@ -330,26 +330,28 @@ fn parity_corpus_replays_every_fixture_against_rust() {
             // text uses Python `repr()` vs Rust `Debug` quoting and isn't
             // asserted (see the extractor's `lint_triples` comment).
             "lint_case" => {
+                // `code` is deliberately excluded from the comparison
+                // below: this fixture was extracted from the Python
+                // reference, which (per omnist-spec's D-4, still open)
+                // still emits the pre-§8.3.1-namespacing bare code
+                // ("unsatisfiable-record"), while this port has already
+                // adopted the namespaced form ("lint.unsatisfiable-record")
+                // -- same code-agnostic-until-D-4-closes policy the
+                // conformance harness (docs/conformance-harness.md) applies
+                // to lint findings there.
                 let s = parse_schema(fx["schema"].as_str().unwrap()).unwrap();
                 let findings = lint(&s);
-                let actual: Vec<(String, String, String)> = findings
+                let actual: Vec<(String, String)> = findings
                     .iter()
-                    .map(|f| {
-                        (
-                            f.code.to_string(),
-                            f.severity.to_string(),
-                            f.location.clone(),
-                        )
-                    })
+                    .map(|f| (f.severity.to_string(), f.location.clone()))
                     .collect();
-                let expected: Vec<(String, String, String)> = fx["expected"]
+                let expected: Vec<(String, String)> = fx["expected"]
                     .as_array()
                     .unwrap()
                     .iter()
                     .map(|triple| {
                         let t = triple.as_array().unwrap();
                         (
-                            t[0].as_str().unwrap().to_string(),
                             t[1].as_str().unwrap().to_string(),
                             t[2].as_str().unwrap().to_string(),
                         )
@@ -555,7 +557,15 @@ fn parity_corpus_replays_every_fixture_against_rust() {
             }
 
             // test_closed_rejects_unexpected: check the stable error code,
-            // not the English message text.
+            // not the English message text. Compared code-agnostically
+            // against the family prefix: the fixture was extracted from the
+            // Python reference, which (per omnist-spec's D-4, still open)
+            // still emits the pre-§8.3.1-namespacing bare form
+            // ("unexpected-field"), while this port has already adopted the
+            // namespaced form ("validate.unexpected-field") -- so only the
+            // bare suffix after the family prefix is compared, matching the
+            // same code-agnostic-until-D-4-closes policy the conformance
+            // harness (docs/conformance-harness.md) applies to lint/Track 2.
             "schema_validate_error_code" => {
                 let s = parse_schema(fx["schema"].as_str().unwrap()).unwrap();
                 let raw = json_object_to_raw(&fx["doc_json_input"]);
@@ -567,10 +577,13 @@ fn parity_corpus_replays_every_fixture_against_rust() {
                     "fixture {note:?}: expected validation to fail"
                 );
                 assert!(
-                    result
-                        .errors()
-                        .iter()
-                        .any(|e| e.code.as_str() == expected_code),
+                    result.errors().iter().any(|e| {
+                        let actual = e.code.as_str(omnist::schema::ErrorFamily::Validate);
+                        actual == expected_code
+                            || actual
+                                .strip_prefix("validate.")
+                                .is_some_and(|bare| bare == expected_code)
+                    }),
                     "fixture {note:?}: expected error code {expected_code:?} not found in {:?}",
                     result.errors()
                 );

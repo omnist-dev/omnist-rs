@@ -493,11 +493,22 @@ fn run_lint(dir: &Path) -> CaseResult {
     // Findings MUST already be sorted deterministically by (code, location)
     // per §6.11 -- a direct ordered-list comparison (not set/unordered) is
     // itself part of the conformance check, not just convenient.
+    //
+    // `code` itself is deliberately excluded from the comparison tuple
+    // below: per docs/conformance-harness.md ("lint findings' code field is
+    // compared code-agnostically", mirroring §8.5.2 rule 4 for Track 2's
+    // diagnostics), a fixture's expected.json may still carry the
+    // pre-§8.3-namespacing bare code (`unreachable-record`) recorded against
+    // the reference implementation, while an implementation that has
+    // already adopted §8.3's namespaced codes (`lint.unreachable-record`)
+    // must not be marked failing for that -- `severity` and `location` are
+    // the real comparison; `code` stays informational until omnist-spec's
+    // D-4 closes.
     let findings = lint(&schema);
     let actual_ok = findings.is_empty();
-    let actual: Vec<(&str, &str, String)> = findings
+    let actual: Vec<(&str, String)> = findings
         .iter()
-        .map(|f| (f.code, f.severity, f.location.clone()))
+        .map(|f| (f.severity, f.location.clone()))
         .collect();
 
     let expected_text = match read_required(dir, "expected.json") {
@@ -512,7 +523,7 @@ fn run_lint(dir: &Path) -> CaseResult {
         .get("ok")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let expected: Vec<(String, String, String)> = expected_json
+    let expected: Vec<(String, String)> = expected_json
         .get("findings")
         .and_then(|v| v.as_array())
         .cloned()
@@ -520,10 +531,6 @@ fn run_lint(dir: &Path) -> CaseResult {
         .into_iter()
         .map(|f| {
             (
-                f.get("code")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
                 f.get("severity")
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
@@ -535,9 +542,9 @@ fn run_lint(dir: &Path) -> CaseResult {
             )
         })
         .collect();
-    let actual_owned: Vec<(String, String, String)> = actual
+    let actual_owned: Vec<(String, String)> = actual
         .iter()
-        .map(|(c, s, l)| (c.to_string(), s.to_string(), l.clone()))
+        .map(|(s, l)| (s.to_string(), l.clone()))
         .collect();
 
     if actual_ok == expected_ok && actual_owned == expected {

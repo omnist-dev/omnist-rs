@@ -567,15 +567,43 @@ pub enum ErrorCode {
     ShapeMismatch,
 }
 
+/// Which top-level operation produced an [`ErrorCode`] -- `validate` and
+/// `materialize` share this one `ErrorCode`/`ValidationResult` mechanism
+/// (see `ValidationResult::add`'s doc comment), but omnist-spec §8.3.1
+/// namespaces error codes per call-site family (`validate.*` vs.
+/// `materialize.*`), not per underlying check, so the family has to be
+/// threaded through at the point a code is stringified rather than baked
+/// into `ErrorCode` itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorFamily {
+    /// Produced by [`Schema::validate`].
+    Validate,
+    /// Produced by [`crate::materialize::materialize`].
+    Materialize,
+}
+
 impl ErrorCode {
-    /// Stable error code string matching `omnist-spec` §5.
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            ErrorCode::UnexpectedField => "unexpected-field",
-            ErrorCode::Cardinality => "cardinality",
-            ErrorCode::TypeMismatch => "type-mismatch",
-            ErrorCode::NullNotAllowed => "null-not-allowed",
-            ErrorCode::ShapeMismatch => "shape-mismatch",
+    /// Stable, `family`-namespaced error code string per `omnist-spec`
+    /// §8.3.1 (`<family>.<case>`, e.g. `validate.shape-mismatch`).
+    ///
+    /// `TypeMismatch` under `Materialize` is the one case that isn't a
+    /// literal `materialize.type-mismatch`: materialize's type-mismatch
+    /// check is specifically "this value can't be upgraded to the field's
+    /// kind without loss or ambiguity," which §8.3.1 names
+    /// `materialize.inexact-conversion`.
+    pub fn as_str(&self, family: ErrorFamily) -> &'static str {
+        use ErrorFamily::{Materialize, Validate};
+        match (self, family) {
+            (ErrorCode::UnexpectedField, Validate) => "validate.unexpected-field",
+            (ErrorCode::UnexpectedField, Materialize) => "materialize.unexpected-field",
+            (ErrorCode::Cardinality, Validate) => "validate.cardinality",
+            (ErrorCode::Cardinality, Materialize) => "materialize.cardinality",
+            (ErrorCode::TypeMismatch, Validate) => "validate.type-mismatch",
+            (ErrorCode::TypeMismatch, Materialize) => "materialize.inexact-conversion",
+            (ErrorCode::NullNotAllowed, Validate) => "validate.null-not-allowed",
+            (ErrorCode::NullNotAllowed, Materialize) => "materialize.null-not-allowed",
+            (ErrorCode::ShapeMismatch, Validate) => "validate.shape-mismatch",
+            (ErrorCode::ShapeMismatch, Materialize) => "materialize.shape-mismatch",
         }
     }
 }
@@ -1623,11 +1651,46 @@ mod tests {
 
     #[test]
     fn error_code_as_str_covers_every_variant() {
-        assert_eq!(ErrorCode::UnexpectedField.as_str(), "unexpected-field");
-        assert_eq!(ErrorCode::Cardinality.as_str(), "cardinality");
-        assert_eq!(ErrorCode::TypeMismatch.as_str(), "type-mismatch");
-        assert_eq!(ErrorCode::NullNotAllowed.as_str(), "null-not-allowed");
-        assert_eq!(ErrorCode::ShapeMismatch.as_str(), "shape-mismatch");
+        assert_eq!(
+            ErrorCode::UnexpectedField.as_str(ErrorFamily::Validate),
+            "validate.unexpected-field"
+        );
+        assert_eq!(
+            ErrorCode::UnexpectedField.as_str(ErrorFamily::Materialize),
+            "materialize.unexpected-field"
+        );
+        assert_eq!(
+            ErrorCode::Cardinality.as_str(ErrorFamily::Validate),
+            "validate.cardinality"
+        );
+        assert_eq!(
+            ErrorCode::Cardinality.as_str(ErrorFamily::Materialize),
+            "materialize.cardinality"
+        );
+        assert_eq!(
+            ErrorCode::TypeMismatch.as_str(ErrorFamily::Validate),
+            "validate.type-mismatch"
+        );
+        assert_eq!(
+            ErrorCode::TypeMismatch.as_str(ErrorFamily::Materialize),
+            "materialize.inexact-conversion"
+        );
+        assert_eq!(
+            ErrorCode::NullNotAllowed.as_str(ErrorFamily::Validate),
+            "validate.null-not-allowed"
+        );
+        assert_eq!(
+            ErrorCode::NullNotAllowed.as_str(ErrorFamily::Materialize),
+            "materialize.null-not-allowed"
+        );
+        assert_eq!(
+            ErrorCode::ShapeMismatch.as_str(ErrorFamily::Validate),
+            "validate.shape-mismatch"
+        );
+        assert_eq!(
+            ErrorCode::ShapeMismatch.as_str(ErrorFamily::Materialize),
+            "materialize.shape-mismatch"
+        );
     }
 
     #[test]

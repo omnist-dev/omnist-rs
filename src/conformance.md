@@ -66,10 +66,14 @@ not implied parity
   a genuinely favorable per-language difference, found empirically while
   building the harness, not assumed going in.
 - Diagnostics are compared in **code-agnostic mode** (path-set only, not
-  exact error-code string) -- `ErrorCode::as_str()` produces bare codes
-  (`"type-mismatch"`) while the spec's vectors expect
-  operation-prefixed codes (`"validate.type-mismatch"`). Same mismatch
-  found independently on the TypeScript port; not Rust-specific.
+  exact error-code string). This port's `ErrorCode::as_str()` now *does*
+  produce the spec's family-namespaced codes (`"validate.type-mismatch"`,
+  `"materialize.inexact-conversion"`, per §8.3.1, fixed in issue #152) --
+  but the vectors and fixtures are still compared code-agnostically
+  regardless, since some still carry the pre-namespacing bare form
+  recorded against the reference implementation (omnist-spec D-4, open).
+  Same mismatch found independently on the TypeScript port; not
+  Rust-specific.
 
 ## Real bugs this harness found and fixed
 

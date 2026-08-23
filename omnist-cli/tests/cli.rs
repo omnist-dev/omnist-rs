@@ -219,7 +219,8 @@ fn convert_schema_conformance_failure_json_shape_has_structured_errors() {
         r.stdout
     );
     assert!(
-        r.stdout.contains("\"code\": \"type-mismatch\""),
+        r.stdout
+            .contains("\"code\": \"materialize.inexact-conversion\""),
         "stdout: {}",
         r.stdout
     );
@@ -373,7 +374,7 @@ fn validate_json_failure_shape_has_structured_errors() {
         "validate", &input, "--from", "json", "--schema", &schema, "--json",
     ]);
     assert_eq!(r.code, 1);
-    assert!(r.stdout.contains("\"code\": \"type-mismatch\""));
+    assert!(r.stdout.contains("\"code\": \"validate.type-mismatch\""));
 }
 
 #[test]
@@ -950,7 +951,7 @@ fn schema_lint_severity_warning_json_with_findings() {
     );
     let r = run(&["schema", "lint", &schema, "--severity", "warning", "--json"]);
     assert_eq!(r.code, 1);
-    assert!(r.stdout.contains("unreachable-record"));
+    assert!(r.stdout.contains("lint.unreachable-record"));
 }
 
 #[test]

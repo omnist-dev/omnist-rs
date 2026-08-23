@@ -722,9 +722,9 @@ fn lint_flags_unreachable_and_unsatisfiable_and_duplicate_records() {
     let s = Schema::new(Ref::new("Root"), e).unwrap();
     let findings = lint::lint(&s);
     let codes: Vec<&str> = findings.iter().map(|f| f.code).collect();
-    assert!(codes.contains(&"unsatisfiable-record"));
-    assert!(codes.contains(&"unreachable-record"));
-    assert!(codes.contains(&"duplicate-record"));
+    assert!(codes.contains(&"lint.unsatisfiable-record"));
+    assert!(codes.contains(&"lint.unreachable-record"));
+    assert!(codes.contains(&"lint.duplicate-record"));
     assert!(findings.iter().any(|f| f.location == "Bad"));
     assert!(findings.iter().any(|f| f.location == "Orphan"));
 }
@@ -736,7 +736,7 @@ fn lint_inventories_any_typed_fields_as_info_findings() {
     let findings = lint::lint(&s);
     let f = findings
         .iter()
-        .find(|f| f.code == "any-field")
+        .find(|f| f.code == "lint.any-field")
         .expect("expected an any-field finding");
     assert_eq!(f.severity, "info");
     assert_eq!(f.location, "Root.x");
@@ -748,7 +748,7 @@ fn lint_reports_no_any_field_findings_when_none_exist() {
     let e = env(vec![("Root", rec(vec![req("x", STRING)]))]);
     let s = Schema::new(Ref::new("Root"), e).unwrap();
     let findings = lint::lint(&s);
-    assert!(!findings.iter().any(|f| f.code == "any-field"));
+    assert!(!findings.iter().any(|f| f.code == "lint.any-field"));
 }
 
 #[test]
@@ -794,7 +794,7 @@ fn lint_ordering_is_codepoint_not_locale_non_ascii_mixed_case() {
     let findings = lint::lint(&s);
     let unsat_locations: Vec<&str> = findings
         .iter()
-        .filter(|f| f.code == "unsatisfiable-record")
+        .filter(|f| f.code == "lint.unsatisfiable-record")
         .map(|f| f.location.as_str())
         .collect();
     // Codepoint order: 'R' (0x52) < 'Z' (0x5A) < 'a' (0x61) < 'é' (0xE9) --
@@ -809,7 +809,7 @@ fn lint_ordering_is_codepoint_not_locale_non_ascii_mixed_case() {
 
     let unreachable_locations: Vec<&str> = findings
         .iter()
-        .filter(|f| f.code == "unreachable-record")
+        .filter(|f| f.code == "lint.unreachable-record")
         .map(|f| f.location.as_str())
         .collect();
     // "Orphan" (0x4F) sorts before "aOrphan" (0x61) in codepoint order.

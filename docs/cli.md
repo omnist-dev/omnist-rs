@@ -83,8 +83,11 @@ valid
 
 An invalid document exits `1` and prints every collected `ValidationError`;
 `--json` emits `{"ok": false, "errors": [{"path", "message", "code"}, ...]}`
-with the same stable `code` strings `schema::ErrorCode::as_str` returns
-(`"type-mismatch"`, `"cardinality"`, ...).
+with the same stable, family-namespaced `code` strings
+`schema::ErrorCode::as_str` returns per omnist-spec §8.3.1
+(`"validate.type-mismatch"`, `"validate.cardinality"`, ...; `convert
+--schema`'s materialize path uses its own `materialize.*` namespace, e.g.
+`"materialize.inexact-conversion"`).
 
 ## `infer`
 
