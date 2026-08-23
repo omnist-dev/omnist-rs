@@ -1315,6 +1315,36 @@ mod tests {
     }
 
     #[test]
+    fn run_parse_success_with_matching_read_diagnostics_passes() {
+        // format.attribute-dropped (Sec8.3.8, D-3): a *successful* XML
+        // parse can still carry warning-severity read diagnostics.
+        let v = json!({
+            "operation": "parse",
+            "input": {"format": "xml", "text": "<a x=\"1\"><b>hi</b></a>"},
+            "expect": {
+                "ok": true,
+                "document": {"edges": [["a", {"edges": [["b", {"scalar": {"kind": "string", "value": "hi"}}]]}]]},
+                "diagnostics": [{"path": "$.a"}]
+            }
+        });
+        assert_eq!(dispatch(&v).status, Status::Pass);
+    }
+
+    #[test]
+    fn run_parse_success_with_mismatched_read_diagnostics_fails() {
+        let v = json!({
+            "operation": "parse",
+            "input": {"format": "xml", "text": "<a x=\"1\"><b>hi</b></a>"},
+            "expect": {
+                "ok": true,
+                "document": {"edges": [["a", {"edges": [["b", {"scalar": {"kind": "string", "value": "hi"}}]]}]]},
+                "diagnostics": [{"path": "$.wrong"}]
+            }
+        });
+        assert_eq!(dispatch(&v).status, Status::Fail);
+    }
+
+    #[test]
     fn run_parse_schema_diagnostic_path_mismatch_fails() {
         let v = json!({
             "operation": "parse_schema",
