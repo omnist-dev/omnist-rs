@@ -1,6 +1,6 @@
 [package]
 name = "conformance"
-version = "0.2.0-alpha"
+version = "0.2.1-alpha"
 edition = "2024"
 description = "omnist-rs's own conformance-test harness against omnist-spec (issue #82): referee + Track 1 fixture runner + Track 2 vector runner, consuming the pinned vendor/omnist-spec submodule directly, never depending on Python's or TypeScript's implementation."
 license = "Apache-2.0"

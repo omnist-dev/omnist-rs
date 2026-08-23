@@ -11,7 +11,7 @@ Docs: [rs.omnist.dev](https://rs.omnist.dev) — includes generated [rustdoc API
 
 ```toml
 [dependencies]
-omnist = "0.2.0-alpha"
+omnist = "0.2.1-alpha"
 ```
 
 Published on [crates.io](https://crates.io/crates/omnist); API reference on [docs.rs](https://docs.rs/omnist).
@@ -35,7 +35,7 @@ This repository follows a strict spec-first methodology. `vendor/omnist-spec` is
 
 ## Status
 
-**`v0.2.0-alpha`.**
+**`v0.2.1-alpha`.**
 
 - **Conformance Harness**: Track 1 (CLI fixtures) **19 / 19 (100%) PASS**. Track 2 (JSON test vectors) **130 / 152 PASS, 0 real fails, 22 skips**.
 - **Testing**: **936 tests passing**, 0 failures — unit tests plus `proptest`-based property fuzzing across every format reader.
