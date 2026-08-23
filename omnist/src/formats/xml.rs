@@ -219,7 +219,7 @@ fn xml_pretype(node: RawNode, schema: &Schema, ty: &FieldType) -> RawNode {
     }
 }
 
-fn read_xml_raw(text: &str) -> Result<RawNode, OmnistError> {
+fn read_xml_raw(text: &str, mut report: Option<&mut WriteReport>) -> Result<RawNode, OmnistError> {
     let normalized = normalize_line_endings(text);
     let mut reader = Reader::from_str(&normalized);
     reader.config_mut().trim_text(false);
@@ -233,11 +233,16 @@ fn read_xml_raw(text: &str) -> Result<RawNode, OmnistError> {
             Event::Start(e) => {
                 let mut node_count = 1;
                 let tag = local_name(e.name());
-                let content = parse_content(&mut reader, &normalized, 1, &mut node_count)?;
+                let path = crate::report::child_path("$", &tag, 0);
+                record_elem_diagnostics(&e, &path, report.as_deref_mut());
+                let content =
+                    parse_content(&mut reader, &normalized, 1, &mut node_count, &path, report)?;
                 break RawNode::Edges(vec![(tag, content)]);
             }
             Event::Empty(e) => {
                 let tag = local_name(e.name());
+                let path = crate::report::child_path("$", &tag, 0);
+                record_elem_diagnostics(&e, &path, report.as_deref_mut());
                 break RawNode::Edges(vec![(tag, RawNode::Leaf(Scalar::Str(String::new())))]);
             }
             Event::Eof => {
@@ -337,7 +342,20 @@ fn read_xml_raw(text: &str) -> Result<RawNode, OmnistError> {
 /// Parse XML text into a [`Doc`], preserving element order/interleaving
 /// exactly (see this module's doc comment).
 pub fn read_xml(text: &str) -> Result<Doc, OmnistError> {
-    let raw = read_xml_raw(text)?;
+    let raw = read_xml_raw(text, None)?;
+    let doc = Doc::from_raw(raw)?;
+    Ok(doc)
+}
+
+/// Same as [`read_xml`], but also reports `format.attribute-dropped` and
+/// `format.namespace-dropped` adjustments (spec Sec8.3.8, D-3) into
+/// `report` for every element that had an attribute or a namespace prefix
+/// discarded, mirroring the write-side `report: Option<&mut WriteReport>`
+/// pattern every writer in this crate already uses -- see
+/// `crate::report`'s module doc. `report: None` behaves exactly like
+/// [`read_xml`].
+pub fn read_xml_report(text: &str, report: Option<&mut WriteReport>) -> Result<Doc, OmnistError> {
+    let raw = read_xml_raw(text, report)?;
     let doc = Doc::from_raw(raw)?;
     Ok(doc)
 }
@@ -345,7 +363,7 @@ pub fn read_xml(text: &str) -> Result<Doc, OmnistError> {
 /// Parse XML text into a [`Doc`] with schema-guided pretyping of boolean,
 /// integer, and number scalar fields (spec §2.2 / issue #114).
 pub fn read_xml_with_schema(text: &str, schema: &Schema) -> Result<Doc, OmnistError> {
-    let raw = read_xml_raw(text)?;
+    let raw = read_xml_raw(text, None)?;
     let pretyped = xml_pretype(raw, schema, &FieldType::Ref(schema.root().clone()));
     let doc = Doc::from_raw(pretyped)?;
     Ok(doc)
@@ -361,6 +379,8 @@ fn parse_content(
     source: &str,
     depth: usize,
     node_count: &mut usize,
+    path: &str,
+    mut report: Option<&mut WriteReport>,
 ) -> Result<RawNode, OmnistError> {
     if depth > MAX_DEPTH {
         return Err(DocumentError::new(
@@ -371,6 +391,12 @@ fn parse_content(
     }
     let mut text = String::new();
     let mut children: Vec<(String, RawNode)> = Vec::new();
+    // Same-label occurrence counts, tracked incrementally (O(1) amortized
+    // per child) rather than by rescanning children on every element via
+    // children.iter().filter(...).count(), which is O(n) per element and
+    // made a MAX_NODES-sized sibling run O(n^2).
+    let mut label_counts: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
     let mut buf = Vec::new();
     loop {
         buf.clear();
@@ -388,7 +414,20 @@ fn parse_content(
                     .into());
                 }
                 let tag = local_name(e.name());
-                let child = parse_content(reader, source, depth + 1, node_count)?;
+                let index = *label_counts
+                    .entry(tag.clone())
+                    .and_modify(|n| *n += 1)
+                    .or_insert(0);
+                let child_path = crate::report::child_path(path, &tag, index);
+                record_elem_diagnostics(&e, &child_path, report.as_deref_mut());
+                let child = parse_content(
+                    reader,
+                    source,
+                    depth + 1,
+                    node_count,
+                    &child_path,
+                    report.as_deref_mut(),
+                )?;
                 children.push((tag, child));
             }
             Event::Empty(e) => {
@@ -401,6 +440,12 @@ fn parse_content(
                     .into());
                 }
                 let tag = local_name(e.name());
+                let index = *label_counts
+                    .entry(tag.clone())
+                    .and_modify(|n| *n += 1)
+                    .or_insert(0);
+                let child_path = crate::report::child_path(path, &tag, index);
+                record_elem_diagnostics(&e, &child_path, report.as_deref_mut());
                 children.push((tag, RawNode::Leaf(Scalar::Str(String::new()))));
             }
             Event::End(_) => break,
@@ -461,6 +506,38 @@ fn located_error(reader: &Reader<&[u8]>, source: &str, message: &str) -> OmnistE
     let pos = (reader.buffer_position() as usize).min(source.len());
     let (line, col) = line_col_bytes(source, pos);
     ParseError::new(line, col, message).into()
+}
+
+/// Records `format.attribute-dropped` and `format.namespace-dropped`
+/// (spec Sec8.3.8, D-3) for one just-opened element (`Start`/`Empty`
+/// event), at `path` -- the path of the element itself, matching the
+/// vectors' convention (the element the attribute/prefix was lost *from*,
+/// not its parent or child). A no-op when `report` is `None`, matching
+/// every other `Option<&mut WriteReport>` consumer in this crate.
+fn record_elem_diagnostics(
+    e: &quick_xml::events::BytesStart<'_>,
+    path: &str,
+    report: Option<&mut WriteReport>,
+) {
+    let Some(rep) = report else { return };
+    if e.attributes().next().is_some() {
+        rep.add(
+            path,
+            "format.attribute-dropped",
+            "an XML attribute was discarded on read",
+            Severity::Warning,
+        );
+    }
+    let name = e.name();
+    let raw = std::str::from_utf8(name.as_ref()).unwrap_or_default();
+    if raw.contains(':') {
+        rep.add(
+            path,
+            "format.namespace-dropped",
+            "an XML namespace prefix was discarded on read",
+            Severity::Warning,
+        );
+    }
 }
 
 /// The local (unprefixed) part of a tag name -- see this module's doc

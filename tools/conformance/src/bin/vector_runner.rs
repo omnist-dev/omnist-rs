@@ -107,7 +107,7 @@ use omnist::document::{Doc, RawNode, Scalar};
 use omnist::error::OmnistError;
 use omnist::formats::json::{read_json, write_json};
 use omnist::formats::toml::{read_toml, write_toml};
-use omnist::formats::xml::{read_xml, write_xml};
+use omnist::formats::xml::{read_xml_report, write_xml};
 use omnist::formats::yaml::{read_yaml, write_yaml};
 use omnist::infer::infer_with_report;
 use omnist::materialize::materialize;
@@ -293,6 +293,12 @@ fn run_parse(v: &Json) -> VResult {
     // formats return `Doc` + `OmnistError`. Normalize both into
     // `Result<RawNode, Option<ErrPos>>` (an optional structural position) so
     // the rest of this driver is format-agnostic.
+    // `format.attribute-dropped`/`format.namespace-dropped` (spec Sec8.3.8,
+    // D-3) are read-time diagnostics only xml's reader emits, via
+    // `read_xml_report`'s `report: Option<&mut WriteReport>` (mirroring the
+    // write-side pattern) -- so only the "xml" arm below wires up a report;
+    // the other four formats have no read-time diagnostics to check.
+    let mut xml_report = WriteReport::new();
     let result: Result<RawNode, Option<ErrPos>> = match format {
         "oml" => read_oml(text).map_err(|e| Some(ErrPos::LineCol(e.line, e.col))),
         "json" => read_json(text)
@@ -301,7 +307,9 @@ fn run_parse(v: &Json) -> VResult {
         "toml" => read_toml(text)
             .map(|d| d.to_raw())
             .map_err(omnist_error_pos),
-        "xml" => read_xml(text).map(|d| d.to_raw()).map_err(omnist_error_pos),
+        "xml" => read_xml_report(text, Some(&mut xml_report))
+            .map(|d| d.to_raw())
+            .map_err(omnist_error_pos),
         "yaml" => read_yaml(text)
             .map(|d| d.to_raw())
             .map_err(omnist_error_pos),
@@ -314,11 +322,21 @@ fn run_parse(v: &Json) -> VResult {
                 return fail("expected failure, parse succeeded");
             }
             let expected = decode_document(&v["expect"]["document"]);
-            if raw == expected {
-                pass()
-            } else {
-                fail("parsed document does not match expected")
+            if raw != expected {
+                return fail("parsed document does not match expected");
             }
+            let expected_paths = expected_diag_paths(v);
+            if !expected_paths.is_empty() {
+                let actual_paths: Vec<String> = xml_report
+                    .adjustments()
+                    .iter()
+                    .map(|a| a.path.clone())
+                    .collect();
+                if !paths_match(expected_paths, actual_paths) {
+                    return fail("diagnostic paths differ");
+                }
+            }
+            pass()
         }
         Err(pos) => {
             if expect_ok(v) {
@@ -839,7 +857,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn vector_count_is_153() {
+    fn vector_count_is_155() {
         // 146 -> 152 via vendor/omnist-spec v0.1.1-alpha -> commit f93c569
         // (issue #104: arbitrary-precision `Scalar::Int`). The submodule
         // pin bump brings in several bundled, otherwise-unrelated
@@ -854,8 +872,15 @@ mod tests {
         // 152 -> 153 via vendor/omnist-spec commit 964af7b (issue #154 /
         // D-2: a second `root` declaration is now a normative error,
         // `schema.duplicate-root`).
+        // 153 -> 155 via vendor/omnist-spec commit 7f7690c (issue #156 /
+        // D-3: `format.attribute-dropped` and `format.namespace-dropped`
+        // read-time diagnostics each get their own new vector;
+        // `format.interleaving-lost` reuses the pre-existing
+        // `formats-json/basic/cross-label-interleaving-lost-and-reported`
+        // vector, only adding its `expect.diagnostics`, so it does not add
+        // a vector of its own).
         let vectors = iter_vectors(&suite_dir());
-        assert_eq!(vectors.len(), 153);
+        assert_eq!(vectors.len(), 155);
     }
 
     /// Full-suite regression guard: runs every real vector through every
@@ -876,13 +901,18 @@ mod tests {
     /// count here is freshly reproduced by running the harness, not
     /// computed by hand. Pinned so a future change that silently
     /// regresses pass/fail/skip counts is caught, not a "this must
-    /// always be 0 fails" gate.
+    /// always be 0 fails" gate. Now (149, 0, 6) after issue #156 (D-3):
+    /// `format.attribute-dropped`/`format.namespace-dropped`
+    /// (`formats-xml/xml.json`, read-time, via `read_xml_report`'s new
+    /// `WriteReport` parameter) and `format.interleaving-lost`
+    /// (`formats-json/json.json`, write-time, via
+    /// `Doc::has_interleaving_loss`) all now pass for real.
     #[test]
     fn full_suite_counts_match_the_measured_baseline() {
         let (passed, failed, skipped) = run_all(&suite_dir());
         assert_eq!(
             (passed, failed, skipped),
-            (147, 0, 6),
+            (149, 0, 6),
             "vector pass/fail/skip counts changed -- if this is an intentional fix or a new \
              vector, update the pinned baseline; if not, something regressed"
         );
@@ -1280,6 +1310,36 @@ mod tests {
             "operation": "parse",
             "input": {"format": "oml", "text": "nan: 1\n"},
             "expect": {"ok": false, "diagnostics": [{"path": "9:9"}]}
+        });
+        assert_eq!(dispatch(&v).status, Status::Fail);
+    }
+
+    #[test]
+    fn run_parse_success_with_matching_read_diagnostics_passes() {
+        // format.attribute-dropped (Sec8.3.8, D-3): a *successful* XML
+        // parse can still carry warning-severity read diagnostics.
+        let v = json!({
+            "operation": "parse",
+            "input": {"format": "xml", "text": "<a x=\"1\"><b>hi</b></a>"},
+            "expect": {
+                "ok": true,
+                "document": {"edges": [["a", {"edges": [["b", {"scalar": {"kind": "string", "value": "hi"}}]]}]]},
+                "diagnostics": [{"path": "$.a"}]
+            }
+        });
+        assert_eq!(dispatch(&v).status, Status::Pass);
+    }
+
+    #[test]
+    fn run_parse_success_with_mismatched_read_diagnostics_fails() {
+        let v = json!({
+            "operation": "parse",
+            "input": {"format": "xml", "text": "<a x=\"1\"><b>hi</b></a>"},
+            "expect": {
+                "ok": true,
+                "document": {"edges": [["a", {"edges": [["b", {"scalar": {"kind": "string", "value": "hi"}}]]}]]},
+                "diagnostics": [{"path": "$.wrong"}]
+            }
         });
         assert_eq!(dispatch(&v).status, Status::Fail);
     }
