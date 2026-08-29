@@ -857,7 +857,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn vector_count_is_155() {
+    fn vector_count_is_172() {
         // 146 -> 152 via vendor/omnist-spec v0.1.1-alpha -> commit f93c569
         // (issue #104: arbitrary-precision `Scalar::Int`). The submodule
         // pin bump brings in several bundled, otherwise-unrelated
@@ -879,8 +879,15 @@ mod tests {
         // `formats-json/basic/cross-label-interleaving-lost-and-reported`
         // vector, only adding its `expect.diagnostics`, so it does not add
         // a vector of its own).
+        // 155 -> 172 via vendor/omnist-spec commit 0ac1eac (issues #158-166,
+        // D-2/D-3-adjacent grammar/write-side fixes bundled in the same
+        // pin bump). This PR (issues #159/#160/#161) only implements the
+        // write-side unconditional-failure trio -- see
+        // `full_suite_counts_match_the_measured_baseline`'s doc comment
+        // for exactly which of the 17 new failures this PR fixed vs. left
+        // for other issues.
         let vectors = iter_vectors(&suite_dir());
-        assert_eq!(vectors.len(), 155);
+        assert_eq!(vectors.len(), 172);
     }
 
     /// Full-suite regression guard: runs every real vector through every
@@ -907,12 +914,36 @@ mod tests {
     /// `WriteReport` parameter) and `format.interleaving-lost`
     /// (`formats-json/json.json`, write-time, via
     /// `Doc::has_interleaving_loss`) all now pass for real.
+    /// (149, 0, 6) -> (153, 13, 6) via the 0ac1eac submodule pin bump
+    /// (issues #158-166) plus this PR's own fixes (#159/#160/#161). The
+    /// pin bump alone added 17 new/changed failures at 172 total vectors;
+    /// this PR fixed 4 of them, all write-side unconditional-failure
+    /// vectors newly added by #159/#160/#161 (verified fail -> pass by
+    /// name, not assumed):
+    ///   - `formats-xml/basic/label-with-illegal-xml-characters-cannot-be-written` (#159)
+    ///   - `formats-toml/nulls/null-leaf-cannot-be-written` (#160)
+    ///   - `formats-json/basic/nan-cannot-be-written` (#161, renamed+flipped from
+    ///     `nan-substituted-with-null-and-reported`)
+    ///   - `formats-xml/basic/empty-internal-node-cannot-be-written` (#161, new)
+    ///
+    /// `formats-toml/nulls/null-leaf-cannot-be-written-strict-is-the-same`
+    /// (#160's strict-mode companion) was already passing before this PR
+    /// (TOML's null-write already failed in strict mode; only the
+    /// non-strict/unconditional-failure behavior needed fixing).
+    ///
+    /// The remaining 13 failures are real, but out of scope for this PR --
+    /// they belong to other issues in the #158-166 batch (#158,
+    /// #162-#166) and to pre-existing oml-grammar/osd-grammar gaps this
+    /// pin bump's bundled vectors also touch. Left failing deliberately;
+    /// not this PR's job. Pinned so a future change that silently
+    /// regresses pass/fail/skip counts is caught, not a "this must always
+    /// be 0 fails" gate.
     #[test]
     fn full_suite_counts_match_the_measured_baseline() {
         let (passed, failed, skipped) = run_all(&suite_dir());
         assert_eq!(
             (passed, failed, skipped),
-            (149, 0, 6),
+            (153, 13, 6),
             "vector pass/fail/skip counts changed -- if this is an intentional fix or a new \
              vector, update the pinned baseline; if not, something regressed"
         );
@@ -1227,14 +1258,19 @@ mod tests {
     }
 
     #[test]
-    fn main_with_dir_on_the_real_suite_returns_zero() {
-        // Drives `main_with_dir`'s success path against the real vendored
-        // suite (distinct from `missing_suite_dir_returns_two`'s error
-        // path, and from `main_with_dir_on_an_all_passing_suite_returns_zero`'s
-        // synthetic single-vector dir). The exit code is 0 because the real
-        // suite now has zero real fails (see this file's module doc
-        // comment) -- omnist-rs#87/#88 closed out the last ones.
-        assert_eq!(main_with_dir(&suite_dir()), 0);
+    fn main_with_dir_on_the_real_suite_returns_one() {
+        // Drives `main_with_dir` against the real vendored suite (distinct
+        // from `missing_suite_dir_returns_two`'s error path, and from
+        // `main_with_dir_on_an_all_passing_suite_returns_zero`'s synthetic
+        // single-vector dir). Renamed from
+        // `main_with_dir_on_the_real_suite_returns_zero`: the 0ac1eac
+        // submodule pin bump (issues #158-166) brought in 13 real failures
+        // this PR (#159/#160/#161) doesn't own -- see
+        // `full_suite_counts_match_the_measured_baseline`'s doc comment.
+        // The exit code is 1 (not 2/panic) because `main_with_dir` itself
+        // only signals "the suite ran and something failed", exactly as
+        // designed for a suite with legitimate, tracked failures.
+        assert_eq!(main_with_dir(&suite_dir()), 1);
     }
 
     #[test]

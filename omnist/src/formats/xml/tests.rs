@@ -356,11 +356,16 @@ fn writes_a_leaf_root_on_one_line_no_trailing_newline() {
     assert_eq!(text, "<root>hello</root>");
 }
 
+// Was `writes_an_empty_root_self_closed_no_trailing_newline`: an empty
+// internal node now fails the write unconditionally (spec Sec8.3.8/Sec8.3.9,
+// #161) instead of rendering `<root />` -- see
+// `scan_xml_cursor`'s doc comment.
 #[test]
-fn writes_an_empty_root_self_closed_no_trailing_newline() {
+fn write_fails_when_the_single_top_level_edge_is_an_empty_internal_node() {
     let doc = Doc::from_raw(edges(vec![("root", edges(vec![]))])).unwrap();
-    let text = write_xml(&doc, false, None).unwrap();
-    assert_eq!(text, "<root />");
+    let err = write_xml(&doc, false, None).unwrap_err();
+    assert!(err.to_string().contains("write.unsupported-value"));
+    assert!(err.to_string().contains("$.root"));
 }
 
 #[test]
@@ -370,15 +375,29 @@ fn writes_nested_elements_indented_with_trailing_newline() {
         edges(vec![
             ("a", leaf_int(1)),
             ("b", edges(vec![("x", leaf_str("1")), ("x", leaf_str("2"))])),
-            ("c", edges(vec![])),
         ]),
     )]))
     .unwrap();
     let text = write_xml(&doc, false, None).unwrap();
     assert_eq!(
         text,
-        "<root>\n  <a>1</a>\n  <b>\n    <x>1</x>\n    <x>2</x>\n  </b>\n  <c />\n</root>\n"
+        "<root>\n  <a>1</a>\n  <b>\n    <x>1</x>\n    <x>2</x>\n  </b>\n</root>\n"
     );
+}
+
+// Was folded into `writes_nested_elements_indented_with_trailing_newline`
+// (a `("c", edges(vec![]))` sibling) before #161: an empty internal node
+// anywhere in the tree, not just at the root, now fails the write.
+#[test]
+fn write_fails_when_a_nested_edge_is_an_empty_internal_node() {
+    let doc = Doc::from_raw(edges(vec![(
+        "root",
+        edges(vec![("a", leaf_int(1)), ("c", edges(vec![]))]),
+    )]))
+    .unwrap();
+    let err = write_xml(&doc, false, None).unwrap_err();
+    assert!(err.to_string().contains("write.unsupported-value"));
+    assert!(err.to_string().contains("$.root.c"));
 }
 
 #[test]
@@ -453,42 +472,88 @@ fn strict_write_raises_on_illegal_char_error() {
     assert!(err.report().is_some());
 }
 
-// ----------------------------------------------------------------- key sanitization
+// -------------------------------------------------- write.unsupported-value: labels
 
+// Was `sanitizes_an_invalid_label_and_records_adjustment` and
+// `xml_name_prefixes_underscore_when_sanitized_result_still_invalid` before
+// spec Sec8.3.8/Sec8.3.9 (updated 2026-08-24): an XML-illegal label now
+// fails the write unconditionally (`write.unsupported-value`) instead of
+// being sanitized into a valid tag name and reported -- two different
+// labels could sanitize to the same tag (`"my label"` and `"my_label"`
+// both -> `<my_label>`), producing on read-back a Document that looks like
+// one label legitimately repeated twice, with no diagnostic anywhere
+// indicating a collision occurred (confirmed live). Retired the
+// `key.sanitized` code and the `xml_name` sanitizing helper entirely --
+// see `scan_xml_cursor`'s doc comment.
 #[test]
-fn sanitizes_an_invalid_label_and_records_adjustment() {
+fn write_fails_unconditionally_on_an_invalid_label() {
     let doc = Doc::from_raw(edges(vec![(
         "root",
         edges(vec![("1bad label", leaf_int(1))]),
     )]))
     .unwrap();
     let mut rep = WriteReport::new();
-    let text = write_xml(&doc, false, Some(&mut rep)).unwrap();
-    assert!(text.contains("<_1bad_label>1</_1bad_label>"));
-    assert!(rep.adjustments().iter().any(|a| a.code == "key.sanitized"));
+    let err = write_xml(&doc, false, Some(&mut rep)).unwrap_err();
+    assert!(err.to_string().contains("write.unsupported-value"));
+    assert!(err.to_string().contains("1bad label"));
+    assert!(rep.is_empty());
+    assert!(err.report().is_none());
 }
 
 #[test]
-fn xml_name_prefixes_underscore_when_sanitized_result_still_invalid() {
-    // A label made of only illegal characters sanitizes to an
-    // all-underscore string, which IS a valid XML name on its own
-    // (starts with `_`) -- but a label that sanitizes to something
-    // starting with a digit still needs the extra leading underscore.
-    assert_eq!(xml_name("123"), "_123");
-    assert_eq!(xml_name("a b"), "a_b");
-    assert_eq!(xml_name("valid_name"), "valid_name");
+fn write_fails_unconditionally_on_an_invalid_label_even_in_strict_mode() {
+    // `strict` never distinguished this case, and doesn't now either --
+    // both modes fail identically.
+    let doc = Doc::from_raw(edges(vec![(
+        "root",
+        edges(vec![("1bad label", leaf_int(1))]),
+    )]))
+    .unwrap();
+    let err = write_xml(&doc, true, None).unwrap_err();
+    assert!(err.to_string().contains("write.unsupported-value"));
 }
 
-// --------------------------------------------------------------------- empty shape
+#[test]
+fn check_xml_still_reports_an_invalid_label_as_write_unsupported_value() {
+    // check_xml only previews (it never writes), so it keeps reporting the
+    // condition -- now under the retired code's replacement.
+    let doc = Doc::from_raw(edges(vec![(
+        "root",
+        edges(vec![("1bad label", leaf_int(1))]),
+    )]))
+    .unwrap();
+    let rep = check_xml(&doc);
+    assert!(
+        rep.adjustments()
+            .iter()
+            .any(|a| a.code == "write.unsupported-value" && a.severity == Severity::Error)
+    );
+}
+
+// ---------------------------------- write.unsupported-value: empty internal node
+
+// Was `empty_internal_node_reports_shape_empty_ambiguous`: an empty
+// internal node now fails the write unconditionally instead of being
+// written as a self-closing tag and reported -- it would read back as the
+// empty-string leaf, indistinguishable from a genuine empty string
+// (confirmed live, same collision shape as the label case above). Retired
+// the `shape.empty_ambiguous` code.
+#[test]
+fn write_fails_unconditionally_on_an_empty_internal_node() {
+    let doc = Doc::from_raw(edges(vec![("root", edges(vec![("empty", edges(vec![]))]))])).unwrap();
+    let err = write_xml(&doc, false, None).unwrap_err();
+    assert!(err.to_string().contains("write.unsupported-value"));
+    assert!(err.to_string().contains("$.root.empty"));
+}
 
 #[test]
-fn empty_internal_node_reports_shape_empty_ambiguous() {
+fn check_xml_still_reports_an_empty_internal_node_as_write_unsupported_value() {
     let doc = Doc::from_raw(edges(vec![("root", edges(vec![("empty", edges(vec![]))]))])).unwrap();
     let rep = check_xml(&doc);
     assert!(
         rep.adjustments()
             .iter()
-            .any(|a| a.code == "shape.empty_ambiguous")
+            .any(|a| a.code == "write.unsupported-value" && a.severity == Severity::Error)
     );
 }
 
@@ -1171,15 +1236,42 @@ fn write_xml_empty_string_leaf_renders_self_closing_tag() {
     assert_eq!(xml, "<root />");
 }
 
+// Was `write_xml_empty_internal_node_renders_self_closing_tag`: see
+// `write_fails_when_the_single_top_level_edge_is_an_empty_internal_node`
+// above -- kept as a separate test since it exercises the `RawNode`
+// constructor directly rather than the `edges(...)` test helper.
 #[test]
-fn write_xml_empty_internal_node_renders_self_closing_tag() {
+fn write_xml_empty_internal_node_fails_unconditionally() {
     let doc = Doc::from_raw(RawNode::Edges(vec![(
         "root".to_string(),
         RawNode::Edges(vec![]),
     )]))
     .unwrap();
-    let xml = write_xml(&doc, false, None).unwrap();
-    assert_eq!(xml, "<root />");
+    let err = write_xml(&doc, false, None).unwrap_err();
+    assert!(err.to_string().contains("write.unsupported-value"));
+}
+
+// White-box confirmation of the `unreachable!()` in `write_element`'s
+// `Ok(_)` arm (see that function's doc comment): `write_element` itself
+// has no way to reject an empty internal node -- only `scan_xml_cursor`'s
+// `fail_fast: true` pass (already exercised by
+// `write_fails_when_the_single_top_level_edge_is_an_empty_internal_node`)
+// does that, before `write_element` is ever reached in the real
+// `write_xml` path. Calls `write_element` directly on an empty-internal
+// cursor to confirm the documented invariant holds, same rationale as
+// `toml.rs`'s/`yaml.rs`'s identical `unreachable!()` precedents
+// (`write_scalar_panics_on_null` et al.).
+#[test]
+fn write_element_panics_on_empty_internal_node() {
+    let doc = Doc::from_raw(edges(vec![("root", edges(vec![]))])).unwrap();
+    let root = doc.root();
+    let (tag, child_id) = &root.internal_edges().unwrap()[0];
+    let content = root.seek(*child_id);
+    let result = std::panic::catch_unwind(|| {
+        let mut out = String::new();
+        write_element(tag, &content, 0, &mut out);
+    });
+    assert!(result.is_err());
 }
 
 #[test]

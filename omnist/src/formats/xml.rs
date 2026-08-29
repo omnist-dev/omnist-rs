@@ -625,7 +625,7 @@ pub fn write_xml(
         return Err(single_root_error());
     }
     let mut rep = WriteReport::new();
-    scan_xml_cursor(&root, "$", &mut rep);
+    scan_xml_cursor(&root, "$", &mut rep, true)?;
     let (tag, child_id) = &edges[0];
     let child_cursor = root.seek(*child_id);
     let mut out = String::new();
@@ -649,7 +649,11 @@ fn single_root_error() -> WriteError {
 /// with no root-shape guard of its own).
 pub fn check_xml(doc: &Doc) -> WriteReport {
     let mut rep = WriteReport::new();
-    scan_xml_cursor(&doc.root(), "$", &mut rep);
+    // `fail_fast: false` -- `scan_xml_cursor` never returns `Err` on this
+    // path, it only records the same conditions as `write.unsupported-value`
+    // `Severity::Error` adjustments for preview purposes (`check_xml` never
+    // produces output to begin with, so there is nothing to fail).
+    scan_xml_cursor(&doc.root(), "$", &mut rep, false).expect("fail_fast: false never returns Err");
     rep
 }
 
@@ -678,18 +682,40 @@ impl crate::formats::Codec for Xml {
     }
 }
 
-fn scan_xml_cursor(cursor: &Cursor, path: &str, rep: &mut WriteReport) {
+/// Scans a subtree for every write-time adjustment/failure XML has, mirrored
+/// against `check_xml`'s preview-only need via `fail_fast`.
+///
+/// Two conditions -- an XML-illegal label and an empty internal node --
+/// fail the write unconditionally (`write.unsupported-value`, spec
+/// Sec8.3.8/Sec8.3.9 updated 2026-08-24) rather than sanitizing/substituting
+/// and reporting a warning; retired the `key.sanitized`/`shape.empty_ambiguous`
+/// codes (see this module's doc comment and `write_xml`'s). With
+/// `fail_fast: true` (the real [`write_xml`] path), this function returns
+/// `Err` the moment either condition is found, before any output is
+/// produced -- so `write_element`'s own `xml_name`-sanitizing branch is now
+/// unreachable in practice and has been removed; every label `write_element`
+/// ever sees has already been confirmed a valid XML name here. With
+/// `fail_fast: false` ([`check_xml`]'s preview-only path), both conditions
+/// are instead recorded as `write.unsupported-value`/`Severity::Error`
+/// adjustments and scanning continues, so `check_xml` can report every
+/// occurrence in one pass rather than just the first.
+fn scan_xml_cursor(
+    cursor: &Cursor,
+    path: &str,
+    rep: &mut WriteReport,
+    fail_fast: bool,
+) -> Result<(), WriteError> {
     match cursor.internal_edges() {
         Ok(edges) => {
             if edges.is_empty() {
-                rep.add(
-                    path,
-                    "shape.empty_ambiguous",
-                    "empty internal node (no edges) written as <tag /> and reads back as the \
-                     empty-string leaf '', not []",
-                    Severity::Warning,
-                );
-                return;
+                let detail = "empty internal node (no edges) has no XML representation -- it \
+                              would read back as the empty-string leaf '', indistinguishable \
+                              from a genuine empty string";
+                if fail_fast {
+                    return Err(crate::report::unsupported_value_error(path, detail));
+                }
+                rep.add(path, "write.unsupported-value", detail, Severity::Error);
+                return Ok(());
             }
             let mut counts: IndexMap<&str, usize> = IndexMap::new();
             for (label, child_id) in edges {
@@ -698,15 +724,20 @@ fn scan_xml_cursor(cursor: &Cursor, path: &str, rep: &mut WriteReport) {
                 *entry += 1;
                 let p = crate::report::child_path(path, label, i);
                 if !is_valid_xml_name(label) {
+                    let detail =
+                        format!("label {label:?} is not a valid XML name and cannot be written");
+                    if fail_fast {
+                        return Err(crate::report::unsupported_value_error(&p, detail));
+                    }
                     rep.add(
                         p.clone(),
-                        "key.sanitized",
-                        format!("label {label:?} isn't a valid XML name; written sanitized"),
-                        Severity::Warning,
+                        "write.unsupported-value",
+                        detail,
+                        Severity::Error,
                     );
                 }
                 let child = cursor.seek(*child_id);
-                scan_xml_cursor(&child, &p, rep);
+                scan_xml_cursor(&child, &p, rep, fail_fast)?;
             }
         }
         Err(_) => {
@@ -714,6 +745,7 @@ fn scan_xml_cursor(cursor: &Cursor, path: &str, rep: &mut WriteReport) {
             scan_leaf(scalar, path, rep);
         }
     }
+    Ok(())
 }
 
 fn scan_leaf(scalar: &Scalar, path: &str, rep: &mut WriteReport) {
@@ -767,11 +799,18 @@ fn scan_leaf(scalar: &Scalar, path: &str, rep: &mut WriteReport) {
     }
 }
 
+/// `tag` is always already a valid XML name by the time this runs -- the
+/// only two callers are `write_xml` (which fails via `scan_xml_cursor`'s
+/// `fail_fast: true` pass, before this function is ever reached, on any
+/// label that isn't) and this function's own recursive call on a child
+/// label already scanned the same way. No sanitization happens here
+/// anymore -- see `scan_xml_cursor`'s doc comment on why the write now
+/// fails unconditionally on an XML-illegal label instead.
 fn write_element(tag: &str, content: &Cursor, level: usize, out: &mut String) {
     let indent = "  ".repeat(level);
     out.push_str(&indent);
     out.push('<');
-    out.push_str(&xml_name(tag));
+    out.push_str(tag);
     match content.internal_edges() {
         Ok(edges) if !edges.is_empty() => {
             out.push_str(">\n");
@@ -781,10 +820,20 @@ fn write_element(tag: &str, content: &Cursor, level: usize, out: &mut String) {
             }
             out.push_str(&indent);
             out.push_str("</");
-            out.push_str(&xml_name(tag));
+            out.push_str(tag);
             out.push_str(">\n");
         }
-        Ok(_) => out.push_str(" />\n"),
+        // Unreachable via the real `write_xml` path: `scan_xml_cursor`'s
+        // `fail_fast: true` pass already returned `Err` for any empty
+        // internal node anywhere in the tree before `write_element` is
+        // ever called (spec Sec8.3.8/Sec8.3.9, issue #161) -- see that
+        // function's doc comment. White-box confirmed directly below
+        // (`write_element_panics_on_empty_internal_node`), same rationale
+        // as `toml.rs`'s/`yaml.rs`'s identical `unreachable!()` precedents.
+        Ok(_) => unreachable!(
+            "write_element is never called on an empty internal node -- scan_xml_cursor \
+             already failed the write"
+        ),
         Err(_) => {
             let scalar = content.value().unwrap();
             let text = xml_sanitize(&xml_text(scalar));
@@ -794,7 +843,7 @@ fn write_element(tag: &str, content: &Cursor, level: usize, out: &mut String) {
                 out.push('>');
                 out.push_str(&xml_escape_text(&text));
                 out.push_str("</");
-                out.push_str(&xml_name(tag));
+                out.push_str(tag);
                 out.push_str(">\n");
             }
         }
@@ -810,29 +859,6 @@ fn is_valid_xml_name(name: &str) -> bool {
         _ => return false,
     }
     chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-')
-}
-
-/// A label as a legal XML element name -- sanitized if it isn't already
-/// one, matching Python's `_xml_name`.
-fn xml_name(name: &str) -> String {
-    if is_valid_xml_name(name) {
-        return name.to_string();
-    }
-    let safe: String = name
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    if safe.is_empty() || !is_valid_xml_name(&safe) {
-        format!("_{safe}")
-    } else {
-        safe
-    }
 }
 
 fn xml_text(scalar: &Scalar) -> String {

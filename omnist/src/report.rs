@@ -201,6 +201,28 @@ pub fn finish_write(
     Ok(text)
 }
 
+/// Build the [`WriteError`] for a value/shape a target format's syntax
+/// cannot represent at all -- spec Sec8.3.8/Sec8.3.9 (updated 2026-08-24):
+/// unlike every other row in the codec-adjustments table, these have no
+/// single well-defined substitute to fall back to (either two distinct
+/// inputs can collide on the same substituted output, or the substitute
+/// erases the edge's existence entirely), so the write fails unconditionally
+/// -- regardless of `strict` -- rather than adjusting and reporting a
+/// warning/error in the [`WriteReport`]. Used by the three write-side
+/// unconditional-failure cases: an XML-illegal label/tag name, a null leaf
+/// written to a format with no null token (TOML), NaN/Infinity written to
+/// JSON, and an empty internal node written to XML.
+///
+/// Mirrors the "{path}: {message}" convention [`WriteError`]'s siblings
+/// (`DocumentError`, `SchemaError`) use for embedding path in text --
+/// `WriteError` itself has no structured `path`/`code` fields (see its doc
+/// comment), so the stable code `write.unsupported-value` is embedded in
+/// the message alongside the path, exactly like every other `WriteError`
+/// site in this crate.
+pub(crate) fn unsupported_value_error(path: &str, detail: impl std::fmt::Display) -> WriteError {
+    WriteError::new(format!("{path}: write.unsupported-value: {detail}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
