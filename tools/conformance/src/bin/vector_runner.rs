@@ -859,15 +859,23 @@ const KNOWN_FAILING_VECTORS: &[&str] = &[
     // schema-construction-time validation: [0,0] cardinality, empty field
     // labels, brackets in field labels) -- removed here in the same PR.
     //
-    // Issues #164-165 (OML tokenizer grammar fixes from the same 0ac1eac
-    // pin bump as #158-163/#166, not implemented by this PR).
-    "oml-grammar/numbers/leading-zero-integer-is-an-error",
-    "oml-grammar/numbers/leading-zero-in-decimal-is-an-error",
-    "oml-grammar/temporals/date-with-out-of-range-month-is-an-error",
-    "oml-grammar/temporals/date-with-day-invalid-for-month-is-an-error",
-    "oml-grammar/temporals/february-29-in-a-non-leap-year-is-an-error",
-    "oml-grammar/temporals/leap-second-is-an-error",
-    "oml-grammar/temporals/tz-offset-minute-out-of-range-is-an-error",
+    // Issue #164 fixed both leading-zero entries, and #165 fixed the five
+    // temporal error-case entries (all removed here in the same PR) --
+    // but NOT `tz-offset-within-range-is-valid` below, which stays. That
+    // one vector's `expect.document.value` is un-canonicalized (missing
+    // the `:00` seconds every sibling OML-datetime vector in this same
+    // file has -- e.g. `date-then-time-lookahead-yields-one-datetime-
+    // token`, right above the temporals block), which is a genuine
+    // omnist-spec test-suite defect (filed:
+    // https://github.com/omnist-dev/omnist-spec/issues/51), not an
+    // omnist-rs gap -- omnist-rs's OML reader canonicalizes a missing
+    // `:SS` to `:00` deliberately and consistently (issue #90), and
+    // reverting that to match this one vector would silently regress
+    // every other datetime vector depending on it. The actual subject of
+    // #165 (tz-offset sharing TIME's exact minute range, not a wider or
+    // separately-implemented one) is confirmed correct and covered by the
+    // adjacent `tz-offset-minute-out-of-range-is-an-error` vector, which
+    // now passes.
     "oml-grammar/temporals/tz-offset-within-range-is-valid",
 ];
 
@@ -1012,22 +1020,42 @@ mod tests {
     /// All four removed from `KNOWN_FAILING_VECTORS` in the same PR, per
     /// that constant's own doc comment.
     ///
-    /// The remaining 8 failures are real, but out of scope -- they belong
-    /// to issues #164-#165 (still open, OML tokenizer grammar fixes) and
-    /// to pre-existing oml-grammar temporal-diagnostic gaps this pin
-    /// bump's bundled vectors also touch. Left failing deliberately;
-    /// every one of them is also on `KNOWN_FAILING_VECTORS`, so CI still
-    /// passes -- see that constant's doc comment for why this and
-    /// `main_with_dir`'s exit code no longer treat every failure as
-    /// fatal. Pinned so a future change that silently regresses
-    /// pass/fail/skip counts is caught, not a "this must always be 0
-    /// fails" gate.
+    /// (158, 8, 6) -> (165, 1, 6) via issues #164/#165 (OML tokenizer
+    /// numeric/temporal-literal grammar, `omnist/src/oml/scanner.rs`):
+    ///   - #164: a leading zero in a numeric literal's integer part (e.g.
+    ///     "01", "00.5") is now `parse.leading-zero`.
+    ///   - #165: DATE/TIME/DATETIME calendar/clock range validation was
+    ///     already correctly implemented (month 01-12, day valid for
+    ///     month/leap-year, hour/minute/second in range, no leap-second
+    ///     spelling, tz-offset sharing TIME's exact minute range rather
+    ///     than a separate, looser one) -- the real gap was a diagnostic-
+    ///     position bug (`finish_temporal` reported the token's *end*
+    ///     position, not its *start*, disagreeing with every conformance
+    ///     vector's expected `line:col`). Fixed by reporting at `start`.
+    ///
+    /// Seven vectors move fail -> pass (verified, not assumed):
+    ///   - `oml-grammar/numbers/leading-zero-integer-is-an-error` (#164)
+    ///   - `oml-grammar/numbers/leading-zero-in-decimal-is-an-error` (#164)
+    ///   - `oml-grammar/temporals/date-with-out-of-range-month-is-an-error` (#165)
+    ///   - `oml-grammar/temporals/date-with-day-invalid-for-month-is-an-error` (#165)
+    ///   - `oml-grammar/temporals/february-29-in-a-non-leap-year-is-an-error` (#165)
+    ///   - `oml-grammar/temporals/leap-second-is-an-error` (#165)
+    ///   - `oml-grammar/temporals/tz-offset-minute-out-of-range-is-an-error` (#165)
+    ///
+    /// All seven removed from `KNOWN_FAILING_VECTORS` in the same PR.
+    /// `tz-offset-within-range-is-valid` (#165's 6th, happy-path vector)
+    /// deliberately stays on `KNOWN_FAILING_VECTORS` -- see that
+    /// constant's doc comment: it's a genuine omnist-spec test-suite
+    /// defect (filed as omnist-spec#51), not an omnist-rs gap.
+    ///
+    /// This closes out every issue in the #158-166 batch. The one
+    /// remaining failure is entirely outside this port's control.
     #[test]
     fn full_suite_counts_match_the_measured_baseline() {
         let (passed, failed, skipped) = run_all(&suite_dir());
         assert_eq!(
             (passed, failed, skipped),
-            (158, 8, 6),
+            (165, 1, 6),
             "vector pass/fail/skip counts changed -- if this is an intentional fix or a new \
              vector, update the pinned baseline; if not, something regressed"
         );

@@ -470,7 +470,14 @@ impl<'a> Scanner<'a> {
                 TemporalKind::Time => "time",
                 TemporalKind::Datetime => "datetime",
             };
-            return Err(self.error_at(end, format!("invalid {label} {text:?}")));
+            // spec Sec4.2.4 (issue #165, added 2026-08-29): the diagnostic
+            // position is the start of the temporal token, matching every
+            // other scanner error in this file (e.g. `scan_number`'s
+            // digit-cap error) -- was `end` (the token's *end* position),
+            // which put the reported line:col well past the literal for
+            // any multi-char token, disagreeing with every conformance
+            // vector's expected `{line}:{col}` (all point at `start`).
+            return Err(self.error_at(start, format!("invalid {label} {text:?}")));
         }
         self.pos = end;
         let canonical = match kind {
@@ -554,6 +561,22 @@ impl<'a> Scanner<'a> {
         let int_start = p;
         p = self.digits_from(p);
         debug_assert!(p > int_start, "caller guarantees at least one digit");
+        // parse.leading-zero (spec Sec4.2.3, issue #164, added 2026-08-29):
+        // the integer part's grammar is `int-part = "0" / (nonzero digit
+        // followed by any digits)` -- a bare "0" is legal, but any run of
+        // more than one digit starting with "0" is not, and the fractional
+        // part doesn't exempt it ("00.5" is rejected just like "00").
+        // Genuinely undefined before this: confirmed live against the
+        // Python reference that "01"/"00" both silently tokenized as 1/0.
+        // Matches JSON's and TOML's own numeric-literal grammar, which OML
+        // already round-trips through.
+        let int_digits = &self.text[int_start..p];
+        if int_digits.len() > 1 && int_digits.as_bytes()[0] == b'0' {
+            return Err(self.error_at(
+                start,
+                format!("leading zero in numeric literal {int_digits:?} is not allowed"),
+            ));
+        }
         let mut end = p;
         let mut is_float = false;
         let frac_end = if self.byte_at(p) == Some(b'.') {
