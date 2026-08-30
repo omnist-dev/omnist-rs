@@ -855,8 +855,12 @@ const KNOWN_FAILING_VECTORS: &[&str] = &[
     // reference) -- removed here in the same PR, per this constant's own
     // doc comment above.
     //
-    // Issues #163-166 (grammar/diagnostic-shape fixes from the same
-    // 0ac1eac pin bump as #159/#160/#161/#162, not implemented by this PR).
+    // Issues #158/#163/#166 fixed these four entries (OSD
+    // schema-construction-time validation: [0,0] cardinality, empty field
+    // labels, brackets in field labels) -- removed here in the same PR.
+    //
+    // Issues #164-165 (OML tokenizer grammar fixes from the same 0ac1eac
+    // pin bump as #158-163/#166, not implemented by this PR).
     "oml-grammar/numbers/leading-zero-integer-is-an-error",
     "oml-grammar/numbers/leading-zero-in-decimal-is-an-error",
     "oml-grammar/temporals/date-with-out-of-range-month-is-an-error",
@@ -865,10 +869,6 @@ const KNOWN_FAILING_VECTORS: &[&str] = &[
     "oml-grammar/temporals/leap-second-is-an-error",
     "oml-grammar/temporals/tz-offset-minute-out-of-range-is-an-error",
     "oml-grammar/temporals/tz-offset-within-range-is-valid",
-    "osd-grammar/cardinality/zero-max-is-invalid-redundant-with-absence",
-    "osd-grammar/labels/empty-label-is-rejected",
-    "osd-grammar/labels/bracket-in-label-is-rejected",
-    "osd-grammar/labels/closing-bracket-alone-in-label-is-rejected",
 ];
 
 fn main_with_dir(dir: &Path) -> u8 {
@@ -998,21 +998,36 @@ mod tests {
     /// `KNOWN_FAILING_VECTORS` in the same PR, per that constant's own
     /// doc comment.
     ///
-    /// The remaining 12 failures are real, but out of scope -- they
-    /// belong to issues #163-#166 (still open) and to pre-existing
-    /// oml-grammar/osd-grammar gaps this pin bump's bundled vectors also
-    /// touch. Left failing deliberately; every one of them is also on
-    /// `KNOWN_FAILING_VECTORS`, so CI still passes -- see that constant's
-    /// doc comment for why this and `main_with_dir`'s exit code no longer
-    /// treat every failure as fatal. Pinned so a future change that
-    /// silently regresses pass/fail/skip counts is caught, not a "this
-    /// must always be 0 fails" gate.
+    /// (154, 12, 6) -> (158, 8, 6) via issues #158/#163/#166 (OSD
+    /// schema-construction-time validation): `[0,0]` cardinality, an
+    /// empty-string field label, and a field label containing `[`/`]`
+    /// (both a matched-pair shape and a lone, unmatched `]`) each now
+    /// fail to parse. Four vectors move fail -> pass (verified, not
+    /// assumed):
+    ///   - `osd-grammar/cardinality/zero-max-is-invalid-redundant-with-absence` (#158)
+    ///   - `osd-grammar/labels/empty-label-is-rejected` (#163)
+    ///   - `osd-grammar/labels/bracket-in-label-is-rejected` (#166)
+    ///   - `osd-grammar/labels/closing-bracket-alone-in-label-is-rejected` (#166)
+    ///
+    /// All four removed from `KNOWN_FAILING_VECTORS` in the same PR, per
+    /// that constant's own doc comment.
+    ///
+    /// The remaining 8 failures are real, but out of scope -- they belong
+    /// to issues #164-#165 (still open, OML tokenizer grammar fixes) and
+    /// to pre-existing oml-grammar temporal-diagnostic gaps this pin
+    /// bump's bundled vectors also touch. Left failing deliberately;
+    /// every one of them is also on `KNOWN_FAILING_VECTORS`, so CI still
+    /// passes -- see that constant's doc comment for why this and
+    /// `main_with_dir`'s exit code no longer treat every failure as
+    /// fatal. Pinned so a future change that silently regresses
+    /// pass/fail/skip counts is caught, not a "this must always be 0
+    /// fails" gate.
     #[test]
     fn full_suite_counts_match_the_measured_baseline() {
         let (passed, failed, skipped) = run_all(&suite_dir());
         assert_eq!(
             (passed, failed, skipped),
-            (154, 12, 6),
+            (158, 8, 6),
             "vector pass/fail/skip counts changed -- if this is an intentional fix or a new \
              vector, update the pinned baseline; if not, something regressed"
         );
