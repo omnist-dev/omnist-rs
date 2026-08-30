@@ -276,12 +276,16 @@ fn convert_of_nan_fails_unconditionally_exits_2_regardless_of_strict() {
 // `convert_result_format_json_encodes_the_report`: both used to exercise
 // `--report` against a NaN input that succeeded (with an adjustment)
 // before #161. NaN now fails the write outright, so these two now use an
-// XML target and a genuine still-succeeding warning-severity adjustment
-// (a carriage return, `string.cr_normalized`) to keep testing the
-// `--report`/`--result-format` machinery on a real non-failing case.
+// XML target and a genuine still-succeeding warning-severity adjustment.
+// Originally switched to a carriage return (`string.cr_normalized`), but
+// issue #162 retired that code too (CR now round-trips losslessly via
+// `&#13;`, nothing left to report) -- switched again, to `value.stringified`
+// (writing a non-string scalar to XML, untouched by #159/#160/#161/#162),
+// to keep testing the `--report`/`--result-format` machinery on a real
+// non-failing case.
 #[test]
 fn convert_report_prints_adjustments_to_stderr_and_still_writes() {
-    let input = fixture("convert_report_in", r#"{"a": "x\ry"}"#);
+    let input = fixture("convert_report_in", r#"{"a": 1}"#);
     let r = run(&[
         "convert", &input, "--from", "json", "--to", "xml", "--report",
     ]);
@@ -292,7 +296,7 @@ fn convert_report_prints_adjustments_to_stderr_and_still_writes() {
 
 #[test]
 fn convert_result_format_json_encodes_the_report() {
-    let input = fixture("convert_report_json_in", r#"{"a": "x\ry"}"#);
+    let input = fixture("convert_report_json_in", r#"{"a": 1}"#);
     let r = run(&[
         "convert",
         &input,
@@ -689,12 +693,14 @@ fn convert_to_oml_compact() {
 // that code -- writing a null to TOML now fails unconditionally
 // (`write.unsupported-value`, `Severity::Error` when previewed via
 // `check`) instead of succeeding with a warning. Switched to XML's
-// carriage-return normalization (`string.cr_normalized`), still a real
-// `Severity::Warning` adjustment on a write that still succeeds, to keep
-// exercising the same `--report`/`--result-format` machinery.
+// carriage-return normalization (`string.cr_normalized`), but issue #162
+// retired that code too -- switched again, to `value.stringified` (a
+// non-string scalar written to XML), still a real `Severity::Warning`
+// adjustment on a write that still succeeds, to keep exercising the same
+// `--report`/`--result-format` machinery.
 #[test]
 fn convert_report_with_a_warning_severity_adjustment_json_and_oml() {
-    let input = fixture("convert_warning_report_in", r#"{"a": "x\ry"}"#);
+    let input = fixture("convert_warning_report_in", r#"{"a": 1}"#);
     let r_json = run(&[
         "convert",
         &input,
@@ -725,10 +731,11 @@ fn convert_report_with_a_warning_severity_adjustment_json_and_oml() {
 }
 
 // Was `check_result_format_oml_with_a_warning_adjustment`: same
-// TOML-null -> XML-CR-normalization swap as above, for the same reason.
+// TOML-null -> XML-CR-normalization swap as above, then that -> XML
+// `value.stringified` swap as above, for the same reasons.
 #[test]
 fn check_result_format_oml_with_a_warning_adjustment() {
-    let input = fixture("check_warning_oml_in", r#"{"a": "x\ry"}"#);
+    let input = fixture("check_warning_oml_in", r#"{"a": 1}"#);
     let r = run(&[
         "check",
         &input,
