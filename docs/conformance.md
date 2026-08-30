@@ -3,9 +3,11 @@
 This port has its own conformance-test harness (`tools/conformance/`)
 against [omnist-spec](https://github.com/omnist-dev/omnist-spec), the
 language-agnostic upstream specification. It vendors omnist-spec as a
-pinned git submodule (`vendor/omnist-spec`, currently commit `f93c569`,
-past the `v0.2.2-alpha` tag -- pinned to the exact commit adding issue
-#104's conformance vector, ahead of any tag that includes it yet) and
+pinned git submodule (`vendor/omnist-spec`, currently commit `aac3ce0`,
+past the `v0.5.0-beta` tag -- pins the fix for
+[omnist-spec#52](https://github.com/omnist-dev/omnist-spec/issues/52),
+a new Sec8.5.3 rule for XML-whitespace-insensitive conformance-vector
+comparison) and
 runs entirely against this crate's own library code -- it does not depend
 on the Python or TypeScript ports' implementations.
 
@@ -18,7 +20,7 @@ reporting rule:
 - **Track 1** (`vendor/omnist-spec/conformance/fixtures/`, directory-per-fixture,
   11 operations): **19 passed, 0 failed, 0 skipped**.
 - **Track 2** (`vendor/omnist-spec/test-suite/`, JSON-vector suite, 14-operation
-  vocabulary): **129 passed, 0 failed, 23 skipped** (of 152 vectors).
+  vocabulary): **166 passed, 0 failed, 6 skipped** (of 172 vectors).
 
 Zero real fails on either track as of this writing. Run it yourself:
 
@@ -36,7 +38,7 @@ own source (either "not yet implemented" or a numbered entry in the
 spec's [divergence
 ledger](https://github.com/omnist-dev/omnist-spec/blob/main/docs/09-divergence-ledger.md)
 section 9.4), per section 8.5.5's requirement that no skip go unexplained.
-The two structural categories:
+All 6 remaining skips are now one category:
 
 - **6 `limits.json` vectors**: each expects a *vector-local* configurable
   limit (a specific max-nodes/max-depth/max-int-digits value scoped to
@@ -48,9 +50,11 @@ The two structural categories:
   specific reason (a vector-local knob, not a fixed-ceiling-value
   mismatch), even though both are filed under the same general "limits"
   heading.
-- **~16 remaining skips**: OSD-grammar and OML-grammar/format-specific
-  vectors exercising syntax this port's parsers don't yet accept, each
-  cited individually in-source with the specific grammar gap.
+
+The OSD-grammar and OML-grammar skips this section used to describe (~16
+of them, syntax the parser didn't yet accept) are gone -- this port's
+grammar coverage is complete now; every remaining skip is the
+vector-local-limits category above.
 
 ## Where this port's real ceiling differs from Python's/TypeScript's --
 not implied parity
