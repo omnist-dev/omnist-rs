@@ -56,6 +56,40 @@ fn number_round_trips_decimal_and_whole_valued_float() {
     ]));
 }
 
+// spec Sec4.2.3 (issue #164, added 2026-08-29): the integer part's
+// grammar is `int-part = "0" / (nonzero digit followed by any digits)` --
+// a leading zero followed by more digits is now a normative error,
+// matching JSON's and TOML's own numeric-literal grammar. Genuinely
+// undefined before this: confirmed live against the Python reference that
+// "01"/"00" both silently tokenized as 1/0.
+#[test]
+fn leading_zero_integer_is_rejected() {
+    let err = read_oml("n: 01\n").unwrap_err();
+    assert!(err.message.contains("leading zero"));
+    // "n: " is 3 chars, so the literal starts at column 4.
+    assert_eq!((err.line, err.col), (1, 4));
+}
+
+#[test]
+fn leading_zero_in_decimal_is_rejected() {
+    // The fractional part does not exempt the integer part -- "00.5" is
+    // rejected exactly like "00" alone.
+    let err = read_oml("n: 00.5\n").unwrap_err();
+    assert!(err.message.contains("leading zero"));
+    assert_eq!((err.line, err.col), (1, 4));
+}
+
+#[test]
+fn single_zero_and_negative_forms_remain_valid() {
+    // A bare "0" is never a leading zero -- only a run of more than one
+    // digit starting with "0" is rejected.
+    roundtrip_value(&obj(&[
+        ("a", Value::Int((0).into())),
+        ("b", Value::Float(0.5)),
+        ("c", Value::Int((-12).into())),
+    ]));
+}
+
 #[test]
 fn number_round_trips_nan_and_infinities() {
     let doc = Doc::of(&obj(&[
@@ -493,18 +527,92 @@ fn quoted_reserved_words_are_valid_labels_and_round_trip() {
 fn invalid_date_reports_a_clear_error() {
     let err = read_oml("a: 2024-02-30").unwrap_err();
     assert!(err.message.contains("invalid date"));
+    // spec Sec4.2.4 (issue #165): diagnostic position is the start of the
+    // temporal token, not its end -- "a: " is 3 chars, so the literal
+    // starts at column 4.
+    assert_eq!((err.line, err.col), (1, 4));
 }
 
 #[test]
 fn invalid_time_reports_a_clear_error() {
     let err = read_oml("a: 25:00:00").unwrap_err();
     assert!(err.message.contains("invalid time"));
+    assert_eq!((err.line, err.col), (1, 4));
 }
 
 #[test]
 fn invalid_datetime_reports_a_clear_error() {
     let err = read_oml("a: 2024-13-01T12:00:00").unwrap_err();
     assert!(err.message.contains("invalid datetime"));
+    assert_eq!((err.line, err.col), (1, 4));
+}
+
+// spec Sec4.2.4 (issue #165, added 2026-08-29): month/day range validation
+// -- an out-of-range month and a day invalid for its month (independent of
+// leap-year status: February never has 30 days, in any year) are both
+// `invalid date`, not just malformed-shape errors.
+#[test]
+fn date_with_out_of_range_month_is_rejected() {
+    let err = read_oml("n: 2024-13-01\n").unwrap_err();
+    assert!(err.message.contains("invalid date"));
+    assert_eq!((err.line, err.col), (1, 4));
+}
+
+#[test]
+fn date_with_day_invalid_for_month_is_rejected() {
+    let err = read_oml("n: 2024-02-30\n").unwrap_err();
+    assert!(err.message.contains("invalid date"));
+}
+
+// spec Sec4.2.4: February 29 is only valid in an actual leap year --
+// 1900 is divisible by 100 but not 400, so it is NOT a leap year in the
+// proleptic Gregorian calendar (distinct from 2000, which is).
+#[test]
+fn february_29_in_a_non_leap_year_is_rejected() {
+    let err = read_oml("n: 1900-02-29\n").unwrap_err();
+    assert!(err.message.contains("invalid date"));
+}
+
+#[test]
+fn february_29_in_a_leap_year_is_accepted() {
+    let doc = Doc::from_raw(read_oml("n: 2000-02-29\n").unwrap()).unwrap();
+    let root = doc.root();
+    let value = root.get_one("n").unwrap().value().unwrap();
+    assert!(matches!(value, crate::document::Scalar::Date(s) if s == "2000-02-29"));
+}
+
+// spec Sec4.2.4: OML has no leap-second spelling -- second is 00-59 with
+// no exception, unlike ISO 8601 which permits 60 in some contexts.
+#[test]
+fn leap_second_is_rejected() {
+    let err = read_oml("n: 23:59:60\n").unwrap_err();
+    assert!(err.message.contains("invalid time"));
+    assert_eq!((err.line, err.col), (1, 4));
+}
+
+// spec Sec4.2.4 (issue #165, the real bug this issue fixes): tz-offset
+// MUST use the exact same minute range as TIME (00-59), not a wider or
+// separately-implemented one. Confirmed live against a pre-fix reference:
+// "+00:60" used to be silently normalized to a 1-hour offset instead of
+// rejected, colliding with a document that legitimately wrote "+01:00".
+#[test]
+fn tz_offset_minute_out_of_range_is_rejected_not_normalized() {
+    let err = read_oml("n: 2024-01-01T10:30+00:60\n").unwrap_err();
+    assert!(err.message.contains("invalid datetime"));
+    assert_eq!((err.line, err.col), (1, 4));
+}
+
+#[test]
+fn tz_offset_within_range_is_accepted() {
+    let doc = Doc::from_raw(read_oml("n: 2024-01-01T10:30+05:30\n").unwrap()).unwrap();
+    let root = doc.root();
+    let value = root.get_one("n").unwrap().value().unwrap();
+    // Seconds canonicalize to ":00" per issue #90 (deliberate, pre-existing
+    // behavior a missing `:SS` always triggers) -- this is the OML reader's
+    // own canonical string, not what the source text spelled out.
+    assert!(
+        matches!(value, crate::document::Scalar::Datetime(s) if s == "2024-01-01T10:30:00+05:30")
+    );
 }
 
 #[test]
