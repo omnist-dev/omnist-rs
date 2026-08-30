@@ -34,23 +34,20 @@
 //!   crate).
 //! * **Depth guard, shape-check reuse** -- see their own sections below.
 //!
-//! ## No `null` (the one lossy TOML adjustment)
+//! ## No `null` (the one unrepresentable-value case TOML has)
 //!
-//! Live-confirmed against `tomli_w.dumps` (this project's Python reference
-//! TOML writer, via `~/dev/omnist/omnist/formats.py`'s `write_toml`):
-//! writing a node containing a null-valued field **drops the field
-//! entirely** (not a sentinel, not an empty string) -- `{'a': 1, 'b': None}`
-//! writes as `a = 1\n`, no trace of `b`. A null *inside an array* drops
-//! just that element (shifting later elements down, not leaving a hole) --
-//! `{'c': [1, None, 2]}` writes as `c = [\n    1,\n    2,\n]\n`. Each drop
-//! is recorded as a `null.omitted`/`Severity::Warning` adjustment (matching
-//! Python's `rep.add(p, "null.omitted", "null value dropped (TOML has no
-//! null)", "warning")` exactly, path-for-path), and -- confirmed live --
-//! `strict=True` raises even though the severity is only `Warning`
-//! (`WriteReport.__bool__`/`finish_write` only ignores severity for the
-//! *is_ok* check, not for whether `strict` raises at all: `finish_write`
-//! raises on *any* adjustment in strict mode, matching this crate's own
-//! [`crate::report::finish_write`]).
+//! Spec Sec8.3.8/Sec8.3.9 (updated 2026-08-24): writing a node containing a
+//! null-valued field now fails the write **unconditionally**
+//! (`write.unsupported-value`, via [`crate::report::unsupported_value_error`])
+//! regardless of `strict`, rather than the old "drop the field and record a
+//! warning" behavior. TOML has no null token at all -- dropping the edge
+//! didn't just alter what's represented at that position, it erased the
+//! edge's existence entirely, with zero trace on read-back that a labeled
+//! edge with that path was ever there (confirmed live; retired the
+//! `null.omitted` code -- see `strip_nulls`'s doc comment). `check_toml`
+//! still reports the same condition as a `write.unsupported-value`
+//! `Severity::Error` adjustment for preview purposes, since it never
+//! produces output to begin with.
 //!
 //! If stripping nulls leaves a document whose root isn't a table (object),
 //! [`write_toml`] raises `WriteError` unconditionally -- **not** part of
@@ -407,7 +404,7 @@ pub fn write_toml(
     let mut rep = WriteReport::new();
     add_interleaving_diagnostic(doc, &mut rep);
     let grouped = doc.to_grouped();
-    let stripped = strip_nulls(grouped, "$", &mut rep);
+    let stripped = strip_nulls(grouped, "$")?;
     let Value::Object(map) = &stripped else {
         return Err(WriteError::new(
             "TOML needs a top-level table (the root must be an object)",
@@ -451,9 +448,9 @@ fn check_toml_grouped(node: &Value, path: &str, rep: &mut WriteReport) {
                     Value::Null => {
                         rep.add(
                             crate::report::child_path(path, label, 0),
-                            "null.omitted",
-                            "null value dropped (TOML has no null)",
-                            Severity::Warning,
+                            "write.unsupported-value",
+                            "null value has no TOML representation (TOML has no null token)",
+                            Severity::Error,
                         );
                     }
                     Value::Array(items) => {
@@ -462,9 +459,9 @@ fn check_toml_grouped(node: &Value, path: &str, rep: &mut WriteReport) {
                             if matches!(item, Value::Null) {
                                 rep.add(
                                     p,
-                                    "null.omitted",
-                                    "null value dropped (TOML has no null)",
-                                    Severity::Warning,
+                                    "write.unsupported-value",
+                                    "null value has no TOML representation (TOML has no null token)",
+                                    Severity::Error,
                                 );
                             } else {
                                 check_toml_grouped(item, &p, rep);
@@ -484,9 +481,9 @@ fn check_toml_grouped(node: &Value, path: &str, rep: &mut WriteReport) {
                 if matches!(item, Value::Null) {
                     rep.add(
                         p,
-                        "null.omitted",
-                        "null value dropped (TOML has no null)",
-                        Severity::Warning,
+                        "write.unsupported-value",
+                        "null value has no TOML representation (TOML has no null token)",
+                        Severity::Error,
                     );
                 } else {
                     check_toml_grouped(item, &p, rep);
@@ -521,50 +518,51 @@ impl crate::formats::Codec for Toml {
     }
 }
 
-/// Drops every null-valued field/array-item, recording a `null.omitted`
-/// warning for each (TOML has no null at all) -- see this module's doc
-/// comment. Mirrors Python's `_strip_nulls` path-numbering exactly:
-/// same-label array items are indexed `path.label[i]` for `i > 0`.
-fn strip_nulls(node: Value, path: &str, rep: &mut WriteReport) -> Value {
+/// Fails the write unconditionally (`write.unsupported-value`, spec
+/// Sec8.3.8/Sec8.3.9 updated 2026-08-24) the moment a null-valued field or
+/// array item is found -- TOML has no null token at all, and the old
+/// "drop the edge and warn" behavior erased the edge's existence entirely
+/// with no trace on read-back (confirmed live, arguably a sharper case of
+/// the same collision problem as the XML label-sanitization fix). This
+/// used to be named `strip_nulls` and mirror Python's `_strip_nulls`
+/// null-dropping path-numbering; renamed since it no longer drops
+/// anything -- it now returns the first null path it finds as an error.
+fn strip_nulls(node: Value, path: &str) -> Result<Value, WriteError> {
     match node {
         Value::Object(map) => {
             let mut out = IndexMap::new();
             for (label, child) in map {
                 match child {
                     Value::Null => {
-                        rep.add(
-                            crate::report::child_path(path, &label, 0),
-                            "null.omitted",
-                            "null value dropped (TOML has no null)",
-                            Severity::Warning,
-                        );
+                        let p = crate::report::child_path(path, &label, 0);
+                        return Err(crate::report::unsupported_value_error(
+                            &p,
+                            "null value has no TOML representation (TOML has no null token)",
+                        ));
                     }
                     Value::Array(items) => {
                         let mut kept = Vec::with_capacity(items.len());
                         for (i, item) in items.into_iter().enumerate() {
                             let p = crate::report::child_path(path, &label, i);
                             if matches!(item, Value::Null) {
-                                rep.add(
-                                    p,
-                                    "null.omitted",
-                                    "null value dropped (TOML has no null)",
-                                    Severity::Warning,
-                                );
-                            } else {
-                                kept.push(strip_nulls(item, &p, rep));
+                                return Err(crate::report::unsupported_value_error(
+                                    &p,
+                                    "null value has no TOML representation (TOML has no null                                      token)",
+                                ));
                             }
+                            kept.push(strip_nulls(item, &p)?);
                         }
                         out.insert(label, Value::Array(kept));
                     }
                     other => {
                         let p = crate::report::child_path(path, &label, 0);
-                        out.insert(label, strip_nulls(other, &p, rep));
+                        out.insert(label, strip_nulls(other, &p)?);
                     }
                 }
             }
-            Value::Object(out)
+            Ok(Value::Object(out))
         }
-        other => other,
+        other => Ok(other),
     }
 }
 
@@ -717,7 +715,7 @@ mod tests {
         let rep = check_toml(&doc);
         assert_eq!(rep.adjustments().len(), 4);
         assert_eq!(rep.adjustments()[0].path, "$.null_field");
-        assert_eq!(rep.adjustments()[0].code, "null.omitted");
+        assert_eq!(rep.adjustments()[0].code, "write.unsupported-value");
     }
 
     #[test]
@@ -1098,23 +1096,33 @@ mod tests {
         assert!(check_toml(&doc).is_empty());
     }
 
-    // ------------------------------------------------------------ null adjustment
+    // ------------------------------------------------------------ null (write.unsupported-value)
 
+    // Was `lenient_write_drops_null_field_and_records_adjustment` before
+    // spec Sec8.3.8/Sec8.3.9 (updated 2026-08-24): a null-valued leaf now
+    // fails the write unconditionally (`write.unsupported-value`) instead
+    // of being dropped with a warning -- the drop erased the edge's
+    // existence entirely with no trace on read-back. `strict` no longer
+    // changes the outcome (this used to be the lenient case; the old
+    // `strict_write_raises_on_null_even_though_severity_is_warning` test
+    // below now asserts the identical failure for `strict: true`).
     #[test]
-    fn lenient_write_drops_null_field_and_records_adjustment() {
+    fn write_fails_unconditionally_on_null_field_lenient() {
         let v = obj(vec![("a", Value::Int((1).into())), ("b", Value::Null)]);
         let doc = doc_of(v);
         let mut rep = WriteReport::new();
-        let text = write_toml(&doc, false, Some(&mut rep)).unwrap();
-        assert!(!text.contains('b'));
-        assert_eq!(rep.len(), 1);
-        assert_eq!(rep.adjustments()[0].path, "$.b");
-        assert_eq!(rep.adjustments()[0].code, "null.omitted");
-        assert!(rep.is_ok(), "null.omitted is only a Warning");
+        let err = write_toml(&doc, false, Some(&mut rep)).unwrap_err();
+        assert!(err.to_string().contains("write.unsupported-value"));
+        assert!(err.to_string().contains("$.b"));
+        assert!(rep.is_empty());
+        assert!(err.report().is_none());
     }
 
+    // Was `lenient_write_drops_null_array_item_shifting_index`: a null
+    // array item now fails the write instead of being dropped and
+    // shifting later items down.
     #[test]
-    fn lenient_write_drops_null_array_item_shifting_index() {
+    fn write_fails_unconditionally_on_null_array_item() {
         let v = obj(vec![(
             "c",
             Value::Array(vec![
@@ -1124,16 +1132,13 @@ mod tests {
             ]),
         )]);
         let doc = doc_of(v);
-        let mut rep = WriteReport::new();
-        let text = write_toml(&doc, false, Some(&mut rep)).unwrap();
-        assert_eq!(rep.len(), 1);
-        assert_eq!(rep.adjustments()[0].path, "$.c[1]");
-        let doc2 = read_toml(&text).unwrap();
-        assert_eq!(doc2.root().get("c").len(), 2);
+        let err = write_toml(&doc, false, None).unwrap_err();
+        assert!(err.to_string().contains("write.unsupported-value"));
+        assert!(err.to_string().contains("$.c[1]"));
     }
 
     #[test]
-    fn null_in_nested_table_records_nested_path() {
+    fn null_in_nested_table_records_nested_path_in_check() {
         let v = obj(vec![(
             "nested",
             obj(vec![("x", Value::Null), ("y", Value::Int((5).into()))]),
@@ -1142,15 +1147,21 @@ mod tests {
         let rep = check_toml(&doc);
         assert_eq!(rep.len(), 1);
         assert_eq!(rep.adjustments()[0].path, "$.nested.x");
+        assert_eq!(rep.adjustments()[0].code, "write.unsupported-value");
     }
 
+    // Renamed from `strict_write_raises_on_null_even_though_severity_is_warning`:
+    // `strict` no longer distinguishes anything here -- both modes fail
+    // identically and unconditionally, and the error carries no report
+    // (the unconditional-failure path returns before any report is built).
     #[test]
-    fn strict_write_raises_on_null_even_though_severity_is_warning() {
+    fn write_fails_unconditionally_on_null_strict() {
         let v = obj(vec![("a", Value::Int((1).into())), ("b", Value::Null)]);
         let doc = doc_of(v);
         let err = write_toml(&doc, true, None).unwrap_err();
         assert!(err.to_string().contains("$.b"));
-        assert_eq!(err.report().unwrap().len(), 1);
+        assert!(err.to_string().contains("write.unsupported-value"));
+        assert!(err.report().is_none());
     }
 
     #[test]
@@ -1159,7 +1170,7 @@ mod tests {
         let doc = doc_of(v);
         let rep = check_toml(&doc);
         assert_eq!(rep.len(), 1);
-        assert_eq!(rep.adjustments()[0].code, "null.omitted");
+        assert_eq!(rep.adjustments()[0].code, "write.unsupported-value");
     }
 
     // ------------------------------------------------------------ top-level shape

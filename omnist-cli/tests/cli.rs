@@ -226,42 +226,85 @@ fn convert_schema_conformance_failure_json_shape_has_structured_errors() {
     );
 }
 
+// New: `convert`'s report-carrying strict-mode-refusal exit-1 path (the
+// `if let Some(rep) = e.report()` branch in `cmd_convert`) needs its own
+// coverage now that NaN (the old exercise for it) fails unconditionally
+// with no report instead -- see the renamed test right below. YAML's
+// NEL-forcing-double-quote adjustment (`string.line-break-char`,
+// `Severity::Warning`) is untouched by this PR and still succeeds
+// normally without `--strict`, but `--strict` still raises on *any*
+// adjustment regardless of severity (unchanged, pre-existing behavior),
+// producing a `WriteError` that *does* carry a report.
 #[test]
-fn convert_strict_refuses_a_lossy_write_with_exit_1() {
-    let input = fixture("convert_strict_in", r#"{"a": NaN}"#);
+fn convert_strict_refuses_a_yaml_nel_adjustment_with_exit_1_and_a_report() {
+    let input = fixture("convert_strict_nel_in", "{\"a\": \"x\u{0085}y\"}");
     let r = run(&[
-        "convert", &input, "--from", "json", "--to", "json", "--strict",
+        "convert", &input, "--from", "json", "--to", "yaml", "--strict",
     ]);
     assert_eq!(r.code, 1);
     assert!(r.stderr.starts_with("error: "));
+    // WriteReport::Display prints "severity: path: message", not the
+    // machine-readable code -- assert on the message text instead.
+    assert!(r.stderr.contains("NEL"));
 }
 
+// Was `convert_strict_refuses_a_lossy_write_with_exit_1`: writing NaN to
+// JSON now fails unconditionally (`write.unsupported-value`, spec
+// Sec8.3.8/Sec8.3.9 updated 2026-08-24, issue #161) regardless of
+// `--strict` -- it's no longer a "strict-mode refusal" (a `WriteError`
+// carrying a report, exit 1) but a structural write failure with no
+// report attached, same bucket as `convert_structural_write_failure_exits_2_without_a_report`
+// -- exit 2, not 1. `--strict` no longer changes the outcome, so this is
+// asserted both with and without the flag.
+#[test]
+fn convert_of_nan_fails_unconditionally_exits_2_regardless_of_strict() {
+    let input = fixture("convert_nan_strict_in", r#"{"a": NaN}"#);
+    let r = run(&[
+        "convert", &input, "--from", "json", "--to", "json", "--strict",
+    ]);
+    assert_eq!(r.code, 2);
+    assert!(r.stderr.starts_with("error: "));
+    assert!(r.stderr.contains("write.unsupported-value"));
+
+    let input2 = fixture("convert_nan_lenient_in", r#"{"a": NaN}"#);
+    let r2 = run(&["convert", &input2, "--from", "json", "--to", "json"]);
+    assert_eq!(r2.code, 2);
+    assert!(r2.stderr.contains("write.unsupported-value"));
+}
+
+// Was `convert_report_prints_adjustments_to_stderr_and_still_writes` and
+// `convert_result_format_json_encodes_the_report`: both used to exercise
+// `--report` against a NaN input that succeeded (with an adjustment)
+// before #161. NaN now fails the write outright, so these two now use an
+// XML target and a genuine still-succeeding warning-severity adjustment
+// (a carriage return, `string.cr_normalized`) to keep testing the
+// `--report`/`--result-format` machinery on a real non-failing case.
 #[test]
 fn convert_report_prints_adjustments_to_stderr_and_still_writes() {
-    let input = fixture("convert_report_in", r#"{"a": NaN}"#);
+    let input = fixture("convert_report_in", r#"{"a": "x\ry"}"#);
     let r = run(&[
-        "convert", &input, "--from", "json", "--to", "json", "--report",
+        "convert", &input, "--from", "json", "--to", "xml", "--report",
     ]);
-    assert_eq!(r.code, 0);
-    assert!(r.stdout.contains("null"));
+    assert_eq!(r.code, 0, "stderr: {}", r.stderr);
+    assert!(r.stdout.contains("<a>"));
     assert!(!r.stderr.is_empty());
 }
 
 #[test]
 fn convert_result_format_json_encodes_the_report() {
-    let input = fixture("convert_report_json_in", r#"{"a": NaN}"#);
+    let input = fixture("convert_report_json_in", r#"{"a": "x\ry"}"#);
     let r = run(&[
         "convert",
         &input,
         "--from",
         "json",
         "--to",
-        "json",
+        "xml",
         "--report",
         "--result-format",
         "json",
     ]);
-    assert_eq!(r.code, 0);
+    assert_eq!(r.code, 0, "stderr: {}", r.stderr);
     assert!(r.stderr.trim_end().starts_with('['));
 }
 
@@ -641,18 +684,24 @@ fn convert_to_oml_compact() {
     assert_eq!(r.stdout, "a: 1; b: \"x\"\n");
 }
 
+// Was `convert_report_with_a_warning_severity_adjustment_json_and_oml`:
+// used TOML's `null.omitted` (`Severity::Warning`) before #160 retired
+// that code -- writing a null to TOML now fails unconditionally
+// (`write.unsupported-value`, `Severity::Error` when previewed via
+// `check`) instead of succeeding with a warning. Switched to XML's
+// carriage-return normalization (`string.cr_normalized`), still a real
+// `Severity::Warning` adjustment on a write that still succeeds, to keep
+// exercising the same `--report`/`--result-format` machinery.
 #[test]
 fn convert_report_with_a_warning_severity_adjustment_json_and_oml() {
-    // TOML has no `null` -- writing one is a `Severity::Warning`
-    // (`null.omitted`) adjustment, unlike JSON's NaN->null (`Error`).
-    let input = fixture("convert_warning_report_in", r#"{"a": null}"#);
+    let input = fixture("convert_warning_report_in", r#"{"a": "x\ry"}"#);
     let r_json = run(&[
         "convert",
         &input,
         "--from",
         "json",
         "--to",
-        "toml",
+        "xml",
         "--report",
         "--result-format",
         "json",
@@ -666,7 +715,7 @@ fn convert_report_with_a_warning_severity_adjustment_json_and_oml() {
         "--from",
         "json",
         "--to",
-        "toml",
+        "xml",
         "--report",
         "--result-format",
         "oml",
@@ -675,9 +724,32 @@ fn convert_report_with_a_warning_severity_adjustment_json_and_oml() {
     assert!(r_oml.stderr.contains("severity: \"warning\""));
 }
 
+// Was `check_result_format_oml_with_a_warning_adjustment`: same
+// TOML-null -> XML-CR-normalization swap as above, for the same reason.
 #[test]
 fn check_result_format_oml_with_a_warning_adjustment() {
-    let input = fixture("check_warning_oml_in", r#"{"a": null}"#);
+    let input = fixture("check_warning_oml_in", r#"{"a": "x\ry"}"#);
+    let r = run(&[
+        "check",
+        &input,
+        "--from",
+        "json",
+        "--to",
+        "xml",
+        "--result-format",
+        "oml",
+    ]);
+    assert_eq!(r.code, 0, "stderr: {}", r.stderr);
+    assert!(r.stdout.contains("severity: \"warning\""));
+}
+
+// New: `check`'s preview of the retired `null.omitted` case now reports
+// `write.unsupported-value` at `Severity::Error` -- confirms `check`
+// (which never writes) still surfaces the condition even though `convert`
+// to the same format now fails outright.
+#[test]
+fn check_result_format_oml_reports_null_as_write_unsupported_value_error() {
+    let input = fixture("check_null_toml_oml_in", r#"{"a": null}"#);
     let r = run(&[
         "check",
         &input,
@@ -689,7 +761,8 @@ fn check_result_format_oml_with_a_warning_adjustment() {
         "oml",
     ]);
     assert_eq!(r.code, 0, "stderr: {}", r.stderr);
-    assert!(r.stdout.contains("severity: \"warning\""));
+    assert!(r.stdout.contains("write.unsupported-value"));
+    assert!(r.stdout.contains("severity: \"error\""));
 }
 
 // --------------------------------------------------------------------- I/O
@@ -1060,18 +1133,24 @@ fn convert_from_oml_to_a_non_oml_format() {
     assert_eq!(r.stdout.trim(), "{\"a\": 1}");
 }
 
+// Was `convert_report_result_format_oml_with_an_error_severity_adjustment`:
+// used JSON's NaN->null (`Severity::Error`) before #161 made that fail the
+// write outright instead of succeeding with a report. Switched to XML's
+// `string.illegal_xml_char` (a C0 control character other than tab/LF/CR)
+// -- still a real `Severity::Error` adjustment on a write that still
+// succeeds (substituted with U+FFFD), untouched by this PR (see the
+// module doc comment on why only NaN/Infinity and empty-internal-node
+// changed, not every `format.*`/`Severity::Error` case).
 #[test]
 fn convert_report_result_format_oml_with_an_error_severity_adjustment() {
-    // JSON has no NaN -- writing one back to JSON is `Severity::Error`
-    // (`nan.to_null`), unlike TOML's null-omission `Warning`.
-    let input = fixture("convert_error_report_oml_in", r#"{"a": NaN}"#);
+    let input = fixture("convert_error_report_oml_in", r#"{"a": "bad\u0001text"}"#);
     let r = run(&[
         "convert",
         &input,
         "--from",
         "json",
         "--to",
-        "json",
+        "xml",
         "--report",
         "--result-format",
         "oml",

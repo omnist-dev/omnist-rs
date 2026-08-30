@@ -85,11 +85,14 @@ pub fn read_json(text: &str) -> Result<Doc, OmnistError> {
 ///
 /// `indent: None` writes compact JSON (`, `/`: ` separators, single line);
 /// `indent: Some(n)` pretty-prints with `n` spaces per level, matching
-/// Python's `indent=` parameter. Lenient by default: a `NaN`/`Infinity`/
-/// `-Infinity` leaf is written as `null` and recorded in the report (see
-/// this module's doc comment on why no temporal adjustment is needed).
-/// `strict: true` raises [`WriteError`] carrying the report instead, via
-/// [`crate::report::finish_write`].
+/// Python's `indent=` parameter. A `NaN`/`Infinity`/`-Infinity` leaf now
+/// fails the write unconditionally (`write.unsupported-value`, spec
+/// Sec8.3.8/Sec8.3.9 updated 2026-08-24) -- regardless of `strict` -- rather
+/// than substituting `null` and reporting an adjustment: writing a genuine
+/// `null` and writing `NaN` used to produce the identical JSON `null`
+/// token, so a substituted `NaN` was indistinguishable from an original
+/// `null` on read-back (confirmed live). See this module's doc comment on
+/// why no temporal adjustment is needed.
 pub fn write_json(
     doc: &Doc,
     indent: Option<usize>,
@@ -97,12 +100,39 @@ pub fn write_json(
     report: Option<&mut WriteReport>,
 ) -> Result<String, WriteError> {
     let grouped = doc.to_grouped();
+    if let Some((path, x)) = find_special_float(&grouped) {
+        return Err(crate::report::unsupported_value_error(
+            &path,
+            format!("{x} has no JSON token (JSON's grammar has no NaN/Infinity literal)"),
+        ));
+    }
     let mut rep = check_json_grouped(&grouped);
     add_interleaving_diagnostic(doc, &mut rep);
-    let prepared = if strict { grouped } else { prepare(grouped) };
     let mut out = String::new();
-    write_value(&prepared, indent, 0, &mut out);
+    write_value(&grouped, indent, 0, &mut out);
     crate::report::finish_write(out, rep, strict, report)
+}
+
+/// Find the first NaN/Infinity leaf in a grouped `Value`, depth-first, for
+/// [`write_json`]'s unconditional pre-write failure check. `None` when
+/// every float in the tree is finite.
+fn find_special_float(grouped: &Value) -> Option<(String, f64)> {
+    let mut path = String::from("$");
+    let mut found: Option<(String, f64)> = None;
+    crate::formats::visit_grouped(grouped, &mut path, &mut |visited, path| {
+        if found.is_some() {
+            return;
+        }
+        let crate::formats::Visited::Node { value } = visited else {
+            return;
+        };
+        if let Value::Float(x) = value
+            && (x.is_nan() || x.is_infinite())
+        {
+            found = Some((path.to_string(), *x));
+        }
+    });
+    found
 }
 
 /// `format.interleaving-lost` (spec Sec8.3.8, D-3) is a whole-document
@@ -143,11 +173,16 @@ fn check_json_grouped(grouped: &Value) -> WriteReport {
             return;
         };
         match value {
+            // Preview-only: `check_json`/`check_json_grouped` never write,
+            // so this stays a reported adjustment even though `write_json`
+            // itself now fails unconditionally on the same condition (see
+            // that function's doc comment) rather than substituting and
+            // reporting `float.special` -- that code is retired.
             Value::Float(x) if x.is_nan() || x.is_infinite() => {
                 rep.add(
                     path,
-                    "float.special",
-                    format!("{x} is not valid JSON; wrote null"),
+                    "write.unsupported-value",
+                    format!("{x} has no JSON token (JSON's grammar has no NaN/Infinity literal)"),
                     Severity::Error,
                 );
             }
@@ -192,21 +227,6 @@ impl crate::formats::Codec for Json {
 
     fn check(doc: &Doc) -> WriteReport {
         check_json(doc)
-    }
-}
-
-/// Lenient-mode substitution: a NaN/Infinity leaf becomes `Null` so the
-/// written text is always valid JSON. Mirrors Python's `_prepare_json`.
-fn prepare(node: Value) -> Value {
-    match node {
-        Value::Object(map) => Value::Object(
-            map.into_iter()
-                .map(|(k, v)| (k, prepare(v)))
-                .collect::<IndexMap<_, _>>(),
-        ),
-        Value::Array(items) => Value::Array(items.into_iter().map(prepare).collect()),
-        Value::Float(x) if x.is_nan() || x.is_infinite() => Value::Null,
-        other => other,
     }
 }
 
@@ -1248,27 +1268,39 @@ mod tests {
         assert_eq!(text, r#"{"b": 1}"#);
     }
 
+    // Was `lenient_write_substitutes_nan_and_infinity_with_null_and_reports_error_severity`
+    // before spec Sec8.3.8/Sec8.3.9 (updated 2026-08-24): writing NaN/Infinity to
+    // JSON now fails unconditionally (`write.unsupported-value`) instead of
+    // substituting `null` and succeeding with a report -- a substituted NaN
+    // was indistinguishable from a genuine null on read-back (confirmed
+    // live). `strict` no longer changes the outcome, so lenient and strict
+    // are now the same single behavior; both are asserted below.
     #[test]
-    fn lenient_write_substitutes_nan_and_infinity_with_null_and_reports_error_severity() {
+    fn write_fails_unconditionally_on_nan_and_infinity_lenient() {
         let doc = doc_of(obj(vec![
             ("a", Value::Float(f64::NAN)),
             ("b", Value::Float(f64::INFINITY)),
         ]));
         let mut rep = WriteReport::new();
-        let text = write_json(&doc, None, false, Some(&mut rep)).unwrap();
-        assert_eq!(text, r#"{"a": null, "b": null}"#);
-        assert_eq!(rep.len(), 2);
-        assert!(rep.errors().iter().all(|a| a.severity == Severity::Error));
-        assert!(!rep.is_ok());
+        let err = write_json(&doc, None, false, Some(&mut rep)).unwrap_err();
+        assert!(err.to_string().contains("write.unsupported-value"));
+        assert!(err.to_string().contains("$.a"));
+        // No adjustment was ever recorded -- the write failed before
+        // `check_json_grouped` had a chance to run, and the unconditional
+        // failure path attaches no report of its own.
+        assert!(rep.is_empty());
+        assert!(err.report().is_none());
     }
 
+    // Was `strict_write_raises_on_nan_and_carries_the_report`: `strict`
+    // used to be what made this a hard failure; now it fails identically
+    // whether or not `strict` is set (renamed to say so explicitly).
     #[test]
-    fn strict_write_raises_on_nan_and_carries_the_report() {
+    fn write_fails_unconditionally_on_nan_strict() {
         let doc = doc_of(obj(vec![("a", Value::Float(f64::NAN))]));
         let err = write_json(&doc, None, true, None).unwrap_err();
-        let rep = err.report().expect("strict WriteError carries a report");
-        assert_eq!(rep.len(), 1);
-        assert_eq!(rep.adjustments()[0].code, "float.special");
+        assert!(err.to_string().contains("write.unsupported-value"));
+        assert!(err.report().is_none());
     }
 
     #[test]
@@ -1284,6 +1316,10 @@ mod tests {
         let rep = check_json(&doc);
         assert_eq!(rep.len(), 1);
         assert_eq!(rep.adjustments()[0].path, "$.a");
+        // check_json only previews; write.unsupported-value is reported
+        // here even though write_json itself now fails unconditionally on
+        // the same condition rather than substituting-and-reporting.
+        assert_eq!(rep.adjustments()[0].code, "write.unsupported-value");
     }
 
     #[test]
@@ -1308,14 +1344,16 @@ mod tests {
         assert_eq!(text, r#"{"f": 2.0}"#);
     }
 
+    // Was `strict_write_of_negative_infinity_renders_the_bare_token`: now
+    // -Infinity fails unconditionally like every other special float,
+    // regardless of `strict`, and carries no report (the unconditional
+    // failure path returns before any report is built).
     #[test]
-    fn strict_write_of_negative_infinity_renders_the_bare_token() {
-        // strict=true never substitutes -- see write_json's doc comment on
-        // why the unprepared node is written (and discarded) before
-        // finish_write raises.
+    fn write_fails_unconditionally_on_negative_infinity() {
         let doc = doc_of(obj(vec![("f", Value::Float(f64::NEG_INFINITY))]));
         let err = write_json(&doc, None, true, None).unwrap_err();
-        assert_eq!(err.report().unwrap().len(), 1);
+        assert!(err.to_string().contains("write.unsupported-value"));
+        assert!(err.report().is_none());
     }
 
     #[test]
