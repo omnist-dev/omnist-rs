@@ -450,7 +450,13 @@ fn sanitizes_every_illegal_character_not_just_the_first() {
 }
 
 #[test]
-fn check_xml_reports_illegal_char_as_error_and_cr_as_warning() {
+fn check_xml_reports_illegal_char_as_error_but_not_cr() {
+    // Was `check_xml_reports_illegal_char_as_error_and_cr_as_warning`:
+    // `string.cr_normalized` retired (spec Sec8.3.8, issue #162) -- a
+    // literal carriage return is escaped as `&#13;` and round-trips
+    // losslessly now (see `write_carriage_return_as_numeric_character_reference`
+    // below), so `check_xml` no longer reports anything for it. The
+    // illegal-control-character case (untouched by #162) still reports.
     let doc = Doc::from_raw(edges(vec![("root", leaf_str("bad\u{01}\rtext"))])).unwrap();
     let rep = check_xml(&doc);
     assert!(
@@ -459,10 +465,48 @@ fn check_xml_reports_illegal_char_as_error_and_cr_as_warning() {
             .any(|a| a.code == "string.illegal_xml_char" && a.severity == Severity::Error)
     );
     assert!(
-        rep.adjustments()
+        !rep.adjustments()
             .iter()
-            .any(|a| a.code == "string.cr_normalized" && a.severity == Severity::Warning)
+            .any(|a| a.code == "string.cr_normalized"),
+        "string.cr_normalized was retired by issue #162"
     );
+}
+
+// Was implicit in the retired `string.cr_normalized` warning: writing a
+// literal '\r' to XML must now escape it as the numeric character
+// reference `&#13;` (spec Sec8.3.8, issue #162) instead of writing it raw
+// -- a raw '\r' and a raw '\n' read back identical under XML's mandatory
+// line-ending normalization on parse, but `&#13;` is exempt from that
+// normalization and round-trips intact. Covers both a bare CR and a
+// CRLF sequence.
+#[test]
+fn write_carriage_return_as_numeric_character_reference() {
+    let doc = Doc::from_raw(edges(vec![("root", edges(vec![("x", leaf_str("a\rb"))]))])).unwrap();
+    let text = write_xml(&doc, false, None).unwrap();
+    assert_eq!(text, "<root>\n  <x>a&#13;b</x>\n</root>\n");
+
+    let doc2 = Doc::from_raw(edges(vec![(
+        "root",
+        edges(vec![("x", leaf_str("a\r\nb"))]),
+    )]))
+    .unwrap();
+    let text2 = write_xml(&doc2, false, None).unwrap();
+    assert_eq!(text2, "<root>\n  <x>a&#13;\nb</x>\n</root>\n");
+}
+
+#[test]
+fn check_xml_reports_nothing_for_a_carriage_return() {
+    let doc = Doc::from_raw(edges(vec![("root", leaf_str("a\rb"))])).unwrap();
+    assert!(check_xml(&doc).is_empty());
+}
+
+#[test]
+fn strict_write_of_a_carriage_return_succeeds() {
+    // `strict` never affects this -- the write is genuinely lossless now,
+    // not an adjustment `strict` could refuse.
+    let doc = Doc::from_raw(edges(vec![("root", leaf_str("a\rb"))])).unwrap();
+    let text = write_xml(&doc, true, None).unwrap();
+    assert_eq!(text, "<root>a&#13;b</root>");
 }
 
 #[test]

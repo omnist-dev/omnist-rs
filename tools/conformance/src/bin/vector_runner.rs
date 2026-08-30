@@ -851,13 +851,12 @@ pub fn run_all(dir: &Path) -> (u32, u32, u32) {
 /// its issue -- an entry lingering after its fix would silently stop
 /// verifying that the fix stuck.
 const KNOWN_FAILING_VECTORS: &[&str] = &[
-    // Pre-existing, unrelated to the 0ac1eac pin bump's own new content --
-    // XML write-side CR-as-numeric-character-reference isn't yet
-    // implemented (this crate currently normalizes CR to LF via the
-    // read-side rule instead of encoding it on write).
-    "formats-xml/basic/carriage-return-written-as-numeric-character-reference",
-    // Issues #162-166 (grammar/diagnostic-shape fixes from the same
-    // 0ac1eac pin bump as #159/#160/#161, not implemented by this PR).
+    // Issue #162 fixed this entry (XML write-side CR-as-numeric-character-
+    // reference) -- removed here in the same PR, per this constant's own
+    // doc comment above.
+    //
+    // Issues #163-166 (grammar/diagnostic-shape fixes from the same
+    // 0ac1eac pin bump as #159/#160/#161/#162, not implemented by this PR).
     "oml-grammar/numbers/leading-zero-integer-is-an-error",
     "oml-grammar/numbers/leading-zero-in-decimal-is-an-error",
     "oml-grammar/temporals/date-with-out-of-range-month-is-an-error",
@@ -976,11 +975,10 @@ mod tests {
     /// (`formats-json/json.json`, write-time, via
     /// `Doc::has_interleaving_loss`) all now pass for real.
     /// (149, 0, 6) -> (153, 13, 6) via the 0ac1eac submodule pin bump
-    /// (issues #158-166) plus this PR's own fixes (#159/#160/#161). The
-    /// pin bump alone added 17 new/changed failures at 172 total vectors;
-    /// this PR fixed 4 of them, all write-side unconditional-failure
-    /// vectors newly added by #159/#160/#161 (verified fail -> pass by
-    /// name, not assumed):
+    /// (issues #158-166) plus PR#167's write-side unconditional-failure
+    /// fixes (#159/#160/#161). The pin bump alone added 17 new/changed
+    /// failures at 172 total vectors; PR#167 fixed 4 of them (verified
+    /// fail -> pass by name, not assumed):
     ///   - `formats-xml/basic/label-with-illegal-xml-characters-cannot-be-written` (#159)
     ///   - `formats-toml/nulls/null-leaf-cannot-be-written` (#160)
     ///   - `formats-json/basic/nan-cannot-be-written` (#161, renamed+flipped from
@@ -988,23 +986,33 @@ mod tests {
     ///   - `formats-xml/basic/empty-internal-node-cannot-be-written` (#161, new)
     ///
     /// `formats-toml/nulls/null-leaf-cannot-be-written-strict-is-the-same`
-    /// (#160's strict-mode companion) was already passing before this PR
+    /// (#160's strict-mode companion) was already passing before PR#167
     /// (TOML's null-write already failed in strict mode; only the
     /// non-strict/unconditional-failure behavior needed fixing).
     ///
-    /// The remaining 13 failures are real, but out of scope for this PR --
-    /// they belong to other issues in the #158-166 batch (#158,
-    /// #162-#166) and to pre-existing oml-grammar/osd-grammar gaps this
-    /// pin bump's bundled vectors also touch. Left failing deliberately;
-    /// not this PR's job. Pinned so a future change that silently
-    /// regresses pass/fail/skip counts is caught, not a "this must always
-    /// be 0 fails" gate.
+    /// (153, 13, 6) -> (154, 12, 6) via issue #162 (XML write-side
+    /// carriage returns escaped as the numeric character reference
+    /// `&#13;` instead of written raw): `formats-xml/basic/carriage-
+    /// return-written-as-numeric-character-reference` moves fail -> pass
+    /// (verified, not assumed), and its entry is removed from
+    /// `KNOWN_FAILING_VECTORS` in the same PR, per that constant's own
+    /// doc comment.
+    ///
+    /// The remaining 12 failures are real, but out of scope -- they
+    /// belong to issues #163-#166 (still open) and to pre-existing
+    /// oml-grammar/osd-grammar gaps this pin bump's bundled vectors also
+    /// touch. Left failing deliberately; every one of them is also on
+    /// `KNOWN_FAILING_VECTORS`, so CI still passes -- see that constant's
+    /// doc comment for why this and `main_with_dir`'s exit code no longer
+    /// treat every failure as fatal. Pinned so a future change that
+    /// silently regresses pass/fail/skip counts is caught, not a "this
+    /// must always be 0 fails" gate.
     #[test]
     fn full_suite_counts_match_the_measured_baseline() {
         let (passed, failed, skipped) = run_all(&suite_dir());
         assert_eq!(
             (passed, failed, skipped),
-            (153, 13, 6),
+            (154, 12, 6),
             "vector pass/fail/skip counts changed -- if this is an intentional fix or a new \
              vector, update the pinned baseline; if not, something regressed"
         );

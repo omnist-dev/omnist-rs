@@ -776,26 +776,25 @@ fn scan_leaf(scalar: &Scalar, path: &str, rep: &mut WriteReport) {
         ),
         Scalar::Str(_) => {}
     }
-    if let Scalar::Str(v) = scalar {
-        if v.chars().any(is_xml_illegal_char) {
-            rep.add(
-                path,
-                "string.illegal_xml_char",
-                "string contains a character XML 1.0 cannot represent (e.g. a C0 control other \
-                 than tab/LF/CR); it is replaced with U+FFFD on write so the output stays \
-                 well-formed",
-                Severity::Error,
-            );
-        }
-        if v.contains('\r') {
-            rep.add(
-                path,
-                "string.cr_normalized",
-                "string contains a carriage return ('\\r'); XML mandates line-ending \
-                 normalization on parse, so '\\r' (and '\\r\\n') read back as '\\n'",
-                Severity::Warning,
-            );
-        }
+    // `string.cr_normalized` retired (spec Sec8.3.8, issue #162): a
+    // literal '\r' is no longer written raw and reported lossy -- it's
+    // escaped as the numeric character reference `&#13;`, which is exempt
+    // from XML's mandatory line-ending normalization on parse and
+    // round-trips losslessly (confirmed live, both a bare '\r' and a
+    // '\r\n' sequence survive intact). See `xml_escape_text`. Nothing left
+    // to report here for '\r' -- the write is now genuinely lossless; only
+    // the illegal-control-character case below still needs reporting.
+    if let Scalar::Str(v) = scalar
+        && v.chars().any(is_xml_illegal_char)
+    {
+        rep.add(
+            path,
+            "string.illegal_xml_char",
+            "string contains a character XML 1.0 cannot represent (e.g. a C0 control other \
+             than tab/LF/CR); it is replaced with U+FFFD on write so the output stays \
+             well-formed",
+            Severity::Error,
+        );
     }
 }
 
@@ -917,9 +916,16 @@ fn is_xml_illegal_char(c: char) -> bool {
 }
 
 /// Escapes the three characters XML text content requires escaped
-/// (`&`, `<`, `>`) -- matching `ElementTree.tostring`'s text-escaping
-/// (quotes are left literal; they only need escaping in attribute values,
-/// which this module never writes).
+/// (`&`, `<`, `>`), plus (spec Sec8.3.8, issue #162) a literal carriage
+/// return as the numeric character reference `&#13;` -- matching
+/// `ElementTree.tostring`'s text-escaping for the first three (quotes are
+/// left literal; they only need escaping in attribute values, which this
+/// module never writes), and going beyond it for CR: XML mandates
+/// line-ending normalization on parse, so a raw CR byte and a raw LF byte
+/// read back identical (confirmed live) -- a numeric character reference
+/// is exempt from that normalization and round-trips intact, so a string
+/// containing a bare CR writes as `a&#13;b`, and a string containing a
+/// CRLF sequence writes as `a&#13;\nb`, not the raw bytes.
 fn xml_escape_text(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
@@ -927,6 +933,7 @@ fn xml_escape_text(text: &str) -> String {
             '&' => out.push_str("&amp;"),
             '<' => out.push_str("&lt;"),
             '>' => out.push_str("&gt;"),
+            '\r' => out.push_str("&#13;"),
             c => out.push(c),
         }
     }
