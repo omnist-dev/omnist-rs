@@ -316,6 +316,42 @@ impl Parser {
             ));
         }
         let label = unquote(&label_tok.text);
+        // Empty field label is a normative error (spec Sec5.4, issue #163,
+        // updated 2026-08-29): "" is a legal OSD *string* generally, but a
+        // label is an identifier, not a value -- an empty label names
+        // nothing a caller could ever reference. Path is the enclosing
+        // record (no usable label to point at), same convention
+        // `schema.unquoted-label` above already uses for the analogous
+        // "the label itself is the problem" case.
+        if label.is_empty() {
+            return Err(SchemaError::new(
+                rec_name,
+                "schema.empty-label",
+                format!("field label at {} is empty", label_tok.pos),
+            ));
+        }
+        // '[' / ']' in a field label is a normative error (spec Sec5.4,
+        // issue #166, updated 2026-08-29): Sec3.6.1's diagnostic-path
+        // convention appends "[i]" to a repeated label's second and later
+        // occurrences, so a repeatable field "a" and a separately
+        // declared field literally named "a[1]" can produce the identical
+        // diagnostic path "$.a[1]" for two genuinely different validation
+        // problems -- indistinguishable in a diagnostic. Narrowest fix
+        // (per the issue): reject the character vocabulary outright at
+        // schema-construction time, not just the specific "[i]" shape --
+        // a lone, unmatched ']' (e.g. "total]") is rejected too. Same
+        // path convention as the empty-label check above.
+        if label.contains('[') || label.contains(']') {
+            return Err(SchemaError::new(
+                rec_name,
+                "schema.bracket-in-label",
+                format!(
+                    "field label {label:?} at {} contains '[' or ']', which collides with the \
+                     [i] diagnostic-path convention for repeated labels",
+                    label_tok.pos
+                ),
+            ));
+        }
         let (min, max) = if self.peek().text == "[" {
             self.parse_cardinality(rec_name, &label)?
         } else {
@@ -365,6 +401,22 @@ impl Parser {
                 path,
                 "schema.invalid-cardinality",
                 format!("invalid cardinality range [{lo}, {hi}]"),
+            ));
+        }
+        // [0,0] is a normative error (spec Sec5.5, issue #158, updated
+        // 2026-08-24): a field that must occur zero times is
+        // indistinguishable, in every observable respect, from a field
+        // never declared at all -- records are closed by default, so an
+        // undeclared label present in a document is already an error
+        // (`validate.unexpected-field`). [0,0] was a second spelling for
+        // the same thing, redundant with just not declaring the field.
+        // Reuses the existing `schema.invalid-cardinality` code -- the
+        // spec explicitly calls for no new code here.
+        if lo == 0 && hi == Some(0) {
+            return Err(SchemaError::new(
+                path,
+                "schema.invalid-cardinality",
+                "cardinality [0, 0] is redundant with not declaring the field at all".to_string(),
             ));
         }
         Ok((lo, hi))
@@ -931,6 +983,46 @@ root S
         let err_inverted = parse_schema(r#"record X { "a" [3, 1]: string } root X"#).unwrap_err();
         assert_eq!(err_inverted.code, "schema.invalid-cardinality");
         assert_eq!(err_inverted.path, "X.a");
+    }
+
+    // Issue #158 (spec Sec5.5, updated 2026-08-24): [0,0] is now a
+    // normative error, redundant with not declaring the field at all --
+    // reuses `schema.invalid-cardinality`, no new code.
+    #[test]
+    fn test_code_schema_invalid_cardinality_zero_zero() {
+        let err = parse_schema(r#"record R { "a" [0,0]: string } root R"#).unwrap_err();
+        assert_eq!(err.code, "schema.invalid-cardinality");
+        assert_eq!(err.path, "R.a");
+
+        // [0,1] and [0,] (unbounded) remain legal -- only the exact [0,0]
+        // spelling is rejected.
+        assert!(parse_schema(r#"record R { "a" [0,1]: string } root R"#).is_ok());
+        assert!(parse_schema(r#"record R { "a" [0,]: string } root R"#).is_ok());
+    }
+
+    // Issue #163 (spec Sec5.4, updated 2026-08-29): an empty-string field
+    // label is a normative error, path is the enclosing record -- same
+    // convention `schema.unquoted-label` uses.
+    #[test]
+    fn test_code_schema_empty_label() {
+        let err = parse_schema(r#"record R { "": string } root R"#).unwrap_err();
+        assert_eq!(err.code, "schema.empty-label");
+        assert_eq!(err.path, "R");
+    }
+
+    // Issue #166 (spec Sec5.4, updated 2026-08-29): '[' or ']' anywhere in
+    // a field label is a normative error -- both a matched-pair shape
+    // ("a[1]") and a lone, unmatched ']' ("total]") are rejected, since
+    // the rule is about the character vocabulary, not a specific pattern.
+    #[test]
+    fn test_code_schema_bracket_in_label() {
+        let err = parse_schema(r#"record R { "a[1]": string } root R"#).unwrap_err();
+        assert_eq!(err.code, "schema.bracket-in-label");
+        assert_eq!(err.path, "R");
+
+        let err_lone = parse_schema(r#"record R { "total]": string } root R"#).unwrap_err();
+        assert_eq!(err_lone.code, "schema.bracket-in-label");
+        assert_eq!(err_lone.path, "R");
     }
 
     #[test]
