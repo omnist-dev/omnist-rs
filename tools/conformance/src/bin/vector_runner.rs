@@ -157,6 +157,28 @@ fn fail(message: impl Into<String>) -> VResult {
         message: message.into(),
     }
 }
+
+/// omnist-spec Sec8.5.3: strip whitespace strictly between '>' and '<'
+/// before comparing a `write` vector's expected/actual text for XML. Safe
+/// because this crate never produces mixed-content XML (Document model
+/// Sec2: a node has either child edges or one scalar value, never both),
+/// so this whitespace can only ever be inter-tag formatting, never real
+/// text data -- this function is deliberately unconditional (no
+/// mixed-content guard) on that basis, matching the spec's own stated
+/// scoping, not a general-purpose XML formatter.
+fn normalize_xml_whitespace(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        out.push(c);
+        if c == '>' {
+            while matches!(chars.peek(), Some(c) if c.is_whitespace()) {
+                chars.next();
+            }
+        }
+    }
+    out
+}
 fn skip(message: impl Into<String>) -> VResult {
     VResult {
         status: Status::Skip,
@@ -523,13 +545,21 @@ fn run_write(v: &Json) -> VResult {
             if !expect_ok(v) {
                 return fail("expected failure, write succeeded");
             }
-            if let Some(expected_text) = v["expect"]["text"].as_str()
-                && text.trim() != expected_text.trim()
-            {
-                return fail(format!(
-                    "expected text {expected_text:?}, got {:?}",
-                    text.trim()
-                ));
+            if let Some(expected_text) = v["expect"]["text"].as_str() {
+                let (got, want) = if format == "xml" {
+                    (
+                        normalize_xml_whitespace(text.trim()),
+                        normalize_xml_whitespace(expected_text.trim()),
+                    )
+                } else {
+                    (text.trim().to_string(), expected_text.trim().to_string())
+                };
+                if got != want {
+                    return fail(format!(
+                        "expected text {expected_text:?}, got {:?}",
+                        text.trim()
+                    ));
+                }
             }
             let expected_paths = expected_diag_paths(v);
             if !expected_paths.is_empty() {
@@ -851,32 +881,22 @@ pub fn run_all(dir: &Path) -> (u32, u32, u32) {
 /// its issue -- an entry lingering after its fix would silently stop
 /// verifying that the fix stuck.
 const KNOWN_FAILING_VECTORS: &[&str] = &[
-    // Issue #162 fixed this entry (XML write-side CR-as-numeric-character-
-    // reference) -- removed here in the same PR, per this constant's own
-    // doc comment above.
+    // Empty on purpose: every previously-listed entry is now fixed.
     //
-    // Issues #158/#163/#166 fixed these four entries (OSD
-    // schema-construction-time validation: [0,0] cardinality, empty field
-    // labels, brackets in field labels) -- removed here in the same PR.
+    // Issue #162 fixed the XML write-side CR-as-numeric-character-reference
+    // entry. Issues #158/#163/#166 fixed the four OSD
+    // schema-construction-time validation entries ([0,0] cardinality, empty
+    // field labels, brackets in field labels). Issue #164 fixed both
+    // leading-zero entries, and #165 fixed the five temporal error-case
+    // entries -- all removed in the PRs that fixed them.
     //
-    // Issue #164 fixed both leading-zero entries, and #165 fixed the five
-    // temporal error-case entries (all removed here in the same PR) --
-    // but NOT `tz-offset-within-range-is-valid` below, which stays. That
-    // one vector's `expect.document.value` is un-canonicalized (missing
-    // the `:00` seconds every sibling OML-datetime vector in this same
-    // file has -- e.g. `date-then-time-lookahead-yields-one-datetime-
-    // token`, right above the temporals block), which is a genuine
-    // omnist-spec test-suite defect (filed:
-    // https://github.com/omnist-dev/omnist-spec/issues/51), not an
-    // omnist-rs gap -- omnist-rs's OML reader canonicalizes a missing
-    // `:SS` to `:00` deliberately and consistently (issue #90), and
-    // reverting that to match this one vector would silently regress
-    // every other datetime vector depending on it. The actual subject of
-    // #165 (tz-offset sharing TIME's exact minute range, not a wider or
-    // separately-implemented one) is confirmed correct and covered by the
-    // adjacent `tz-offset-minute-out-of-range-is-an-error` vector, which
-    // now passes.
-    "oml-grammar/temporals/tz-offset-within-range-is-valid",
+    // `oml-grammar/temporals/tz-offset-within-range-is-valid` (#165's 6th,
+    // happy-path vector) stayed on this list longer than the rest: its
+    // `expect.document.value` was un-canonicalized (missing the `:00`
+    // seconds every sibling OML-datetime vector in the same file has),
+    // which was a genuine omnist-spec test-suite defect, not an omnist-rs
+    // gap -- filed as omnist-spec#51 and fixed there (commit 830590b,
+    // vendor bump in this same PR). Now passes and is removed here too.
 ];
 
 fn main_with_dir(dir: &Path) -> u8 {
@@ -907,12 +927,15 @@ fn main_with_dir(dir: &Path) -> u8 {
         eprintln!("unexpected failures (not on the known-failing list): {unexpected:?}");
         return 1;
     }
-    if failed > 0 {
-        println!(
-            "{failed} failure(s), all on the known-failing list (see KNOWN_FAILING_VECTORS) -- \
-             not a regression"
-        );
-    }
+    // `failed > 0` here would mean every failure matched a
+    // `KNOWN_FAILING_VECTORS` entry -- currently unreachable, since that
+    // list is empty (every prior entry has been fixed; see its own doc
+    // comment). Any real failure is therefore always caught by the
+    // `unexpected` check above, which is why there is no "N known
+    // failures, not a regression" branch here anymore: it was provably
+    // dead code with an empty list, not just untested. Reintroduce it,
+    // with a test, the next time a genuine documented-divergence entry is
+    // added to that list.
     0
 }
 
@@ -1044,18 +1067,31 @@ mod tests {
     ///
     /// All seven removed from `KNOWN_FAILING_VECTORS` in the same PR.
     /// `tz-offset-within-range-is-valid` (#165's 6th, happy-path vector)
-    /// deliberately stays on `KNOWN_FAILING_VECTORS` -- see that
-    /// constant's doc comment: it's a genuine omnist-spec test-suite
-    /// defect (filed as omnist-spec#51), not an omnist-rs gap.
+    /// stayed on `KNOWN_FAILING_VECTORS` at the time -- it was a genuine
+    /// omnist-spec test-suite defect (filed as omnist-spec#51), not an
+    /// omnist-rs gap.
     ///
-    /// This closes out every issue in the #158-166 batch. The one
-    /// remaining failure is entirely outside this port's control.
+    /// (165, 1, 6) -> (166, 0, 6): omnist-spec#51 fixed upstream (commit
+    /// 830590b) -- vendor bumped to aac3ce0 in the PR that also added
+    /// Sec8.5.3's XML-whitespace-normalization rule (omnist-spec#52,
+    /// found while implementing #99 -- the CR-escaping vector's
+    /// `expect.text` baked in the Python reference's own indentation
+    /// choice, which isn't normative; this port's XML writer never
+    /// indents, so the vector failed here for a reason outside this
+    /// port's own correctness). `tz-offset-within-range-is-valid` moves
+    /// fail -> pass and is removed from `KNOWN_FAILING_VECTORS` above;
+    /// `carriage-return-written-as-numeric-character-reference` was
+    /// already passing once `normalize_xml_whitespace` was added to this
+    /// runner's own `text` comparison.
+    ///
+    /// This closes out every issue in the #158-166 batch, plus both
+    /// spec-suite defects this port found while doing so.
     #[test]
     fn full_suite_counts_match_the_measured_baseline() {
         let (passed, failed, skipped) = run_all(&suite_dir());
         assert_eq!(
             (passed, failed, skipped),
-            (165, 1, 6),
+            (166, 0, 6),
             "vector pass/fail/skip counts changed -- if this is an intentional fix or a new \
              vector, update the pinned baseline; if not, something regressed"
         );
@@ -1650,6 +1686,53 @@ mod tests {
             "expect": {"ok": true, "text": "{\"a\": 999}"}
         });
         assert_eq!(dispatch(&v).status, Status::Fail);
+    }
+
+    #[test]
+    fn run_write_xml_whitespace_difference_still_passes() {
+        // Sec8.5.3: this port's XML writer never indents, but a vector
+        // written with indentation (matching a different port's writer
+        // convention) must still pass -- inter-tag whitespace isn't
+        // normative.
+        let v = json!({
+            "operation": "write",
+            "input": {
+                "format": "xml",
+                "document": {"edges": [["root", {"edges": [["x", {"scalar": {"kind": "string", "value": "hi"}}]]}]]}
+            },
+            "expect": {"ok": true, "text": "<root>\n  <x>hi</x>\n</root>\n"}
+        });
+        assert_eq!(dispatch(&v).status, Status::Pass);
+    }
+
+    #[test]
+    fn run_write_xml_genuine_content_mismatch_still_fails() {
+        // Normalizing whitespace must not mask an actual content
+        // difference.
+        let v = json!({
+            "operation": "write",
+            "input": {
+                "format": "xml",
+                "document": {"edges": [["root", {"edges": [["x", {"scalar": {"kind": "string", "value": "hi"}}]]}]]}
+            },
+            "expect": {"ok": true, "text": "<root><x>bye</x></root>"}
+        });
+        assert_eq!(dispatch(&v).status, Status::Fail);
+    }
+
+    #[test]
+    fn normalize_xml_whitespace_collapses_inter_tag_gaps() {
+        // Whitespace after any '>' is stripped, including trailing
+        // whitespace at end of string -- callers already `.trim()` first
+        // in practice (see `run_write`), so this is consistent with that.
+        assert_eq!(
+            normalize_xml_whitespace("<root>\n  <x>hi</x>\n</root>\n"),
+            "<root><x>hi</x></root>"
+        );
+        assert_eq!(
+            normalize_xml_whitespace("<root><x>hi</x></root>"),
+            "<root><x>hi</x></root>"
+        );
     }
 
     #[test]
