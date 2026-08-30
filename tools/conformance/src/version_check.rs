@@ -31,8 +31,7 @@ mod tests {
         let short_sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
 
         let doc_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/conformance.md");
-        let doc = std::fs::read_to_string(&doc_path)
-            .unwrap_or_else(|e| panic!("failed to read {}: {e}", doc_path.display()));
+        let doc = std::fs::read_to_string(&doc_path).expect("failed to read docs/conformance.md");
         assert!(
             doc.contains(&short_sha),
             "docs/conformance.md does not cite the current vendor/omnist-spec commit {short_sha} \
