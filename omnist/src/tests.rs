@@ -11,7 +11,7 @@ use super::*;
 
 #[test]
 fn version_matches_cargo_toml() {
-    assert_eq!(VERSION, "0.2.1-alpha");
+    assert_eq!(VERSION, "0.2.2-alpha");
 }
 
 #[test]
