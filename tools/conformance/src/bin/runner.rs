@@ -5,7 +5,7 @@
 //! Ported in spirit from omnist-ts's `tools/conformance/runner.ts` (freshest
 //! worked reference, same own-referee/own-runners architecture) and
 //! Python's `omnist`'s `tools/conformance/runner.py`. Follows Rust idiom,
-//! not either one's syntax (workflow-playbook.md's "architecture freedom"):
+//! not either one's syntax (CONTRIBUTING.md's "architecture freedom"):
 //! dispatch is a `match` on the operation name rather than a literal port
 //! of TS's lookup-table-of-functions, per issue #82's explicit call-out
 //! that this is a reasonable architecture-freedom choice.

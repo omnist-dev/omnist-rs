@@ -3,7 +3,7 @@
 //! exact literal output) or an explicit `doc-illustrative` opt-out.
 //!
 //! This does not verify a marker is *honest* -- it only requires one to
-//! exist (a known, deliberate gap; see `docs/workflow-playbook.md`'s
+//! exist (a known, deliberate gap; see `CONTRIBUTING.md`'s
 //! "Doc-example CI gate" section). Port of the Python project's
 //! `tools/check_doc_examples.py`, and of the `omnist-ts` port's
 //! `tools/check_doc_examples.ts` (see that repo's own test suite for the
@@ -271,7 +271,7 @@ pub fn extract_declared_item_names(text: &str) -> Vec<String> {
 /// safeguard: it catches a renamed/removed item (the exact staleness
 /// `docs/api.md` had drifted into after #104/#105), though not a changed
 /// signature for a name that still exists -- see
-/// `docs/workflow-playbook.md`'s "doc updates ship with the change" rule
+/// `CONTRIBUTING.md`'s "doc updates ship with the change" rule
 /// for the other half.
 pub fn stale_api_md_items(text: &str, src_dir: &Path) -> Vec<String> {
     let mut source = String::new();

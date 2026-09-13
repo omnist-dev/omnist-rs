@@ -3,7 +3,7 @@
 //! Ported strategy from `~/dev/omnist/tests/test_fuzz.py` (Python's
 //! `hypothesis` generators for `Document`/`Schema`), using `proptest` per
 //! issue #1's toolchain mapping. This is the port order's explicit
-//! fuzzing item (`docs/workflow-playbook.md` §4), closed retroactively
+//! fuzzing item (`CONTRIBUTING.md` §4), closed retroactively
 //! rather than per-module.
 //!
 //! ## What's covered
