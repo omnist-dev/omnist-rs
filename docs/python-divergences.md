@@ -13,6 +13,20 @@ the `i64`/temporal/`any` gaps. Where an entry below is already documented
 there, this page states it briefly and links out rather than repeating
 it.
 
+**Why this page exists alongside omnist-spec's divergence ledger
+([Sec9](https://spec.omnist.dev/09-divergence-ledger)):** the ledger
+tracks current, named, cross-port divergences (`D-1`, `D-2`, ...) from
+the *spec* -- behavior every implementation must agree on. This page
+tracks something the ledger doesn't: divergences from the *Python
+reference implementation specifically*, each cited to the exact PR that
+introduced or resolved it, with the live cross-check that found it. Most
+of these are permanent, disclosed representational choices (`i64` vs
+arbitrary precision, ASCII-only XML digit coercion) that are conformant
+with the spec on both sides -- not spec violations, so they have no
+ledger entry at all. Check the ledger for current cross-port status;
+check this page for *why* this port's own output differs from Python's
+on a specific input, and which PR made that call.
+
 ## Integer representation: `i64` vs Python's arbitrary-precision `int`
 
 **Python**: `int` is arbitrary precision; a decimal literal is only

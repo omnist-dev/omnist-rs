@@ -9,7 +9,7 @@
 //! runners' job. Ported in spirit from Python's `omnist`'s
 //! `tools/conformance/referee.py` and omnist-ts's
 //! `tools/conformance/referee.ts` (same architecture); this file follows
-//! Rust idiom, not either one's syntax (workflow-playbook.md's
+//! Rust idiom, not either one's syntax (CONTRIBUTING.md's
 //! "architecture freedom").
 //!
 //! ## Comparison strategy (locked in by issue #82, documented here)
