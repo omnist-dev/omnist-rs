@@ -3,10 +3,10 @@
 This port has its own conformance-test harness (`tools/conformance/`)
 against [omnist-spec](https://github.com/omnist-dev/omnist-spec), the
 language-agnostic upstream specification. It vendors omnist-spec as a
-pinned git submodule (`vendor/omnist-spec`, currently commit `c4141d0`,
-the `v0.7.0-beta` tag -- pins the OSD-OML extension (Sec.Extensions,
-first shipped in v0.6.0-beta) and its formalized canonical
-serialization order (Sec3.3)) and
+pinned git submodule (`vendor/omnist-spec`, currently commit `47a84d6`,
+the `v0.9.1-beta` tag -- pins Sec3.3's new S-8 `Name` grammar rule and
+its clarified S-3 exact/case-sensitive reserved-name rule, both
+characterization only for this port) and
 runs entirely against this crate's own library code -- it does not depend
 on the Python or TypeScript ports' implementations.
 
@@ -19,10 +19,11 @@ reporting rule:
 - **Track 1** (`vendor/omnist-spec/conformance/fixtures/`, directory-per-fixture,
   11 operations): **19 passed, 0 failed, 0 skipped**.
 - **Track 2** (`vendor/omnist-spec/test-suite/`, JSON-vector suite, 14-operation
-  vocabulary): **169 passed, 0 failed, 30 skipped** (of 199 vectors). The 24
-  new skips vs. the prior pin are all `extensions-osd-oml/*` vectors for the
-  OSD-OML extension (v0.6.0-beta) -- an optional extension this port has not
-  implemented yet, not a regression.
+  vocabulary): **170 passed, 0 failed, 34 skipped** (of 204 vectors). 28 of
+  the skips are `extensions-osd-oml/*` vectors for the OSD-OML extension
+  (v0.6.0-beta) -- an optional extension this port has not implemented yet
+  (tracked in [omnist-rs#175](https://github.com/omnist-dev/omnist-rs/issues/175)),
+  not a regression.
 
 Zero real fails on either track as of this writing. Run it yourself:
 
