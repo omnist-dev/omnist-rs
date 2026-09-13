@@ -977,8 +977,19 @@ mod tests {
         // `full_suite_counts_match_the_measured_baseline`'s doc comment
         // for exactly which of the 17 new failures this PR fixed vs. left
         // for other issues.
+        // 172 -> 199 via vendor/omnist-spec commit c4141d0 (v0.7.0-beta):
+        // the OSD-OML extension (Sec.Extensions, first shipped in
+        // v0.6.0-beta) adds `extensions-osd-oml/parse.json`,
+        // `parse-errors.json`, and `write.json`, plus three new Sec3.3
+        // canonical-serialization-order characterization vectors
+        // (`osd-grammar/canonical-output/declaration-order-round-trips-exactly`,
+        // `prune/basic/survivors-keep-declaration-order-not-alphabetical`,
+        // `normalize/basic/output-order-is-alphabetical-not-declaration-order`)
+        // -- all three pass on arrival, confirming this port's existing
+        // declaration-order/alphabetical-order behavior already matched the
+        // newly-formalized principles.
         let vectors = iter_vectors(&suite_dir());
-        assert_eq!(vectors.len(), 172);
+        assert_eq!(vectors.len(), 199);
     }
 
     /// Full-suite regression guard: runs every real vector through every
@@ -1086,12 +1097,26 @@ mod tests {
     ///
     /// This closes out every issue in the #158-166 batch, plus both
     /// spec-suite defects this port found while doing so.
+    ///
+    /// (166, 0, 6) -> (169, 0, 30) via the v0.7.0-beta submodule pin bump
+    /// (commit c4141d0): 27 new vectors arrive (199 total). Three are Sec3.3
+    /// canonical-serialization-order characterization vectors and all pass
+    /// on arrival (verified by name, not assumed):
+    ///   - `osd-grammar/canonical-output/declaration-order-round-trips-exactly`
+    ///   - `prune/basic/survivors-keep-declaration-order-not-alphabetical`
+    ///   - `normalize/basic/output-order-is-alphabetical-not-declaration-order`
+    ///
+    /// The other 24 are all `extensions-osd-oml/*` vectors for the OSD-OML
+    /// extension (v0.6.0-beta) -- this port has not implemented that
+    /// extension yet, so every one of them is a legitimate `Status::Skip`
+    /// ("no driver wired up yet for operation ..."), not a failure. Zero new
+    /// failures.
     #[test]
     fn full_suite_counts_match_the_measured_baseline() {
         let (passed, failed, skipped) = run_all(&suite_dir());
         assert_eq!(
             (passed, failed, skipped),
-            (166, 0, 6),
+            (169, 0, 30),
             "vector pass/fail/skip counts changed -- if this is an intentional fix or a new \
              vector, update the pinned baseline; if not, something regressed"
         );
