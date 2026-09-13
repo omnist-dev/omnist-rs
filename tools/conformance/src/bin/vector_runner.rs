@@ -948,7 +948,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn vector_count_is_172() {
+    fn vector_count_is_204() {
         // 146 -> 152 via vendor/omnist-spec v0.1.1-alpha -> commit f93c569
         // (issue #104: arbitrary-precision `Scalar::Int`). The submodule
         // pin bump brings in several bundled, otherwise-unrelated
@@ -988,8 +988,20 @@ mod tests {
         // -- all three pass on arrival, confirming this port's existing
         // declaration-order/alphabetical-order behavior already matched the
         // newly-formalized principles.
+        // 199 -> 204 via vendor/omnist-spec commit 47a84d6 (v0.9.1-beta,
+        // via v0.8.0-beta/v0.9.0-beta): new Sec3.3 S-8 (`Name` grammar,
+        // `[A-Za-z_][A-Za-z0-9_]*` -- already the exact regex this port's
+        // tokenizer used, no behavior change) and S-3 clarified
+        // (reserved-name matching is exact and case-sensitive -- already
+        // this port's behavior via `==` on `&str`, verified directly
+        // against `osd.rs` before this bump, not assumed). One new
+        // characterization vector
+        // (`osd-grammar/reserved-names/case-mismatched-name-is-not-reserved`)
+        // passes on arrival; four new `extensions-osd-oml/*` vectors join
+        // the existing 24, all correctly `Status::Skip` (this port doesn't
+        // implement the OSD-OML extension yet, tracked in omnist-rs#175).
         let vectors = iter_vectors(&suite_dir());
-        assert_eq!(vectors.len(), 199);
+        assert_eq!(vectors.len(), 204);
     }
 
     /// Full-suite regression guard: runs every real vector through every
@@ -1111,12 +1123,27 @@ mod tests {
     /// extension yet, so every one of them is a legitimate `Status::Skip`
     /// ("no driver wired up yet for operation ..."), not a failure. Zero new
     /// failures.
+    ///
+    /// (169, 0, 30) -> (170, 0, 34) via the v0.9.1-beta submodule pin bump
+    /// (commit 47a84d6, via v0.8.0-beta/v0.9.0-beta): Sec3.3 S-8 (`Name`
+    /// grammar) and S-3 (reserved-name matching is exact/case-sensitive)
+    /// are both characterization only -- this port's tokenizer already used
+    /// the exact `[A-Za-z_][A-Za-z0-9_]*` regex S-8 states, and its
+    /// reserved-name checks (`osd.rs`, `name == "any"` /
+    /// `ScalarKind::ALL.iter().any(|k| k.as_str() == name)`) are already
+    /// plain `&str` equality, verified directly against source before this
+    /// bump landed, not assumed. One new vector passes on arrival:
+    ///   - `osd-grammar/reserved-names/case-mismatched-name-is-not-reserved`
+    ///
+    /// Four new `extensions-osd-oml/*` vectors join the existing 24 (28
+    /// total), all `Status::Skip` for the same not-yet-implemented reason,
+    /// tracked in omnist-rs#175.
     #[test]
     fn full_suite_counts_match_the_measured_baseline() {
         let (passed, failed, skipped) = run_all(&suite_dir());
         assert_eq!(
             (passed, failed, skipped),
-            (169, 0, 30),
+            (170, 0, 34),
             "vector pass/fail/skip counts changed -- if this is an intentional fix or a new \
              vector, update the pinned baseline; if not, something regressed"
         );
