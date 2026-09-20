@@ -79,23 +79,13 @@ fn tokenize(text: &str) -> Result<Vec<Tok>, SchemaError> {
     let mut toks = Vec::new();
     let mut i = 0usize;
     while i < text.len() {
-        let Some(m) = TOKEN_RE.captures(&text[i..]) else {
-            let ch = text[i..].chars().next().unwrap();
-            return Err(SchemaError::new(
-                "$",
-                "parse.unexpected-token",
-                format!("unexpected character {ch:?} at {i}"),
-            ));
+        let matched_here = TOKEN_RE
+            .captures(&text[i..])
+            .filter(|m| m.get(0).is_some_and(|w| w.start() == 0));
+        let Some(m) = matched_here else {
+            return Err(untokenizable(text, i));
         };
         let whole = m.get(0).unwrap();
-        if whole.start() != 0 {
-            let ch = text[i..].chars().next().unwrap();
-            return Err(SchemaError::new(
-                "$",
-                "parse.unexpected-token",
-                format!("unexpected character {ch:?} at {i}"),
-            ));
-        }
         let start = i;
         i += whole.len();
         if m.name("ws").is_some() || m.name("comment").is_some() {
@@ -105,7 +95,7 @@ fn tokenize(text: &str) -> Result<Vec<Tok>, SchemaError> {
             let s = g.as_str();
             if let Some(c) = s.chars().find(|&c| (c as u32) < 0x20) {
                 return Err(SchemaError::new(
-                    "$",
+                    text_position(text, start),
                     "parse.control-character",
                     format!("control character U+{:04X} in string at {start}", c as u32),
                 ));
@@ -132,6 +122,64 @@ fn tokenize(text: &str) -> Result<Vec<Tok>, SchemaError> {
     Ok(toks)
 }
 
+/// The text-position path (`line:col`, omnist-spec section 8.4 and E-11) of
+/// byte offset `pos` in `text`. Every `parse.*` diagnostic OSD raises
+/// carries one of these, never a raw offset and never `$`.
+fn text_position(text: &str, pos: usize) -> String {
+    let (line, col) = crate::formats::textpos::line_col_bytes(text, pos);
+    format!("{line}:{col}")
+}
+
+/// The error for the character at byte offset `at`, where no token matches.
+///
+/// A `"` that starts no complete string is a string-body error, reported
+/// (E-23, via E-3) at the OPENING QUOTE: `parse.control-character` if a
+/// control character stands anywhere in the body -- including immediately
+/// after a backslash, where section 5.3.1 says it is still one -- else
+/// `parse.unterminated-string`. Anything else is `parse.unexpected-token`.
+fn untokenizable(text: &str, at: usize) -> SchemaError {
+    let path = text_position(text, at);
+    let ch = text[at..].chars().next().unwrap();
+    if ch != '"' {
+        return SchemaError::new(
+            path,
+            "parse.unexpected-token",
+            format!("unexpected character {ch:?} at {at}"),
+        );
+    }
+    let mut chars = text[at + 1..].chars();
+    while let Some(c) = chars.next() {
+        if (c as u32) < 0x20 {
+            return SchemaError::new(
+                path,
+                "parse.control-character",
+                format!("control character U+{:04X} in string at {at}", c as u32),
+            );
+        }
+        if c == '\\' {
+            // The escaped character is body too: a control character right
+            // after the backslash is still a control character.
+            if let Some(escaped) = chars.next()
+                && (escaped as u32) < 0x20
+            {
+                return SchemaError::new(
+                    path,
+                    "parse.control-character",
+                    format!(
+                        "control character U+{:04X} after a backslash in string at {at}",
+                        escaped as u32
+                    ),
+                );
+            }
+        }
+    }
+    SchemaError::new(
+        path,
+        "parse.unterminated-string",
+        format!("unterminated string starting at {at}"),
+    )
+}
+
 /// Un-escape a quoted string token's raw text (including its surrounding
 /// `"`s) via `\X -> X`, mirroring Python's `_unquote` (`re.sub(r'\\(.)',
 /// r'\1', s[1:-1])`).
@@ -155,14 +203,21 @@ fn unquote(s: &str) -> String {
 // Parser
 // ---------------------------------------------------------------------------
 
-struct Parser {
+struct Parser<'a> {
+    src: &'a str,
     toks: Vec<Tok>,
     i: usize,
 }
 
-impl Parser {
-    fn new(toks: Vec<Tok>) -> Self {
-        Parser { toks, i: 0 }
+impl<'a> Parser<'a> {
+    fn new(src: &'a str, toks: Vec<Tok>) -> Self {
+        Parser { src, toks, i: 0 }
+    }
+
+    /// A lexical/grammatical (`parse.*`) error at token `t`: the path is the
+    /// token's text position, per E-11.
+    fn parse_error(&self, t: &Tok, code: &str, message: String) -> SchemaError {
+        SchemaError::new(text_position(self.src, t.pos), code, message)
     }
 
     fn peek(&self) -> &Tok {
@@ -178,8 +233,8 @@ impl Parser {
     fn expect_punct(&mut self, text: &str) -> Result<Tok, SchemaError> {
         let t = self.next_tok();
         if t.kind != TokKind::Punct || t.text != text {
-            return Err(SchemaError::new(
-                "$",
+            return Err(self.parse_error(
+                &t,
                 "parse.unexpected-token",
                 format!("expected {text:?} at {}, got {:?}", t.pos, t.text),
             ));
@@ -190,8 +245,8 @@ impl Parser {
     fn expect_name(&mut self) -> Result<Tok, SchemaError> {
         let t = self.next_tok();
         if t.kind != TokKind::Name {
-            return Err(SchemaError::new(
-                "$",
+            return Err(self.parse_error(
+                &t,
                 "parse.unexpected-token",
                 format!("expected a name at {}, got {:?}", t.pos, t.text),
             ));
@@ -219,8 +274,8 @@ impl Parser {
                 }
                 root = Some(name);
             } else {
-                return Err(SchemaError::new(
-                    "$",
+                return Err(self.parse_error(
+                    &t,
                     "parse.unexpected-token",
                     format!("expected 'record' or 'root' at {}, got {:?}", t.pos, t.text),
                 ));
@@ -471,8 +526,8 @@ impl Parser {
                     ),
                 ));
             }
-            return Err(SchemaError::new(
-                rec_name,
+            return Err(self.parse_error(
+                &t,
                 "parse.unexpected-token",
                 format!(
                     "expected a scalar name or a reference at {}, got {:?} (enums and                      literal-valued fields are not supported -- a field's type is                      always one scalar or a reference to a named record)",
@@ -518,8 +573,17 @@ impl Parser {
 
 /// Parse OSD text into a [`Schema`].
 pub fn parse_schema(text: &str) -> Result<Schema, SchemaError> {
+    // D-15/D-21: one leading BOM is stripped, a second is rejected at 1:1
+    // (`parse.unexpected-token` on OSD). The only place OSD strips it.
+    let text = crate::bom::strip_leading_bom(text).map_err(|_| {
+        SchemaError::new(
+            "1:1",
+            "parse.unexpected-token",
+            crate::bom::DOUBLED_BOM_MESSAGE,
+        )
+    })?;
     let toks = tokenize(text)?;
-    Parser::new(toks).parse_schema()
+    Parser::new(text, toks).parse_schema()
 }
 
 // ---------------------------------------------------------------------------
@@ -633,8 +697,50 @@ mod tests {
     fn tokenizer_rejects_literal_control_character_in_string() {
         let err = parse_schema("record R {\n    \"\x01\": string,\n}\nroot R\n").unwrap_err();
         assert_eq!(err.code, "parse.control-character");
-        assert_eq!(err.path, "$");
+        // E-11/E-23: the text position of the string's opening quote.
+        assert_eq!(err.path, "2:5");
         assert!(err.message.contains("control character U+0001 in string"));
+    }
+
+    /// `(input, expected path, expected code)` for a lexical failure. Every
+    /// `parse.*` diagnostic carries a `line:col` text position (E-11); a
+    /// string-body error reports the OPENING QUOTE (E-23).
+    fn lex_error(text: &str) -> (String, String) {
+        let e = parse_schema(text).unwrap_err();
+        (e.path, e.code)
+    }
+
+    #[test]
+    fn lexical_errors_carry_text_positions_and_the_right_parse_code() {
+        let pos = |p: &str, c: &str| (p.to_string(), c.to_string());
+        // An unexpected character.
+        assert_eq!(
+            lex_error("record R {\n  @\n"),
+            pos("2:3", "parse.unexpected-token")
+        );
+        // An unterminated string, plain and after a non-control escape.
+        assert_eq!(
+            lex_error("record R {\n  \"abc"),
+            pos("2:3", "parse.unterminated-string")
+        );
+        assert_eq!(
+            lex_error("record R {\n  \"a\\qb"),
+            pos("2:3", "parse.unterminated-string")
+        );
+        // A raw newline inside an unterminated string is a control character.
+        assert_eq!(
+            lex_error("record R {\n  \"ab\ncd"),
+            pos("2:3", "parse.control-character")
+        );
+        // A control character right after a backslash is still one, even where
+        // the string regex cannot match (backslash + newline).
+        assert_eq!(
+            lex_error("record R {\n  \"a\\\nb\": string,\n}\nroot R\n"),
+            pos("2:3", "parse.control-character")
+        );
+        // Grammar-level (not lexical) unexpected tokens also carry positions.
+        assert_eq!(lex_error("root"), pos("1:5", "parse.unexpected-token"));
+        assert_eq!(lex_error("foo"), pos("1:1", "parse.unexpected-token"));
     }
 
     #[test]

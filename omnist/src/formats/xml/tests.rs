@@ -131,8 +131,14 @@ fn round_trips_interleaved_repeated_elements() {
 
 #[test]
 fn mixed_content_text_alongside_children_is_a_parse_error() {
+    // A data-XML profile refusal, not malformed input: `format.mixed-content`
+    // at `$`, never a `parse.*` syntax error.
     let err = read_xml("<root>text<a>1</a></root>").unwrap_err();
-    assert!(matches!(err, OmnistError::Parse(ref e) if e.message.contains("mixed content")));
+    assert!(matches!(
+        err,
+        OmnistError::Document(ref e)
+            if e.code.as_deref() == Some("format.mixed-content") && e.path == "$"
+    ));
 }
 
 #[test]
@@ -430,23 +436,37 @@ fn escapes_ampersand_lt_gt_in_text_but_not_quotes() {
     assert!(text.contains("x &lt; y &amp; z &gt; w \"quote\" 'apos'"));
 }
 
-// ------------------------------------------------------- all-occurrences sanitization
+// ------------------------------------------------------- illegal characters fail the write
 
 #[test]
-fn sanitizes_every_illegal_character_not_just_the_first() {
-    // Regression test for omnist-ts#36: writeXml's xmlSanitize used a
-    // non-global regex, replacing only the *first* XML-illegal character.
-    // Three illegal C0 controls (\x01, \x02, \x03) in one string -- all
-    // three must become U+FFFD, not just the first.
+fn an_empty_document_and_a_scalar_root_cannot_be_written_as_xml() {
+    // Zero top-level edges: no document element (not `format.multiple-roots`).
+    let doc = Doc::from_raw(edges(vec![])).unwrap();
+    let err = write_xml(&doc, false, None).unwrap_err();
+    assert_eq!(err.code, None);
+    // Several top-level edges: `format.multiple-roots` at `$`.
+    let doc = Doc::from_raw(edges(vec![("a", leaf_str("1")), ("b", leaf_str("2"))])).unwrap();
+    let err = write_xml(&doc, false, None).unwrap_err();
+    assert_eq!(err.code.as_deref(), Some("format.multiple-roots"));
+    assert_eq!(err.path.as_deref(), Some("$"));
+}
+
+#[test]
+fn a_string_with_an_illegal_character_fails_the_write_at_its_path() {
+    // XML 1.0 cannot represent a raw C0 control character and there is no
+    // substitute spelling, so the write fails (write.unsupported-value) --
+    // it never substitutes U+FFFD (omnist-ts#36's all-occurrences concern is
+    // moot: nothing is replaced at all).
     let illegal = "a\u{01}b\u{02}c\u{03}d";
-    let doc = Doc::from_raw(edges(vec![("root", leaf_str(illegal))])).unwrap();
-    let text = write_xml(&doc, false, None).unwrap();
-    assert_eq!(text, "<root>a\u{FFFD}b\u{FFFD}c\u{FFFD}d</root>");
-    assert_eq!(
-        text.matches('\u{FFFD}').count(),
-        3,
-        "all three must be replaced"
-    );
+    let doc = Doc::from_raw(edges(vec![("root", edges(vec![("s", leaf_str(illegal))]))])).unwrap();
+    let err = write_xml(&doc, false, None).unwrap_err();
+    assert_eq!(err.path.as_deref(), Some("$.root.s"));
+    assert_eq!(err.code.as_deref(), Some("write.unsupported-value"));
+    assert!(err.message.contains("U+0001"), "{}", err.message);
+    // check_xml previews the same condition without failing.
+    let rep = check_xml(&doc);
+    assert_eq!(rep.adjustments()[0].code, "write.unsupported-value");
+    assert_eq!(rep.adjustments()[0].path, "$.root.s");
 }
 
 #[test]
@@ -459,11 +479,9 @@ fn check_xml_reports_illegal_char_as_error_but_not_cr() {
     // illegal-control-character case (untouched by #162) still reports.
     let doc = Doc::from_raw(edges(vec![("root", leaf_str("bad\u{01}\rtext"))])).unwrap();
     let rep = check_xml(&doc);
-    assert!(
-        rep.adjustments()
-            .iter()
-            .any(|a| a.code == "string.illegal_xml_char" && a.severity == Severity::Error)
-    );
+    assert!(rep.adjustments().iter().any(|a| {
+        a.code == "write.unsupported-value" && a.path == "$.root" && a.severity == Severity::Error
+    }));
     assert!(
         !rep.adjustments()
             .iter()
@@ -512,8 +530,11 @@ fn strict_write_of_a_carriage_return_succeeds() {
 #[test]
 fn strict_write_raises_on_illegal_char_error() {
     let doc = Doc::from_raw(edges(vec![("root", leaf_str("bad\u{01}"))])).unwrap();
+    // The illegal character fails the write unconditionally, strict or not,
+    // with a structured (path, code) rather than a strict-mode report.
     let err = write_xml(&doc, true, None).unwrap_err();
-    assert!(err.report().is_some());
+    assert_eq!(err.code.as_deref(), Some("write.unsupported-value"));
+    assert_eq!(err.path.as_deref(), Some("$.root"));
 }
 
 // -------------------------------------------------- write.unsupported-value: labels
@@ -814,11 +835,6 @@ fn a_prefixed_tag_reads_as_its_local_name() {
 // ---------------------------------------------------------------- white-box coverage
 
 #[test]
-fn xml_sanitize_leaves_legal_characters_untouched() {
-    assert_eq!(xml_sanitize("hello\tworld\n"), "hello\tworld\n");
-}
-
-#[test]
 fn is_xml_illegal_char_boundary_values() {
     assert!(is_xml_illegal_char('\u{00}'));
     assert!(!is_xml_illegal_char('\t'));
@@ -912,16 +928,101 @@ fn numeric_and_named_character_references_resolve_correctly() {
 }
 
 #[test]
-fn unrecognized_named_entity_is_a_parse_error() {
-    // `quick_xml` has no DTD support, so only the five predefined
-    // entities can ever resolve -- anything else is a parse error
-    // (see this module's doc comment on why that's the crate's XXE-safe
-    // behavior, not a gap).
+fn unrecognized_named_entity_is_refused_by_the_profile() {
+    // Only XML's five predefined entities are in the data-XML profile: any
+    // other could only have come from a DTD. It is a refusal
+    // (`format.entity-forbidden`, path `$`), not a syntax error.
     let err = read_xml("<root>&undefinedentity;</root>").unwrap_err();
     assert!(
-        matches!(err, OmnistError::Parse(ref e) if e.message.contains("unrecognized entity")),
+        matches!(err, OmnistError::Document(ref e)
+            if e.code.as_deref() == Some("format.entity-forbidden") && e.path == "$"),
         "got {err:?}"
     );
+}
+
+// ------------------------------------------------------- the data-XML profile
+
+/// The `(path, code)` of a profile refusal, or panics.
+fn refusal(src: &str) -> (String, String) {
+    match read_xml(src).unwrap_err() {
+        OmnistError::Document(e) => (e.path, e.code.expect("a refusal carries a code")),
+        other => panic!("expected a profile refusal, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_doctype_is_refused_on_sight_in_the_prolog_and_the_epilog() {
+    let dtd = ("$".to_string(), "format.dtd-forbidden".to_string());
+    // Harmless, unused declaration: still refused (on sight, not on use).
+    assert_eq!(refusal("<!DOCTYPE d [<!ELEMENT d ANY>]><d/>"), dtd);
+    assert_eq!(refusal("<!DOCTYPE note><root/>"), dtd);
+    // A document that declares entities and never references them.
+    assert_eq!(refusal("<!DOCTYPE d [<!ENTITY e \"x\">]><d>plain</d>"), dtd);
+    assert_eq!(refusal("<root/><!DOCTYPE note>"), dtd);
+}
+
+#[test]
+fn the_first_refusal_in_document_order_wins() {
+    let (_, code) = refusal("<!DOCTYPE d><d>text<a/>&nbsp;</d>");
+    assert_eq!(code, "format.dtd-forbidden");
+    let (_, code) = refusal("<d>&nbsp;<a>x</a>y</d>");
+    assert_eq!(code, "format.entity-forbidden");
+}
+
+#[test]
+fn a_refusal_runs_after_well_formedness_so_malformed_input_is_a_syntax_error() {
+    // Every one of these would be a profile refusal if it were well-formed;
+    // being malformed, it is `parse.codec-syntax` (E-24) instead.
+    for src in [
+        "<!DOCTYPE d><d>",
+        "<d>text<a>1</a>",
+        "<d>&nbsp;</e>",
+        "<!DOCTYPE d><d/><d/>",
+    ] {
+        match read_xml(src).unwrap_err() {
+            OmnistError::Parse(e) => assert_eq!(e.code, "parse.codec-syntax", "{src}"),
+            other => panic!("{src}: expected a syntax error, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn numeric_character_references_the_five_entities_and_inert_constructs_stay_legal() {
+    let doc = read_xml(
+        "<?xml version=\"1.0\"?><!-- c --><?pi x?><r>&#65;&#x42;&lt;&gt;&amp;&apos;&quot;<![CDATA[<c>]]></r>",
+    )
+    .unwrap();
+    assert_eq!(doc.to_raw(), edges(vec![("r", leaf_str("AB<>&'\"<c>"))]));
+}
+
+// ---------------------------------------------------------------- D-15 / D-21: BOM
+
+#[test]
+fn a_leading_bom_is_stripped_a_doubled_one_is_rejected_at_1_1() {
+    let ok = read_xml("\u{FEFF}<r><a>1</a></r>").unwrap();
+    assert_eq!(ok.to_raw(), read_xml("<r><a>1</a></r>").unwrap().to_raw());
+    let err = read_xml("\u{FEFF}\u{FEFF}<r><a>1</a></r>").unwrap_err();
+    assert!(matches!(
+        err,
+        OmnistError::Parse(ref e)
+            if (e.line, e.col) == (1, 1) && e.code == "parse.codec-syntax"
+    ));
+}
+
+#[test]
+fn an_interior_bom_is_ordinary_content() {
+    // Interior marks are kept byte for byte, in a label as in text (the
+    // reader's pre-check is one character wide: only offset zero).
+    let doc = read_xml("<r><a\u{FEFF}b>x\u{FEFF}y</a\u{FEFF}b></r>").unwrap();
+    assert_eq!(
+        doc.to_raw(),
+        edges(vec![(
+            "r",
+            edges(vec![("a\u{FEFF}b", leaf_str("x\u{FEFF}y"))])
+        )])
+    );
+    let doc = read_xml("<r>x\u{FEFF}y</r>").unwrap();
+    assert_eq!(doc.to_raw(), edges(vec![("r", leaf_str("x\u{FEFF}y"))]));
 }
 
 #[test]
@@ -956,7 +1057,7 @@ fn test_xml_epilog_non_whitespace_cdata_rejected() {
 
 #[test]
 fn test_xml_epilog_legal_comments_pi_doctype_skipped() {
-    let src = "<root></root><!-- trailing comment --><?pi target?><!DOCTYPE note>";
+    let src = "<root></root><!-- trailing comment --><?pi target?>";
     let doc = read_xml(src).unwrap();
     assert_eq!(doc.to_raw(), edges(vec![("root", leaf_str(""))]));
 }
@@ -991,7 +1092,7 @@ fn test_xml_repro_garbage_multi_root_trailing_rejected() {
 }
 #[test]
 fn test_xml_prolog_decl_comment_pi_doctype_skipped() {
-    let src = "<?xml version=\"1.0\"?>\n<!-- c -->\n<?pi target?>\n<!DOCTYPE root>\n<root/>";
+    let src = "<?xml version=\"1.0\"?>\n<!-- c -->\n<?pi target?>\n<root/>";
     let doc = read_xml(src).unwrap();
     assert_eq!(doc.to_raw(), edges(vec![("root", leaf_str(""))]));
 }
@@ -1458,4 +1559,37 @@ fn read_xml_report_with_no_report_behaves_like_read_xml() {
         doc.to_raw(),
         edges(vec![("a", edges(vec![("b", leaf_str("hi"))]))])
     );
+}
+
+#[test]
+fn a_non_predefined_entity_in_an_attribute_value_is_refused() {
+    let entity = ("$".to_string(), "format.entity-forbidden".to_string());
+    for src in [
+        "<r a=\"&foo;\"><b>1</b></r>",
+        "<r><b a='x&nbsp;y'>1</b></r>",
+        "<r a=\"&amp;&foo;\"/>",
+        "<r><b/><c a=\"&foo;\"/></r>",
+    ] {
+        assert_eq!(refusal(src), entity, "{src}");
+    }
+    // The first refusal in document order wins, and well-formedness comes first.
+    assert_eq!(
+        refusal("<!DOCTYPE d><r a=\"&foo;\"/>").1,
+        "format.dtd-forbidden"
+    );
+    match read_xml("<r a=\"&foo;\"><b></r>").unwrap_err() {
+        OmnistError::Parse(e) => assert_eq!(e.code, "parse.codec-syntax"),
+        other => panic!("expected a syntax error, got {other:?}"),
+    }
+}
+
+#[test]
+fn predefined_entities_and_character_references_in_attribute_values_stay_legal() {
+    for src in [
+        "<r a=\"&amp; &lt; &gt; &quot; &apos;\"><b>1</b></r>",
+        "<r a=\"&#65;&#x42;\"><b>1</b></r>",
+    ] {
+        let doc = read_xml(src);
+        assert!(doc.is_ok(), "{src}: {doc:?}");
+    }
 }

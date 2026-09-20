@@ -109,8 +109,10 @@ pub fn extract(s: &Schema, keep: &[&str]) -> Result<Schema, SchemaError> {
         let (label, record_name) = first_offender.expect(
             "root invalidated implies step 1 recorded an offender before propagation began",
         );
+        // Schema path E-13: a record-level diagnostic is `RecordName`; the
+        // dropped label is named in the message.
         return Err(SchemaError::new(
-            format!("{record_name}.{label}"),
+            record_name.clone(),
             "algebra.extract-invalidates-root",
             format!(
                 "no valid subschema: removing label {label:?} deletes a mandatory field of record {record_name:?}"

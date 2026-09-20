@@ -35,8 +35,39 @@ only applies to plain-style scalars).
 
 `yaml_rust2` has no built-in merge-key support; this module implements the
 YAML merge-key spec directly (an unquoted `<<` key's value must be a
-mapping or sequence of mappings, merged in order, explicit keys taking
-precedence).
+mapping or sequence of mappings).
+
+The order is normative (omnist-spec `formats/yaml.md`): merged entries come
+first, in source order (`<<: [*a, *b]` is `a`'s entries, then `b`'s -- never
+reversed), then the mapping's own. A key supplied more than once resolves to
+one edge at the position of its first occurrence, carrying the mapping's own
+value when it writes one, otherwise the earliest alias's. A merged mapping's
+own `<<` is flattened first, so a grandparent's entries arrive before the
+parent's.
+
+## Byte-order marks
+
+A leading `U+FEFF` is stripped once, before the YAML library sees the text
+(D-15); a second is rejected at `1:1` as `parse.codec-syntax` (D-21), because
+`yaml_rust2` would otherwise keep it as part of the first key. The one shape
+this costs is an *unquoted* first key beginning with the mark; quote it. The
+writer quotes any string that starts with the mark, so written YAML always
+reads back.
+
+## Alias expansion (D-18): not enforced
+
+This port does not implement the alias expansion bound of omnist-spec section
+2.4.1 (DIV-3, omnist-rs#180); the six `alias-expansion` vectors are skipped.
+Today's reader rebuilds a tree from `yaml_rust2`'s event stream, cloning an
+anchor's subtree at each alias, and bounds only the total materialized size
+(100,000 nodes, reported as `document.limit.nodes`).
+
+The one part of D-20 that needs no expansion arithmetic is enforced: an
+anchored definition that refers to itself (`a: &A {b: *A}`, or the
+self-merge `a: &A {<<: *A}`) is rejected with `document.limit.alias-expansion`
+at `$`. `yaml_rust2` emits the alias event while the anchor is still open, so
+the reader sees an alias to an incomplete anchor. Before this change that
+input panicked the library.
 
 ## Native temporal type on read, but no bare-time literal, and a looser input grammar than JSON
 

@@ -1501,3 +1501,107 @@ fn test_read_oml_node_count_limit() {
     let err = read_oml(&past_limit).unwrap_err();
     assert!(err.to_string().contains("maximum node count"));
 }
+
+/// A scanner error surfacing at every position the parser advances from:
+/// each input ends in an unterminated string (or a stray character) that the
+/// scanner rejects only when the parser asks for that token. The parser must
+/// propagate it, with the scanner's own code, from every one of these call
+/// sites.
+#[test]
+fn a_scanner_error_propagates_from_every_parser_position() {
+    let cases: &[(&str, &str)] = &[
+        ("\"abc", "parse.unterminated-string"),
+        ("a: 1\n\"x", "parse.unterminated-string"),
+        ("{\"x", "parse.unterminated-string"),
+        ("a: {\n\"x", "parse.unterminated-string"),
+        ("a: { b: 1 } \"x", "parse.unterminated-string"),
+        ("a: { b: 1\n} \"x", "parse.unterminated-string"),
+        ("a: [\"x", "parse.unterminated-string"),
+        ("a: [\n\"x", "parse.unterminated-string"),
+        ("a: [1\n\"x", "parse.unterminated-string"),
+        ("a: [1, \"x", "parse.unterminated-string"),
+        ("a: [1,\n\"x", "parse.unterminated-string"),
+        ("a: [1] \"x", "parse.unterminated-string"),
+        ("a: [@]", "parse.unexpected-token"),
+        ("a: [1, @]", "parse.unexpected-token"),
+        ("a: 1\n@", "parse.unexpected-token"),
+        ("a: @", "parse.unexpected-token"),
+    ];
+    for (text, code) in cases {
+        let err = crate::oml::read_oml(text).unwrap_err();
+        assert_eq!(err.code, *code, "{text:?}: {err}");
+    }
+}
+
+#[test]
+fn a_missing_comma_in_an_array_is_a_separator_error_only_when_a_separator_stood_there() {
+    let code = |text: &str| crate::oml::read_oml(text).unwrap_err().code;
+    assert_eq!(code("a: [1\n2]"), "parse.separator-in-array");
+    assert_eq!(code("a: [1; 2]"), "parse.separator-in-array");
+    assert_eq!(code("a: [1 ;\n 2]"), "parse.separator-in-array");
+    assert_eq!(code("a: [1 # note\n 2]"), "parse.separator-in-array");
+    assert_eq!(code("a: [1 2]"), "parse.unexpected-token");
+    assert_eq!(code("a: [1 }"), "parse.unexpected-token");
+    assert_eq!(code("a: [1"), "parse.unexpected-token");
+}
+
+/// `(code, "line:col")` of a read failure.
+fn oml_err(text: &str) -> (String, String) {
+    let e = crate::oml::read_oml(text).unwrap_err();
+    let position = e.position();
+    (e.code, position)
+}
+
+#[test]
+fn an_unclosed_array_is_an_unexpected_token_not_a_separator_error() {
+    // The array never closed: nothing follows the newline that could be an
+    // element, so no separator was misused.
+    for text in ["a: [1, 2\n", "a: [1\n", "x: {a: [1, 2\n}"] {
+        let (code, _) = oml_err(text);
+        assert_eq!(code, "parse.unexpected-token", "{text:?}");
+    }
+}
+
+#[test]
+fn a_separator_where_a_comma_belongs_is_a_separator_error_when_an_element_follows() {
+    for (text, pos) in [
+        ("a: [1\n2]", "2:1"),
+        ("a: [1;2]", "1:7"),
+        ("a: [1 ;\n 2]", "2:2"),
+        ("a: [1 # note\n 2]", "2:2"),
+        ("a: [\"x\"\n\"y\"]", "2:1"),
+        ("a: [{b: 1}\n{b: 2}]", "2:1"),
+        ("a: [1\n[2]]", "2:1"),
+        ("x: {a: [1\n2]}", "2:1"),
+    ] {
+        assert_eq!(
+            oml_err(text),
+            ("parse.separator-in-array".to_string(), pos.to_string()),
+            "{text:?}"
+        );
+    }
+    // A nested array is its own error, wherever the separator was.
+    assert_eq!(
+        oml_err("a: [[1\n2]]"),
+        ("parse.nested-array".to_string(), "1:5".to_string())
+    );
+}
+
+#[test]
+fn leftover_content_after_a_top_level_edge_is_trailing_content_but_inside_braces_it_is_not() {
+    let pos = |code: &str, p: &str| (code.to_string(), p.to_string());
+    assert_eq!(
+        oml_err("a: 2024-01-01T99"),
+        pos("parse.trailing-content", "1:14")
+    );
+    assert_eq!(oml_err("a: 1 b: 2"), pos("parse.trailing-content", "1:6"));
+    assert_eq!(
+        oml_err("a: { b: 1 c: 2 }"),
+        pos("parse.unexpected-token", "1:11")
+    );
+    assert_eq!(
+        oml_err("{ b: 1 c: 2 }"),
+        pos("parse.unexpected-token", "1:8")
+    );
+    assert_eq!(oml_err("a: [1] b: 2"), pos("parse.trailing-content", "1:8"));
+}

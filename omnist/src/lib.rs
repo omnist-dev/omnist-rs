@@ -13,6 +13,7 @@
 #![deny(missing_docs)]
 #![warn(rustdoc::all)]
 
+pub(crate) mod bom;
 pub mod document;
 pub mod error;
 pub mod formats;

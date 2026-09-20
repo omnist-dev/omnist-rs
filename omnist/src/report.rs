@@ -215,12 +215,15 @@ pub fn finish_write(
 ///
 /// Mirrors the "{path}: {message}" convention [`WriteError`]'s siblings
 /// (`DocumentError`, `SchemaError`) use for embedding path in text --
-/// `WriteError` itself has no structured `path`/`code` fields (see its doc
-/// comment), so the stable code `write.unsupported-value` is embedded in
-/// the message alongside the path, exactly like every other `WriteError`
-/// site in this crate.
+/// The error carries the structured `path` and `code`
+/// (`write.unsupported-value`) as fields, and the message also embeds them
+/// for human readers.
 pub(crate) fn unsupported_value_error(path: &str, detail: impl std::fmt::Display) -> WriteError {
-    WriteError::new(format!("{path}: write.unsupported-value: {detail}"))
+    WriteError::with_diagnostic(
+        path,
+        "write.unsupported-value",
+        format!("{path}: write.unsupported-value: {detail}"),
+    )
 }
 
 #[cfg(test)]

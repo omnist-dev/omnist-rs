@@ -86,8 +86,9 @@ An invalid document exits `1` and prints every collected `ValidationError`;
 with the same stable, family-namespaced `code` strings
 `schema::ErrorCode::as_str` returns per omnist-spec §8.3.1
 (`"validate.type-mismatch"`, `"validate.cardinality"`, ...; `convert
---schema`'s materialize path uses its own `materialize.*` namespace, e.g.
-`"materialize.inexact-conversion"`).
+--schema`'s materialize path uses the same `validate.*` codes for shape and
+cardinality problems, and `"materialize.inexact-conversion"` for a leaf that
+cannot be converted exactly -- omnist-spec §8.3.5).
 
 ## `infer`
 

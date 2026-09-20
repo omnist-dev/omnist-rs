@@ -730,6 +730,8 @@ everywhere a format name is accepted (`Doc::from_format`/`to_format`/
 ```rust
 pub struct DocumentError {
     pub path: String,
+    /// The spec taxonomy code (`document.*`, `format.*`), when one applies.
+    pub code: Option<String>,
     pub message: String,
 }
 
@@ -742,6 +744,9 @@ pub struct SchemaError {
 pub struct ParseError {
     pub line: usize,
     pub col: usize,
+    /// The spec's `parse.*` code, e.g. `parse.unexpected-token`,
+    /// `parse.codec-syntax`.
+    pub code: String,
     pub message: String,
 }
 
@@ -750,10 +755,19 @@ pub struct FormatError(pub String);
 pub struct WriteError {
     pub message: String,
     pub report: Option<crate::report::WriteReport>,
+    /// The Document path and spec code (`write.unsupported-value`,
+    /// `format.multiple-roots`) of a failure the taxonomy names.
+    pub path: Option<String>,
+    pub code: Option<String>,
 }
 
 impl WriteError {
     pub fn new(message: impl Into<String>) -> Self;
+    pub fn with_diagnostic(
+        path: impl Into<String>,
+        code: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self;
     pub fn with_report(message: impl Into<String>, report: crate::report::WriteReport) -> Self;
     pub fn report(&self) -> Option<&crate::report::WriteReport>;
 }
@@ -787,8 +801,9 @@ hierarchy.
   or an operation that doesn't fit the node it's called on).
 - `SchemaError` -- a Schema definition is invalid (bad cardinality,
   duplicate field label, unknown scalar/ref name).
-- `ParseError` -- OML source text could not be parsed; carries a "line N,
-  col N: msg" position.
+- `ParseError` -- source text could not be parsed (OML, or any of the four
+  codecs); carries a "line N, col N: msg" position, the spec's `parse.*`
+  `code`, and `position()` (the `line:col` text-position path).
 - `FormatError` -- an unknown format name was looked up in the format
   registry.
 - `WriteError` -- an in-memory Document could not be written; carries an

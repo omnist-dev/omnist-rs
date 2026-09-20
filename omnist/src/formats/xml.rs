@@ -83,17 +83,14 @@
 //! and mismatched text stay strings for normal stage-2 validation/materialization
 //! reporting.
 //!
-//! ## All-occurrences sanitization (omnist-ts#36 regression)
+//! ## Illegal characters fail the write (no substitution)
 //!
-//! `omnist-ts#36`: `writeXml`'s `xmlSanitize` used a **non-global** regex,
-//! so only the *first* XML-illegal character in a string was replaced,
-//! emitting malformed XML for any string with more than one. This module's
-//! `xml_sanitize` does not use a substitution regex at all -- it maps
-//! every `char` of the input through `is_xml_illegal_char` individually
-//! (`str::chars().map(...).collect()`), so there is no "first occurrence
-//! only" bug class available in the first place. See
-//! `sanitizes_every_illegal_character_not_just_the_first` for the
-//! regression test with multiple illegal characters in one string.
+//! XML 1.0 cannot represent a raw C0 control character other than tab, LF and
+//! CR (nor U+FFFE/U+FFFF), and there is no substitute spelling, so a string
+//! holding one fails the write unconditionally with `write.unsupported-value`
+//! at that string's path (spec section 8.3.8) -- it is never dropped or
+//! replaced. `scan_xml_cursor` checks every leaf through
+//! `is_xml_illegal_char` before any output exists.
 //!
 //! ## Depth guard reuse
 //!
@@ -219,7 +216,28 @@ fn xml_pretype(node: RawNode, schema: &Schema, ty: &FieldType) -> RawNode {
     }
 }
 
+/// A data-XML profile refusal (`docs/formats/xml.md`, "The data-XML
+/// profile"): the input is well-formed XML that Omnist declines to read.
+///
+/// A refusal is only RECORDED when met (the first one in document order
+/// wins) and raised once the whole document has proved well-formed, so
+/// malformed XML is always `parse.codec-syntax` and never misreported as a
+/// profile refusal (E-24).
+type Refusal = Option<(&'static str, String)>;
+
+fn note_refusal(slot: &mut Refusal, code: &'static str, message: impl Into<String>) {
+    if slot.is_none() {
+        *slot = Some((code, message.into()));
+    }
+}
+
 fn read_xml_raw(text: &str, mut report: Option<&mut WriteReport>) -> Result<RawNode, OmnistError> {
+    // D-15/D-21: one leading BOM is stripped, a second is rejected at 1:1
+    // (`parse.codec-syntax`, E-24). XML 1.0 admits a leading BOM, so
+    // quick_xml would otherwise discard a second one silently.
+    let text = crate::bom::strip_leading_bom(text)
+        .map_err(|_| ParseError::codec_syntax(1, 1, crate::bom::DOUBLED_BOM_MESSAGE))?;
+    let mut refusal: Refusal = None;
     let normalized = normalize_line_endings(text);
     let mut reader = Reader::from_str(&normalized);
     reader.config_mut().trim_text(false);
@@ -234,14 +252,23 @@ fn read_xml_raw(text: &str, mut report: Option<&mut WriteReport>) -> Result<RawN
                 let mut node_count = 1;
                 let tag = local_name(e.name());
                 let path = crate::report::child_path("$", &tag, 0);
+                refuse_attribute_entities(&e, &mut refusal);
                 record_elem_diagnostics(&e, &path, report.as_deref_mut());
-                let content =
-                    parse_content(&mut reader, &normalized, 1, &mut node_count, &path, report)?;
+                let content = parse_content(
+                    &mut reader,
+                    &normalized,
+                    1,
+                    &mut node_count,
+                    &path,
+                    &mut refusal,
+                    report,
+                )?;
                 break RawNode::Edges(vec![(tag, content)]);
             }
             Event::Empty(e) => {
                 let tag = local_name(e.name());
                 let path = crate::report::child_path("$", &tag, 0);
+                refuse_attribute_entities(&e, &mut refusal);
                 record_elem_diagnostics(&e, &path, report.as_deref_mut());
                 break RawNode::Edges(vec![(tag, RawNode::Leaf(Scalar::Str(String::new())))]);
             }
@@ -277,11 +304,12 @@ fn read_xml_raw(text: &str, mut report: Option<&mut WriteReport>) -> Result<RawN
                     "invalid XML: unexpected text outside root element",
                 ));
             }
-            Event::Decl(_)
-            | Event::Comment(_)
-            | Event::PI(_)
-            | Event::DocType(_)
-            | Event::End(_) => {
+            Event::DocType(_) => note_refusal(
+                &mut refusal,
+                "format.dtd-forbidden",
+                "a DOCTYPE declaration is outside the data-XML profile (refused on sight)",
+            ),
+            Event::Decl(_) | Event::Comment(_) | Event::PI(_) | Event::End(_) => {
                 // Legal prolog events: skip.
             }
         }
@@ -319,11 +347,12 @@ fn read_xml_raw(text: &str, mut report: Option<&mut WriteReport>) -> Result<RawN
                     "invalid XML: unexpected text after root element",
                 ));
             }
-            Event::Comment(_)
-            | Event::PI(_)
-            | Event::DocType(_)
-            | Event::Decl(_)
-            | Event::End(_) => {
+            Event::DocType(_) => note_refusal(
+                &mut refusal,
+                "format.dtd-forbidden",
+                "a DOCTYPE declaration is outside the data-XML profile (refused on sight)",
+            ),
+            Event::Comment(_) | Event::PI(_) | Event::Decl(_) | Event::End(_) => {
                 // Legal epilog events: skip.
             }
             Event::Start(_) | Event::Empty(_) => {
@@ -336,6 +365,12 @@ fn read_xml_raw(text: &str, mut report: Option<&mut WriteReport>) -> Result<RawN
         }
     }
 
+    // Well-formedness has been established for the whole document; only now
+    // is a recorded profile refusal raised. Path `$`: the refusal is about
+    // the input as a whole, not one edge (spec, xml profile vectors).
+    if let Some((code, message)) = refusal {
+        return Err(DocumentError::with_code("$", code, message).into());
+    }
     Ok(root_node)
 }
 
@@ -380,11 +415,13 @@ fn parse_content(
     depth: usize,
     node_count: &mut usize,
     path: &str,
+    refusal: &mut Refusal,
     mut report: Option<&mut WriteReport>,
 ) -> Result<RawNode, OmnistError> {
     if depth > MAX_DEPTH {
-        return Err(DocumentError::new(
+        return Err(DocumentError::with_code(
             "$",
+            "document.limit.depth",
             format!("nesting exceeds the maximum depth ({MAX_DEPTH})"),
         )
         .into());
@@ -407,8 +444,9 @@ fn parse_content(
             Event::Start(e) => {
                 *node_count += 1;
                 if *node_count > MAX_NODES {
-                    return Err(DocumentError::new(
+                    return Err(DocumentError::with_code(
                         "$",
+                        "document.limit.nodes",
                         format!("document exceeds the maximum node count ({MAX_NODES})"),
                     )
                     .into());
@@ -419,6 +457,7 @@ fn parse_content(
                     .and_modify(|n| *n += 1)
                     .or_insert(0);
                 let child_path = crate::report::child_path(path, &tag, index);
+                refuse_attribute_entities(&e, refusal);
                 record_elem_diagnostics(&e, &child_path, report.as_deref_mut());
                 let child = parse_content(
                     reader,
@@ -426,6 +465,7 @@ fn parse_content(
                     depth + 1,
                     node_count,
                     &child_path,
+                    refusal,
                     report.as_deref_mut(),
                 )?;
                 children.push((tag, child));
@@ -433,8 +473,9 @@ fn parse_content(
             Event::Empty(e) => {
                 *node_count += 1;
                 if *node_count > MAX_NODES {
-                    return Err(DocumentError::new(
+                    return Err(DocumentError::with_code(
                         "$",
+                        "document.limit.nodes",
                         format!("document exceeds the maximum node count ({MAX_NODES})"),
                     )
                     .into());
@@ -445,6 +486,7 @@ fn parse_content(
                     .and_modify(|n| *n += 1)
                     .or_insert(0);
                 let child_path = crate::report::child_path(path, &tag, index);
+                refuse_attribute_entities(&e, refusal);
                 record_elem_diagnostics(&e, &child_path, report.as_deref_mut());
                 children.push((tag, RawNode::Leaf(Scalar::Str(String::new()))));
             }
@@ -467,7 +509,9 @@ fn parse_content(
                 text.push_str(&decoded);
             }
             Event::GeneralRef(e) => {
-                text.push(resolve_general_ref(reader, source, &e)?);
+                if let Some(c) = resolve_general_ref(reader, source, &e, refusal)? {
+                    text.push(c);
+                }
             }
             Event::CData(e) => {
                 text.push_str(&String::from_utf8_lossy(e.as_ref()));
@@ -485,12 +529,11 @@ fn parse_content(
     }
     if !children.is_empty() {
         if !text.trim().is_empty() {
-            return Err(located_error(
-                reader,
-                source,
-                "invalid XML: mixed content (text alongside child elements) is outside the \
-                 data-XML profile",
-            ));
+            note_refusal(
+                refusal,
+                "format.mixed-content",
+                "mixed content (text alongside child elements) is outside the data-XML profile",
+            );
         }
         Ok(RawNode::Edges(children))
     } else {
@@ -505,7 +548,7 @@ fn parse_content(
 fn located_error(reader: &Reader<&[u8]>, source: &str, message: &str) -> OmnistError {
     let pos = (reader.buffer_position() as usize).min(source.len());
     let (line, col) = line_col_bytes(source, pos);
-    ParseError::new(line, col, message).into()
+    ParseError::codec_syntax(line, col, message).into()
 }
 
 /// Records `format.attribute-dropped` and `format.namespace-dropped`
@@ -540,6 +583,40 @@ fn record_elem_diagnostics(
     }
 }
 
+/// The data-XML profile refuses an entity reference other than the five
+/// predefined ones "on sight, not on use", wherever it stands -- an
+/// attribute value included, although attributes are otherwise dropped on
+/// read. quick_xml reports entity references as their own events only in
+/// text, so attribute values are scanned here. A numeric character reference
+/// and the five predefined entities stay legal. The refusal is only
+/// RECORDED (raised after well-formedness, like the others); an attribute
+/// quick_xml cannot parse is ignored here because the element's own
+/// well-formedness is checked by the reader.
+fn refuse_attribute_entities(e: &quick_xml::events::BytesStart<'_>, refusal: &mut Refusal) {
+    for attr in e.attributes().filter_map(Result::ok) {
+        let value = String::from_utf8_lossy(&attr.value);
+        let mut rest: &str = &value;
+        while let Some(at) = rest.find('&') {
+            rest = &rest[at + 1..];
+            let Some(end) = rest.find(';') else { break };
+            let name = &rest[..end];
+            if !name.starts_with('#') && !matches!(name, "lt" | "gt" | "amp" | "apos" | "quot") {
+                note_refusal(
+                    refusal,
+                    "format.entity-forbidden",
+                    format!(
+                        "entity reference '&{name};' in an attribute value is outside the \
+                         data-XML profile (only the five predefined XML entities and numeric \
+                         character references are read)"
+                    ),
+                );
+                return;
+            }
+            rest = &rest[end + 1..];
+        }
+    }
+}
+
 /// The local (unprefixed) part of a tag name -- see this module's doc
 /// comment on namespace handling.
 fn local_name(name: quick_xml::name::QName) -> String {
@@ -560,7 +637,7 @@ fn normalize_line_endings(s: &str) -> String {
 fn xml_parse_error(reader: &Reader<&[u8]>, source: &str, e: &quick_xml::Error) -> OmnistError {
     let pos = (reader.buffer_position() as usize).min(source.len());
     let (line, col) = line_col_bytes(source, pos);
-    ParseError::new(line, col, format!("invalid XML: {e}")).into()
+    ParseError::codec_syntax(line, col, format!("invalid XML: {e}")).into()
 }
 
 /// Resolves an `Event::GeneralRef` (a `&...;` entity or character
@@ -571,38 +648,42 @@ fn xml_parse_error(reader: &Reader<&[u8]>, source: &str, e: &quick_xml::Error) -
 /// DTD support, so no other named entity can ever legitimately appear
 /// (see this module's doc comment on why that's a security feature, not
 /// a gap).
+///
+/// An entity reference outside XML's five predefined ones is a data-XML
+/// profile refusal (`format.entity-forbidden`), not malformed input: it is
+/// recorded in `refusal` (raised once the document proves well-formed) and
+/// `Ok(None)` is returned so the scan continues.
 fn resolve_general_ref(
     reader: &Reader<&[u8]>,
     source: &str,
     e: &quick_xml::events::BytesRef<'_>,
-) -> Result<char, OmnistError> {
+    refusal: &mut Refusal,
+) -> Result<Option<char>, OmnistError> {
     if let Some(ch) = e
         .resolve_char_ref()
         .map_err(|err| xml_parse_error(reader, source, &err))?
     {
-        return Ok(ch);
+        return Ok(Some(ch));
     }
     let name = e
         .decode()
         .expect("Reader::from_str fixes the decoder to UTF-8; decode() cannot fail");
     match name.as_ref() {
-        "lt" => Ok('<'),
-        "gt" => Ok('>'),
-        "amp" => Ok('&'),
-        "apos" => Ok('\''),
-        "quot" => Ok('"'),
+        "lt" => Ok(Some('<')),
+        "gt" => Ok(Some('>')),
+        "amp" => Ok(Some('&')),
+        "apos" => Ok(Some('\'')),
+        "quot" => Ok(Some('"')),
         other => {
-            let pos = (reader.buffer_position() as usize).min(source.len());
-            let (line, col) = line_col_bytes(source, pos);
-            Err(ParseError::new(
-                line,
-                col,
+            note_refusal(
+                refusal,
+                "format.entity-forbidden",
                 format!(
-                    "invalid XML: unrecognized entity reference '&{other};' (only the five \
-                     predefined XML entities are supported; quick_xml has no DTD support)"
+                    "entity reference '&{other};' is outside the data-XML profile (only the \
+                     five predefined XML entities and numeric character references are read)"
                 ),
-            )
-            .into())
+            );
+            Ok(None)
         }
     }
 }
@@ -621,6 +702,9 @@ pub fn write_xml(
     let Ok(edges) = root.internal_edges() else {
         return Err(single_root_error());
     };
+    if edges.len() > 1 {
+        return Err(multiple_roots_error());
+    }
     if edges.len() != 1 {
         return Err(single_root_error());
     }
@@ -634,6 +718,16 @@ pub fn write_xml(
         out.pop();
     }
     crate::report::finish_write(out, rep, strict, report)
+}
+
+/// `format.multiple-roots` (spec section 8.3.8): a Document with several
+/// top-level edges cannot be written as XML. Path `$`, the whole Document.
+fn multiple_roots_error() -> WriteError {
+    WriteError::with_diagnostic(
+        "$",
+        "format.multiple-roots",
+        "XML needs exactly one document element; the root node has several top-level edges (a multi-rooted Document)",
+    )
 }
 
 fn single_root_error() -> WriteError {
@@ -742,6 +836,24 @@ fn scan_xml_cursor(
         }
         Err(_) => {
             let scalar = cursor.value().unwrap();
+            // A string holding a character XML 1.0 cannot represent (a C0
+            // control other than tab/LF/CR, U+FFFE, U+FFFF) fails the write
+            // unconditionally: there is no substitute spelling (spec
+            // section 8.3.8, the string-illegal-char condition).
+            if let Scalar::Str(s) = scalar
+                && let Some(bad) = s.chars().find(|&c| is_xml_illegal_char(c))
+            {
+                let detail = format!(
+                    "string contains U+{:04X}, which XML 1.0 cannot represent and has no \
+                     substitute spelling",
+                    bad as u32
+                );
+                if fail_fast {
+                    return Err(crate::report::unsupported_value_error(path, detail));
+                }
+                rep.add(path, "write.unsupported-value", detail, Severity::Error);
+                return Ok(());
+            }
             scan_leaf(scalar, path, rep);
         }
     }
@@ -777,25 +889,13 @@ fn scan_leaf(scalar: &Scalar, path: &str, rep: &mut WriteReport) {
         Scalar::Str(_) => {}
     }
     // `string.cr_normalized` retired (spec Sec8.3.8, issue #162): a
-    // literal '\r' is no longer written raw and reported lossy -- it's
+    // literal CR is no longer written raw and reported lossy -- it is
     // escaped as the numeric character reference `&#13;`, which is exempt
     // from XML's mandatory line-ending normalization on parse and
-    // round-trips losslessly (confirmed live, both a bare '\r' and a
-    // '\r\n' sequence survive intact). See `xml_escape_text`. Nothing left
-    // to report here for '\r' -- the write is now genuinely lossless; only
-    // the illegal-control-character case below still needs reporting.
-    if let Scalar::Str(v) = scalar
-        && v.chars().any(is_xml_illegal_char)
-    {
-        rep.add(
-            path,
-            "string.illegal_xml_char",
-            "string contains a character XML 1.0 cannot represent (e.g. a C0 control other \
-             than tab/LF/CR); it is replaced with U+FFFD on write so the output stays \
-             well-formed",
-            Severity::Error,
-        );
-    }
+    // round-trips losslessly. See `xml_escape_text`. Nothing left to
+    // report here for CR. A string holding a character XML cannot
+    // represent never reaches this function: `scan_xml_cursor` fails the
+    // write (or records it, for `check_xml`) before calling it.
 }
 
 /// `tag` is always already a valid XML name by the time this runs -- the
@@ -835,7 +935,7 @@ fn write_element(tag: &str, content: &Cursor, level: usize, out: &mut String) {
         ),
         Err(_) => {
             let scalar = content.value().unwrap();
-            let text = xml_sanitize(&xml_text(scalar));
+            let text = xml_text(scalar);
             if text.is_empty() {
                 out.push_str(" />\n");
             } else {
@@ -885,20 +985,6 @@ fn xml_text(scalar: &Scalar) -> String {
 /// issue #46).
 fn write_float_text(x: f64) -> String {
     float_fmt::float_to_string(x, "nan", "inf", "-inf")
-}
-
-/// Replaces every character XML 1.0 cannot represent with U+FFFD --
-/// see this module's doc comment on the omnist-ts#36 all-occurrences fix.
-fn xml_sanitize(text: &str) -> String {
-    text.chars()
-        .map(|c| {
-            if is_xml_illegal_char(c) {
-                '\u{FFFD}'
-            } else {
-                c
-            }
-        })
-        .collect()
 }
 
 /// XML 1.0's character-data legality rule (tab/LF/CR plus U+0020-U+D7FF,

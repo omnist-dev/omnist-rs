@@ -184,6 +184,10 @@ struct Builder {
     /// ignored (no more work is done building an already-rejected tree) and
     /// this is surfaced as a [`ParseError`] once parsing finishes.
     error: Option<ParseError>,
+    /// Set when an alias refers to an anchor that is not complete yet (a
+    /// self-referential definition, D-20): `document.limit.alias-expansion`
+    /// at `$`. Like `error`, once set the receiver stops building.
+    self_reference: Option<DocumentError>,
 }
 
 impl Builder {
@@ -195,6 +199,7 @@ impl Builder {
             docs: Vec::new(),
             node_count: 0,
             error: None,
+            self_reference: None,
         }
     }
 
@@ -212,6 +217,7 @@ impl Builder {
             self.error = Some(ParseError::new(
                 mark.line(),
                 mark.col() + 1,
+                "document.limit.nodes",
                 format!(
                     "invalid YAML: document materializes more than \
                      {MAX_MATERIALIZED_NODES} nodes (security: unbounded anchor/alias \
@@ -254,22 +260,19 @@ impl Builder {
         }
     }
 
-    /// Handles one parser event. `Event::Alias` never fails here: live-
-    /// confirmed against `yaml_rust2::YamlLoader::load_from_str` (see this
-    /// module's doc comment) -- the crate's own scanner already rejects an
-    /// alias whose anchor was never defined (`ScanError: found unknown
-    /// anchor`, surfaced through [`scan_error_to_parse_error`] before this
-    /// receiver ever runs) for *every* input that reaches an event receiver
-    /// at all, so an `anchor_map` miss inside `on_event` is unreachable in
-    /// practice -- `.expect()` documents that invariant instead of leaving a
-    /// structurally-dead error branch, matching `json.rs`'s identical
-    /// surrogate-pair `.expect()` precedent.
+    /// Handles one parser event. The crate's own scanner rejects an alias
+    /// whose anchor was never defined (`ScanError: found unknown anchor`,
+    /// surfaced through [`scan_error_to_parse_error`]), but it DOES emit the
+    /// `Event::Alias` for a reference made inside its own still-open anchor
+    /// (`a: &A\n  b: *A`): the anchor map has no entry yet. That is a
+    /// self-referential definition, recorded in `self_reference` (D-20) and
+    /// never materialized.
     fn on_event_impl(&mut self, ev: Event, mark: Marker) {
         // Once tripped, stop doing any further tree-building work -- the
         // document is already rejected, and continuing to clone/insert
         // subsequent alias references would just keep paying the same
         // amplified cost this guard exists to avoid.
-        if self.error.is_some() {
+        if self.error.is_some() || self.self_reference.is_some() {
             return;
         }
         match ev {
@@ -316,13 +319,23 @@ impl Builder {
                 // exponential "billion laughs" pattern through uncounted.
                 // The borrow of `anchor_map` ends with this block, so
                 // `self.charge` below can take `&mut self` freely.
-                let n = {
-                    let referenced = self.anchor_map.get(&id).expect(
-                        "yaml_rust2's scanner rejects an alias to an undefined anchor before \
-                         this receiver ever runs -- see on_event_impl's doc comment",
-                    );
-                    count_nodes(referenced)
+                // An alias to an anchor with no entry yet: yaml_rust2 rejects an
+                // alias to a NEVER-defined anchor itself, but it emits the
+                // Alias event for a reference made while its own anchor is
+                // still being built (`a: &A\n  b: *A`, `a: &A\n  <<: *A`).
+                // That is a self-referential definition, which D-20 says MUST
+                // be rejected with `document.limit.alias-expansion` (path `$`,
+                // E-4a) and never materialized.
+                let Some(referenced) = self.anchor_map.get(&id) else {
+                    self.self_reference = Some(DocumentError::with_code(
+                        "$",
+                        "document.limit.alias-expansion",
+                        "an alias refers to an anchor that is not yet complete: a \
+                         self-referential definition has unbounded expansion (D-20)",
+                    ));
+                    return;
                 };
+                let n = count_nodes(referenced);
                 if !self.charge(n, mark) {
                     return;
                 }
@@ -345,7 +358,7 @@ impl MarkedEventReceiver for Builder {
 
 fn scan_error_to_parse_error(e: &ScanError) -> ParseError {
     let mark = e.marker();
-    ParseError::new(mark.line(), mark.col() + 1, format!("invalid YAML: {e}"))
+    ParseError::codec_syntax(mark.line(), mark.col() + 1, format!("invalid YAML: {e}"))
 }
 
 /// Parse YAML text into a [`Doc`].
@@ -359,16 +372,25 @@ fn scan_error_to_parse_error(e: &ScanError) -> ParseError {
 /// [`crate::error::DocumentError`] (via [`Doc::of`]), matching `json.rs`'s
 /// identical `read_json` behavior.
 pub fn read_yaml(text: &str) -> Result<Doc, OmnistError> {
+    // D-15/D-21: one leading BOM is stripped, a second is rejected at 1:1.
+    // Without this pre-check yaml-rust2 would swallow (or keep) the second
+    // mark silently; YAML 1.2 itself admits a leading BOM, so the library
+    // cannot be relied on to fail (D-21).
+    let text = crate::bom::strip_leading_bom(text)
+        .map_err(|_| ParseError::codec_syntax(1, 1, crate::bom::DOUBLED_BOM_MESSAGE))?;
     let mut parser = Parser::new(text.chars());
     let mut builder = Builder::new();
     parser
         .load(&mut builder, true)
         .map_err(|e| scan_error_to_parse_error(&e))?;
+    if let Some(e) = builder.self_reference {
+        return Err(e.into());
+    }
     if let Some(e) = builder.error {
         return Err(e.into());
     }
     if builder.docs.len() > 1 {
-        return Err(ParseError::new(
+        return Err(ParseError::codec_syntax(
             1,
             1,
             "invalid YAML: expected a single document in the stream, found more than one",
@@ -399,40 +421,57 @@ fn resolve_merges(node: &Raw, depth: usize) -> Result<Raw, OmnistError> {
             }
             Ok(Raw::Sequence(out))
         }
-        Raw::Mapping(entries) => {
-            let mut merged_from: Vec<(Raw, Raw)> = Vec::new();
-            let mut own: Vec<(Raw, Raw)> = Vec::new();
-            for (k, v) in entries {
-                if is_merge_key(k) {
-                    for (mk, mv) in merge_source_entries(v, depth)? {
-                        merged_from.push((mk, mv));
-                    }
-                } else {
-                    own.push((resolve_merges(k, depth + 1)?, resolve_merges(v, depth + 1)?));
-                }
-            }
-            // Explicit keys take precedence over merged-in ones (an explicit
-            // duplicate key among `own` is left untouched here -- last-wins
-            // for those is `raw_to_value`'s `IndexMap::insert`'s job, exactly
-            // like `json.rs`'s reader). Among the merge sources themselves,
-            // first-listed source wins a collision (YAML merge spec).
-            let own_labels: std::collections::HashSet<&str> =
-                own.iter().filter_map(|(k, _)| scalar_key_text(k)).collect();
-            let mut merged_seen: std::collections::HashSet<&str> =
-                std::collections::HashSet::with_capacity(merged_from.len());
-            let mut result = own.clone();
-            for (k, v) in &merged_from {
-                let label = scalar_key_text(k);
-                if let Some(label) = label
-                    && (own_labels.contains(label) || !merged_seen.insert(label))
-                {
-                    continue;
-                }
-                result.push((k.clone(), v.clone()));
-            }
-            Ok(Raw::Mapping(result))
+        Raw::Mapping(entries) => Ok(Raw::Mapping(resolve_mapping(entries, depth)?)),
+    }
+}
+
+/// Resolves one mapping's entries, flattening every `<<` merge key in.
+///
+/// The order is normative (`docs/formats/yaml.md`, "Merged entries come
+/// first, in source order"): the merged entries come first, in the order the
+/// aliases are written (`<<: [*a, *b]` is `a`'s entries, then `b`'s -- never
+/// reversed, whatever a YAML library's own constructor does), then the
+/// referring mapping's own entries. Key collisions resolve to ONE edge at the
+/// position of the key's first occurrence in that order: it carries the
+/// referring mapping's own value when the mapping writes one (whether the
+/// local key is written before or after the `<<`), otherwise the value from
+/// the EARLIEST alias that supplies it.
+fn resolve_mapping(entries: &[(Raw, Raw)], depth: usize) -> Result<Vec<(Raw, Raw)>, OmnistError> {
+    let mut merged_from: Vec<(Raw, Raw)> = Vec::new();
+    let mut own: Vec<(Raw, Raw)> = Vec::new();
+    for (k, v) in entries {
+        if is_merge_key(k) {
+            merged_from.extend(merge_source_entries(v, depth)?);
+        } else {
+            own.push((resolve_merges(k, depth + 1)?, resolve_merges(v, depth + 1)?));
         }
     }
+    // Merged entries, first supplier of a key wins (this also makes a
+    // repeated alias in one sequence contribute once).
+    let mut result: Vec<(Raw, Raw)> = Vec::with_capacity(merged_from.len() + own.len());
+    let mut position: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::with_capacity(merged_from.len());
+    for (k, v) in merged_from {
+        match scalar_key_text(&k) {
+            Some(label) if position.contains_key(label) => {}
+            Some(label) => {
+                position.insert(label.to_string(), result.len());
+                result.push((k, v));
+            }
+            None => result.push((k, v)),
+        }
+    }
+    // The mapping's own entries: a key a merge already supplied keeps the
+    // merged key's position but takes the local value; any other key is
+    // appended. An explicit duplicate among the own keys is left for
+    // `raw_to_value`'s last-wins, exactly like `json.rs`'s reader.
+    for (k, v) in own {
+        match scalar_key_text(&k).and_then(|label| position.get(label).copied()) {
+            Some(at) => result[at].1 = v,
+            None => result.push((k, v)),
+        }
+    }
+    Ok(result)
 }
 
 /// A merge key's own key text, for de-duplication purposes -- non-scalar
@@ -459,16 +498,9 @@ fn is_merge_key(k: &Raw) -> bool {
 /// this reader guards against -- is a clean [`ParseError`], never a panic.
 fn merge_source_entries(v: &Raw, depth: usize) -> Result<Vec<(Raw, Raw)>, OmnistError> {
     match v {
-        Raw::Mapping(entries) => {
-            let mut out = Vec::with_capacity(entries.len());
-            for (k, val) in entries {
-                out.push((
-                    resolve_merges(k, depth + 1)?,
-                    resolve_merges(val, depth + 1)?,
-                ));
-            }
-            Ok(out)
-        }
+        // A merged mapping is itself resolved first, so a nested `<<` inside
+        // it flattens recursively and the grandparent's entries arrive first.
+        Raw::Mapping(entries) => resolve_mapping(entries, depth + 1),
         Raw::Sequence(items) => {
             let mut out = Vec::new();
             for item in items {
@@ -476,7 +508,7 @@ fn merge_source_entries(v: &Raw, depth: usize) -> Result<Vec<(Raw, Raw)>, Omnist
             }
             Ok(out)
         }
-        Raw::Scalar(..) => Err(ParseError::new(
+        Raw::Scalar(..) => Err(ParseError::codec_syntax(
             1,
             1,
             "invalid YAML: merge key '<<' requires a mapping or a sequence of mappings, \
@@ -515,8 +547,15 @@ fn raw_to_value(node: &Raw) -> Result<Value, OmnistError> {
                     Raw::Scalar(s, style, tag) => match scalar_to_value(s, *style, tag.as_ref())? {
                         Value::Str(s) => s,
                         other => {
-                            return Err(DocumentError::new(
+                            // `document.unlabeled-element`: the key has no
+                            // string label to become an edge. The path is
+                            // `$` at every depth -- this stage works on the
+                            // untyped Raw tree and does not track Document
+                            // paths (see the note on nested keys in the
+                            // changelog).
+                            return Err(DocumentError::with_code(
                                 "$",
+                                "document.unlabeled-element",
                                 format!(
                                     "object key {} is not a string",
                                     describe_non_string_key(&other)
@@ -526,7 +565,7 @@ fn raw_to_value(node: &Raw) -> Result<Value, OmnistError> {
                         }
                     },
                     _ => {
-                        return Err(ParseError::new(
+                        return Err(ParseError::codec_syntax(
                             1,
                             1,
                             "invalid YAML: a mapping key must be a scalar",
@@ -613,7 +652,7 @@ fn explicit_tag_to_value(text: &str, suffix: &str) -> Result<Value, ParseError> 
         "bool" => match text.to_ascii_lowercase().as_str() {
             "true" | "yes" | "on" => Ok(Value::Bool(true)),
             "false" | "no" | "off" => Ok(Value::Bool(false)),
-            _ => Err(ParseError::new(
+            _ => Err(ParseError::codec_syntax(
                 1,
                 1,
                 format!("invalid YAML: {text:?} is not a valid !!bool value"),
@@ -621,7 +660,7 @@ fn explicit_tag_to_value(text: &str, suffix: &str) -> Result<Value, ParseError> 
         },
         "int" => parse_int_literal(text),
         "float" => parse_float_literal(text),
-        other => Err(ParseError::new(
+        other => Err(ParseError::codec_syntax(
             1,
             1,
             format!("invalid YAML: unsupported explicit tag '!!{other}'"),
@@ -738,6 +777,7 @@ fn parse_sexagesimal_int(text: &str) -> Result<Value, ParseError> {
         return Err(ParseError::new(
             1,
             1,
+            "document.limit.int-digits",
             over_cap_message("invalid YAML: ", digit_count),
         ));
     }
@@ -766,11 +806,20 @@ fn parse_int_literal(text: &str) -> Result<Value, ParseError> {
         return Err(ParseError::new(
             1,
             1,
+            "document.limit.int-digits",
             over_cap_message("invalid YAML: ", digits.len()),
         ));
     }
-    let magnitude = BigInt::parse_bytes(digits.as_bytes(), radix)
-        .expect("is_int_literal_shape guarantees valid digits for the detected radix");
+    // Implicit resolution only calls this after `is_int_literal_shape` has
+    // confirmed the shape, but an EXPLICIT `!!int` tag reaches it with any
+    // text at all (`a: !!int x`), so the digits are not guaranteed valid.
+    let Some(magnitude) = BigInt::parse_bytes(digits.as_bytes(), radix) else {
+        return Err(ParseError::codec_syntax(
+            1,
+            1,
+            format!("invalid YAML: {text:?} is not a valid !!int value"),
+        ));
+    };
     let value = if neg { -magnitude } else { magnitude };
     Ok(Value::Int(value))
 }
@@ -803,7 +852,7 @@ fn parse_float_literal(text: &str) -> Result<Value, ParseError> {
     }
     let cleaned: String = text.chars().filter(|&c| c != '_').collect();
     cleaned.parse::<f64>().map(Value::Float).map_err(|_| {
-        ParseError::new(
+        ParseError::codec_syntax(
             1,
             1,
             format!("invalid YAML: invalid float literal {text:?}"),
@@ -842,7 +891,7 @@ fn normalize_timestamp(text: &str) -> Result<Option<String>, ParseError> {
         return Ok(None);
     };
     let bad = |what: &str| {
-        Err(ParseError::new(
+        Err(ParseError::codec_syntax(
             1,
             1,
             format!("invalid YAML: {text:?} is timestamp-shaped but names an invalid {what}"),
@@ -1134,6 +1183,14 @@ fn needs_quoting(s: &str) -> bool {
     if s.is_empty() || s.contains('\u{0085}') || s.contains('\n') {
         return true;
     }
+    // A string that starts with a byte-order mark is always quoted (D-15,
+    // D-21): written bare as the very first key or the whole document it
+    // would put a leading BOM at offset zero of the output, which a writer
+    // MUST NOT emit and which a reader strips (changing the label) or, doubled,
+    // rejects.
+    if s.starts_with(crate::bom::BOM) {
+        return true;
+    }
     if matches!(resolve_plain_scalar(s), Ok(Value::Str(ref t)) if t == s) {
         // Round-trips as the identical plain string -- but a leading char /
         // embedded token that's YAML-significant still needs quoting even
@@ -1247,6 +1304,22 @@ mod tests {
             *root.get_one("g").unwrap().value().unwrap(),
             Scalar::Str("n".to_string())
         );
+    }
+
+    #[test]
+    fn a_string_starting_with_a_bom_is_quoted_so_the_output_never_leads_with_one() {
+        let doc = doc_of(obj(vec![(
+            "\u{FEFF}k",
+            Value::Str("\u{FEFF}v".to_string()),
+        )]));
+        let text = write_yaml(&doc, false, None).unwrap();
+        assert!(text.starts_with('"'), "{text:?}");
+        assert!(!text.starts_with('\u{FEFF}'));
+        // It reads back to the same Document (the mark survives inside quotes).
+        assert_eq!(read_yaml(&text).unwrap().to_raw(), doc.to_raw());
+        // A mark that is not first is not quoted for its sake.
+        let doc = doc_of(obj(vec![("a\u{FEFF}b", Value::Str("x".to_string()))]));
+        assert_eq!(write_yaml(&doc, false, None).unwrap(), "a\u{FEFF}b: x");
     }
 
     #[test]
@@ -2527,15 +2600,60 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "yaml_rust2's scanner rejects an alias to an undefined anchor")]
-    fn builder_alias_to_an_unknown_anchor_panics() {
-        // Calling `on_event_impl` directly bypasses `yaml_rust2`'s own
-        // scanner validation (which -- live-confirmed via
-        // `yaml_rust2::YamlLoader::load_from_str("a: *nope\n")` -- always
-        // catches this first for real input), exercising the `.expect()`'s
-        // documented invariant on purpose.
+    fn builder_alias_to_an_anchor_with_no_entry_is_a_document_error_not_a_panic() {
+        // Calling `on_event_impl` directly with an id that has no entry: the
+        // same state a self-referential definition reaches through real
+        // input (see `self_referential_anchors_are_rejected_not_panicked`).
         let mut b = Builder::new();
         b.on_event_impl(Event::Alias(999), test_marker());
+        let e = b.self_reference.as_ref().expect("recorded");
+        assert_eq!(e.code.as_deref(), Some("document.limit.alias-expansion"));
+        assert_eq!(e.path, "$");
+        // Once set, further events are ignored.
+        b.on_event_impl(Event::Alias(999), test_marker());
+    }
+
+    #[test]
+    fn an_explicit_int_tag_on_non_integer_text_is_a_syntax_error_not_a_panic() {
+        for src in [
+            "a: !!int x\n",
+            "a: !!int -\n",
+            "a: !!int 0xZZ\n",
+            "a: !!int ''\n",
+        ] {
+            let e = read_yaml(src).unwrap_err();
+            assert!(
+                matches!(&e, OmnistError::Parse(p) if p.code == "parse.codec-syntax"),
+                "{src:?}: {e:?}"
+            );
+        }
+        assert_eq!(
+            read_yaml("a: !!int 0x1f\n").unwrap().to_raw(),
+            crate::document::RawNode::Edges(vec![(
+                "a".to_string(),
+                crate::document::RawNode::Leaf(Scalar::Int(31.into()))
+            )])
+        );
+    }
+
+    #[test]
+    fn self_referential_anchors_are_rejected_not_panicked() {
+        // Both inputs used to panic the library on an `.expect()`.
+        for src in [
+            "a: &A\n  b: *A\n",
+            "a: &A\n  <<: *A\n  x: 1\n",
+            "a: &A [*A]\n",
+            "a: &A\n  b: &B\n    c: *A\n",
+        ] {
+            let e = read_yaml(src).unwrap_err();
+            assert!(
+                matches!(&e, OmnistError::Document(d)
+                    if d.code.as_deref() == Some("document.limit.alias-expansion") && d.path == "$"),
+                "{src:?}: {e:?}"
+            );
+        }
+        // A completed anchor reused afterwards is still fine.
+        assert!(read_yaml("a: &A\n  b: 1\nc: *A\n").is_ok());
     }
 
     // -------------------------------------------------- coverage: issue #42 node-count guard
@@ -2677,8 +2795,11 @@ child:
         let root = doc.root();
         let child = root.get_one("child").unwrap();
         let labels = child.labels();
-        // own keys first ("own", "a"), then merged keys in order ("b", "dup", "c")
-        assert_eq!(labels, vec!["own", "a", "b", "dup", "c"]);
+        // Merged entries come first, in source order (b1's a, b, dup, then
+        // b2's c -- its b and dup are collisions the earlier alias wins); the
+        // local `a` keeps the merged `a`'s position with the local value; the
+        // non-colliding own key `own` follows.
+        assert_eq!(labels, vec!["a", "b", "dup", "c", "own"]);
         assert_eq!(
             *child.get_one("a").unwrap().value().unwrap(),
             Scalar::Int((100).into())
