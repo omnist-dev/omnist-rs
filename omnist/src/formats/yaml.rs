@@ -184,6 +184,10 @@ struct Builder {
     /// ignored (no more work is done building an already-rejected tree) and
     /// this is surfaced as a [`ParseError`] once parsing finishes.
     error: Option<ParseError>,
+    /// Set when an alias refers to an anchor that is not complete yet (a
+    /// self-referential definition, D-20): `document.limit.alias-expansion`
+    /// at `$`. Like `error`, once set the receiver stops building.
+    self_reference: Option<DocumentError>,
 }
 
 impl Builder {
@@ -195,6 +199,7 @@ impl Builder {
             docs: Vec::new(),
             node_count: 0,
             error: None,
+            self_reference: None,
         }
     }
 
@@ -255,22 +260,19 @@ impl Builder {
         }
     }
 
-    /// Handles one parser event. `Event::Alias` never fails here: live-
-    /// confirmed against `yaml_rust2::YamlLoader::load_from_str` (see this
-    /// module's doc comment) -- the crate's own scanner already rejects an
-    /// alias whose anchor was never defined (`ScanError: found unknown
-    /// anchor`, surfaced through [`scan_error_to_parse_error`] before this
-    /// receiver ever runs) for *every* input that reaches an event receiver
-    /// at all, so an `anchor_map` miss inside `on_event` is unreachable in
-    /// practice -- `.expect()` documents that invariant instead of leaving a
-    /// structurally-dead error branch, matching `json.rs`'s identical
-    /// surrogate-pair `.expect()` precedent.
+    /// Handles one parser event. The crate's own scanner rejects an alias
+    /// whose anchor was never defined (`ScanError: found unknown anchor`,
+    /// surfaced through [`scan_error_to_parse_error`]), but it DOES emit the
+    /// `Event::Alias` for a reference made inside its own still-open anchor
+    /// (`a: &A\n  b: *A`): the anchor map has no entry yet. That is a
+    /// self-referential definition, recorded in `self_reference` (D-20) and
+    /// never materialized.
     fn on_event_impl(&mut self, ev: Event, mark: Marker) {
         // Once tripped, stop doing any further tree-building work -- the
         // document is already rejected, and continuing to clone/insert
         // subsequent alias references would just keep paying the same
         // amplified cost this guard exists to avoid.
-        if self.error.is_some() {
+        if self.error.is_some() || self.self_reference.is_some() {
             return;
         }
         match ev {
@@ -317,13 +319,23 @@ impl Builder {
                 // exponential "billion laughs" pattern through uncounted.
                 // The borrow of `anchor_map` ends with this block, so
                 // `self.charge` below can take `&mut self` freely.
-                let n = {
-                    let referenced = self.anchor_map.get(&id).expect(
-                        "yaml_rust2's scanner rejects an alias to an undefined anchor before \
-                         this receiver ever runs -- see on_event_impl's doc comment",
-                    );
-                    count_nodes(referenced)
+                // An alias to an anchor with no entry yet: yaml_rust2 rejects an
+                // alias to a NEVER-defined anchor itself, but it emits the
+                // Alias event for a reference made while its own anchor is
+                // still being built (`a: &A\n  b: *A`, `a: &A\n  <<: *A`).
+                // That is a self-referential definition, which D-20 says MUST
+                // be rejected with `document.limit.alias-expansion` (path `$`,
+                // E-4a) and never materialized.
+                let Some(referenced) = self.anchor_map.get(&id) else {
+                    self.self_reference = Some(DocumentError::with_code(
+                        "$",
+                        "document.limit.alias-expansion",
+                        "an alias refers to an anchor that is not yet complete: a \
+                         self-referential definition has unbounded expansion (D-20)",
+                    ));
+                    return;
                 };
+                let n = count_nodes(referenced);
                 if !self.charge(n, mark) {
                     return;
                 }
@@ -371,6 +383,9 @@ pub fn read_yaml(text: &str) -> Result<Doc, OmnistError> {
     parser
         .load(&mut builder, true)
         .map_err(|e| scan_error_to_parse_error(&e))?;
+    if let Some(e) = builder.self_reference {
+        return Err(e.into());
+    }
     if let Some(e) = builder.error {
         return Err(e.into());
     }
@@ -795,8 +810,16 @@ fn parse_int_literal(text: &str) -> Result<Value, ParseError> {
             over_cap_message("invalid YAML: ", digits.len()),
         ));
     }
-    let magnitude = BigInt::parse_bytes(digits.as_bytes(), radix)
-        .expect("is_int_literal_shape guarantees valid digits for the detected radix");
+    // Implicit resolution only calls this after `is_int_literal_shape` has
+    // confirmed the shape, but an EXPLICIT `!!int` tag reaches it with any
+    // text at all (`a: !!int x`), so the digits are not guaranteed valid.
+    let Some(magnitude) = BigInt::parse_bytes(digits.as_bytes(), radix) else {
+        return Err(ParseError::codec_syntax(
+            1,
+            1,
+            format!("invalid YAML: {text:?} is not a valid !!int value"),
+        ));
+    };
     let value = if neg { -magnitude } else { magnitude };
     Ok(Value::Int(value))
 }
@@ -2577,15 +2600,60 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "yaml_rust2's scanner rejects an alias to an undefined anchor")]
-    fn builder_alias_to_an_unknown_anchor_panics() {
-        // Calling `on_event_impl` directly bypasses `yaml_rust2`'s own
-        // scanner validation (which -- live-confirmed via
-        // `yaml_rust2::YamlLoader::load_from_str("a: *nope\n")` -- always
-        // catches this first for real input), exercising the `.expect()`'s
-        // documented invariant on purpose.
+    fn builder_alias_to_an_anchor_with_no_entry_is_a_document_error_not_a_panic() {
+        // Calling `on_event_impl` directly with an id that has no entry: the
+        // same state a self-referential definition reaches through real
+        // input (see `self_referential_anchors_are_rejected_not_panicked`).
         let mut b = Builder::new();
         b.on_event_impl(Event::Alias(999), test_marker());
+        let e = b.self_reference.as_ref().expect("recorded");
+        assert_eq!(e.code.as_deref(), Some("document.limit.alias-expansion"));
+        assert_eq!(e.path, "$");
+        // Once set, further events are ignored.
+        b.on_event_impl(Event::Alias(999), test_marker());
+    }
+
+    #[test]
+    fn an_explicit_int_tag_on_non_integer_text_is_a_syntax_error_not_a_panic() {
+        for src in [
+            "a: !!int x\n",
+            "a: !!int -\n",
+            "a: !!int 0xZZ\n",
+            "a: !!int ''\n",
+        ] {
+            let e = read_yaml(src).unwrap_err();
+            assert!(
+                matches!(&e, OmnistError::Parse(p) if p.code == "parse.codec-syntax"),
+                "{src:?}: {e:?}"
+            );
+        }
+        assert_eq!(
+            read_yaml("a: !!int 0x1f\n").unwrap().to_raw(),
+            crate::document::RawNode::Edges(vec![(
+                "a".to_string(),
+                crate::document::RawNode::Leaf(Scalar::Int(31.into()))
+            )])
+        );
+    }
+
+    #[test]
+    fn self_referential_anchors_are_rejected_not_panicked() {
+        // Both inputs used to panic the library on an `.expect()`.
+        for src in [
+            "a: &A\n  b: *A\n",
+            "a: &A\n  <<: *A\n  x: 1\n",
+            "a: &A [*A]\n",
+            "a: &A\n  b: &B\n    c: *A\n",
+        ] {
+            let e = read_yaml(src).unwrap_err();
+            assert!(
+                matches!(&e, OmnistError::Document(d)
+                    if d.code.as_deref() == Some("document.limit.alias-expansion") && d.path == "$"),
+                "{src:?}: {e:?}"
+            );
+        }
+        // A completed anchor reused afterwards is still fine.
+        assert!(read_yaml("a: &A\n  b: 1\nc: *A\n").is_ok());
     }
 
     // -------------------------------------------------- coverage: issue #42 node-count guard

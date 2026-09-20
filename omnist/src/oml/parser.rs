@@ -76,7 +76,7 @@ impl<'a> Parser<'a> {
             self.parse_brace_value(0)?
         } else if self.looks_like_edge() {
             self.charge_node(self.start)?;
-            RawNode::Edges(self.parse_node_edges(0)?)
+            RawNode::Edges(self.parse_node_edges(0, true)?)
         } else {
             self.parse_scalar()?
         };
@@ -116,7 +116,17 @@ impl<'a> Parser<'a> {
         matches!(result, Ok((TokKind::Colon, _, _)))
     }
 
-    fn parse_node_edges(&mut self, depth: usize) -> Result<Vec<(String, RawNode)>, ParseError> {
+    /// `top_level` is true only for the document's own edge list (no
+    /// enclosing `{...}`): there, an edge followed by anything but a
+    /// separator or the end of input is content left over after the
+    /// document's node, `parse.trailing-content` (omnist-spec#103, settled).
+    /// Inside `{...}` a closing brace is still expected, so the same
+    /// situation is `parse.unexpected-token`.
+    fn parse_node_edges(
+        &mut self,
+        depth: usize,
+        top_level: bool,
+    ) -> Result<Vec<(String, RawNode)>, ParseError> {
         let mut edges = Vec::new();
         self.skip_sep()?;
         while !matches!(self.kind, TokKind::RBrace | TokKind::Eof) {
@@ -146,15 +156,14 @@ impl<'a> Parser<'a> {
             }
             if !matches!(self.kind, TokKind::Sep) {
                 let text: String = self.sc.text[self.start..self.end].to_string();
-                // omnist-spec#103: the code for leftover content after a
-                // complete EDGE with no separator is an open spec question
-                // (`parse.unexpected-token` here vs `parse.trailing-content`,
-                // which the vector `a: 2024-01-01T99` expects). Left at the
-                // grammar's own reading -- a token where none is allowed --
-                // until that issue is settled.
+                let code = if top_level {
+                    "parse.trailing-content"
+                } else {
+                    "parse.unexpected-token"
+                };
                 return Err(self.sc.error_at(
                     self.start,
-                    "parse.unexpected-token",
+                    code,
                     format!(
                         "expected a separator (newline or ';') or '}}', got {}",
                         Self::tok_display(&self.kind, &text)
@@ -223,7 +232,7 @@ impl<'a> Parser<'a> {
         self.charge_node(self.start)?;
         self.advance()?; // consume '{'
         self.skip_sep()?;
-        let edges = self.parse_node_edges(depth)?;
+        let edges = self.parse_node_edges(depth, false)?;
         self.skip_sep()?;
         let (close_kind, close_start, close_end) = self.advance()?;
         if !matches!(close_kind, TokKind::RBrace) {
@@ -278,16 +287,31 @@ impl<'a> Parser<'a> {
         if !matches!(close_kind, TokKind::RBracket) {
             let text: String = self.sc.text[close_start..close_end].to_string();
             // A newline or `;` where a `,` belongs is its own diagnostic
-            // (`parse.separator-in-array`), not a generic unexpected token.
-            // Whitespace, newlines and `;` are the only things that can
-            // separate two tokens (a comment always ends in a newline), so
-            // looking back over that run from the offending token finds a
-            // separator exactly when the scanner emitted one.
-            let separator_seen = self.sc.text[..close_start]
-                .chars()
-                .rev()
-                .take_while(|c| c.is_whitespace() || *c == ';')
-                .any(|c| c == '\n' || c == ';');
+            // (`parse.separator-in-array`): someone separated two elements
+            // the way edges are separated. That needs BOTH a separator to
+            // have stood there AND another element to follow it -- an
+            // offending token that cannot start a value (end of input, a
+            // `}`) means the array simply never closed, which is a plain
+            // unexpected token. Whitespace, newlines and `;` are the only
+            // things that can separate two tokens (a comment always ends in a
+            // newline), so looking back over that run from the offending
+            // token finds a separator exactly when the scanner emitted one.
+            let starts_a_value = matches!(
+                close_kind,
+                TokKind::Str(_)
+                    | TokKind::Temporal(..)
+                    | TokKind::Int(_)
+                    | TokKind::Float(_)
+                    | TokKind::Ident(_)
+                    | TokKind::LBrace
+                    | TokKind::LBracket
+            );
+            let separator_seen = starts_a_value
+                && self.sc.text[..close_start]
+                    .chars()
+                    .rev()
+                    .take_while(|c| c.is_whitespace() || *c == ';')
+                    .any(|c| c == '\n' || c == ';');
             let code = if separator_seen {
                 "parse.separator-in-array"
             } else {

@@ -62,6 +62,13 @@ Today's reader rebuilds a tree from `yaml_rust2`'s event stream, cloning an
 anchor's subtree at each alias, and bounds only the total materialized size
 (100,000 nodes, reported as `document.limit.nodes`).
 
+The one part of D-20 that needs no expansion arithmetic is enforced: an
+anchored definition that refers to itself (`a: &A {b: *A}`, or the
+self-merge `a: &A {<<: *A}`) is rejected with `document.limit.alias-expansion`
+at `$`. `yaml_rust2` emits the alias event while the anchor is still open, so
+the reader sees an alias to an incomplete anchor. Before this change that
+input panicked the library.
+
 ## Native temporal type on read, but no bare-time literal, and a looser input grammar than JSON
 
 A bare YAML timestamp reads as a genuine `Scalar::Date` (no `T`) or

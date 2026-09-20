@@ -856,40 +856,11 @@ pub fn run_all(dir: &Path) -> (u32, u32, u32) {
     (passed, failed, skipped)
 }
 
-/// Vectors with a **known**, already-tracked, out-of-scope failure --
-/// distinct from [`Status::Skip`] (a structurally-unimplemented feature
-/// with no runtime configuration surface, e.g. the `document-model/limits`
-/// vectors): every name here genuinely fails today, for a real defect this
-/// crate hasn't fixed yet, tracked by an open issue. Exists so CI's exit
-/// code (this function) can distinguish "a change regressed something" (a
-/// name failing that isn't on this list -- exit 1, a real problem) from
-/// "the pinned, already-known backlog is still there" (every failure is on
-/// this list -- exit 0), rather than [`main_with_dir`]'s old
-/// any-failure-at-all gate, which made the vendor/omnist-spec 0ac1eac pin
-/// bump (issues #158-166) permanently red for CI on every branch until
-/// all nine of those issues land, not just the three (#159/#160/#161) any
-/// one PR owns. [`full_suite_counts_match_the_measured_baseline`]'s own
-/// doc comment already states the identical "pinned baseline, not a
-/// zero-fails gate" philosophy for the *count*; this constant is that same
-/// philosophy applied to the CI *exit code*, by name rather than just by
-/// count, so a genuinely new regression among these same 13 slots still
-/// fails loudly. Remove an entry here in the same PR that actually fixes
-/// its issue -- an entry lingering after its fix would silently stop
-/// verifying that the fix stuck.
-const KNOWN_FAILING_VECTORS: &[&str] = &[
-    // omnist-spec#103 (an OPEN SPEC QUESTION, deliberately not resolved
-    // here): the code for leftover content after a complete top-level EDGE
-    // with no separator. This vector expects `parse.trailing-content` at
-    // 1:14 for `a: 2024-01-01T99` (a DATE edge value, then the leftover
-    // identifier `T99`); this port reports `parse.unexpected-token` at the
-    // same position, following the grammar's own "a token where none is
-    // allowed" reading, which is also what §4.6.1/OML-25 does NOT claim to
-    // override for an edge (OML-25 is stated only for the scalar branch).
-    // The position (1:14) is right; only the code is in question. Remove
-    // this entry when the spec settles the question.
-    "oml-grammar/temporals/date-then-non-time-suffix-is-date-plus-trailing-content",
-];
-
+/// Runs the whole suite in `dir` and returns the process exit code: `2` if
+/// the suite is missing, `1` if ANY vector fails, else `0`. Per section 8.5.5
+/// (E-22) a conformant run fails the build on a nonzero fail count and never
+/// on a nonzero skip count; there is deliberately no per-vector allowlist of
+/// tolerated failures.
 fn main_with_dir(dir: &Path) -> u8 {
     if !dir.is_dir() {
         eprintln!(
@@ -905,28 +876,10 @@ fn main_with_dir(dir: &Path) -> u8 {
         "\n{passed} passed, {failed} failed, {skipped} skipped (of {total} vectors) -- \
          diagnostics compared as (path, code) sets (section 8.5.2)"
     );
-    let vectors = iter_vectors(dir);
-    let unexpected: Vec<&str> = vectors
-        .iter()
-        .filter(|nv| {
-            let name = nv.vector["name"].as_str().unwrap_or("<unnamed>");
-            dispatch(&nv.vector).status == Status::Fail && !KNOWN_FAILING_VECTORS.contains(&name)
-        })
-        .map(|nv| nv.vector["name"].as_str().unwrap_or("<unnamed>"))
-        .collect();
-    if !unexpected.is_empty() {
-        eprintln!("unexpected failures (not on the known-failing list): {unexpected:?}");
+    if failed > 0 {
+        eprintln!("{failed} vector(s) failed");
         return 1;
     }
-    // `failed > 0` here would mean every failure matched a
-    // `KNOWN_FAILING_VECTORS` entry -- currently unreachable, since that
-    // list is empty (every prior entry has been fixed; see its own doc
-    // comment). Any real failure is therefore always caught by the
-    // `unexpected` check above, which is why there is no "N known
-    // failures, not a regression" branch here anymore: it was provably
-    // dead code with an empty list, not just untested. Reintroduce it,
-    // with a test, the next time a genuine documented-divergence entry is
-    // added to that list.
     0
 }
 
@@ -951,10 +904,8 @@ mod tests {
     /// freshly measured, not computed by hand.
     ///
     /// Spec v0.19.0-beta, diagnostics compared as (path, code) sets:
-    /// 208 pass, 1 fail, 40 skip of 249.
+    /// 209 pass, 0 fail, 40 skip of 249.
     ///
-    /// - the 1 fail is `date-then-non-time-suffix-is-date-plus-trailing-content`,
-    ///   blocked on the open omnist-spec#103 (see `KNOWN_FAILING_VECTORS`);
     /// - the 40 skips are E-20 "not yet implemented", never a documented
     ///   divergence: 6 `document-model/limits` (no runtime-configurable
     ///   limits), 6 `formats-yaml/alias-expansion` (D-18, DIV-3), and 28
@@ -963,13 +914,13 @@ mod tests {
     /// History: (170, 0, 34) at v0.9.1-beta / 204 vectors, path-only mode.
     /// At v0.19.0-beta the same code, before any change, was (197, 18, 34)
     /// path-only; switching to (path, code) mode and adopting the sweep
-    /// gives (208, 1, 40).
+    /// gives (209, 0, 40).
     #[test]
     fn full_suite_counts_match_the_measured_baseline() {
         let (passed, failed, skipped) = run_all(&suite_dir());
         assert_eq!(
             (passed, failed, skipped),
-            (208, 1, 40),
+            (209, 0, 40),
             "vector pass/fail/skip counts changed -- if this is an intentional fix or a new \
              vector, update the pinned baseline; if not, something regressed"
         );
@@ -1415,33 +1366,22 @@ mod tests {
 
     #[test]
     fn main_with_dir_on_the_real_suite_returns_zero() {
-        // Drives `main_with_dir` against the real vendored suite (distinct
-        // from `missing_suite_dir_returns_two`'s error path, and from
-        // `main_with_dir_on_an_all_passing_suite_returns_zero`'s synthetic
-        // single-vector dir). The exit code is 0: the 0ac1eac submodule pin
-        // bump (issues #158-166) brought in 13 real failures this PR
-        // (#159/#160/#161) doesn't own, but every one of them is on
-        // `KNOWN_FAILING_VECTORS` -- see that constant's doc comment and
-        // `main_with_dir_on_the_real_suite_with_an_unexpected_failure_returns_one`
-        // right below for the regression-catching half of this design.
+        // The real vendored suite has no failing vector (skips do not count,
+        // E-22), so the exit code is 0.
         assert_eq!(main_with_dir(&suite_dir()), 0);
     }
 
     #[test]
-    fn main_with_dir_on_the_real_suite_with_an_unexpected_failure_returns_one() {
-        // Confirms `KNOWN_FAILING_VECTORS` doesn't just rubber-stamp
-        // "any failure is fine" -- a failing vector NOT on that list still
-        // fails CI. Same genuinely-failing-vector recipe as
-        // `run_all_counts_and_prints_a_real_fail` right below (a `parse`
-        // vector whose `expect.document` doesn't match what parsing "1"
-        // actually produces), just under a name guaranteed not to be on
-        // the real `KNOWN_FAILING_VECTORS` list.
+    fn main_with_dir_returns_one_for_any_failing_vector() {
+        // A failing vector always fails the run -- there is no allowlist. The
+        // recipe is a `parse` vector whose `expect.document` does not match
+        // what parsing "1" actually produces.
         let tmp = std::env::temp_dir().join("vector-runner-unexpected-failure");
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
         std::fs::write(
             tmp.join("basic.json"),
-            r#"{"vectors": [{"name": "not-a-known-failure/definitely-not-tracked",                  "operation": "parse", "input": {"format": "json", "text": "1"},                  "expect": {"ok": true,                             "document": {"scalar": {"kind": "integer", "value": 2}}}}]}"#,
+            r#"{"vectors": [{"name": "failing/vector", "operation": "parse", "input": {"format": "json", "text": "1"}, "expect": {"ok": true, "document": {"scalar": {"kind": "integer", "value": 2}}}}]}"#,
         )
         .unwrap();
         assert_eq!(main_with_dir(&tmp), 1);

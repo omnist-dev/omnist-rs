@@ -17,20 +17,12 @@ reporting rule:
 - **Track 1** (`vendor/omnist-spec/conformance/fixtures/`, directory-per-fixture,
   11 operations): **19 passed, 0 failed, 0 skipped**.
 - **Track 2** (`vendor/omnist-spec/test-suite/`, JSON-vector suite, 14-operation
-  vocabulary): **208 passed, 1 failed, 40 skipped** (of 249 vectors),
+  vocabulary): **209 passed, 0 failed, 40 skipped** (of 249 vectors),
   **diagnostics compared as `(path, code)` sets** (section 8.5.2), not in
-  code-agnostic mode. The 1 fail is
-  `oml-grammar/temporals/date-then-non-time-suffix-is-date-plus-trailing-content`,
-  blocked on the open spec question
-  [omnist-spec#103](https://github.com/omnist-dev/omnist-spec/issues/103)
-  (the code for leftover content after a complete top-level *edge*): this
-  port reports `parse.unexpected-token` at the vector's position `1:14`, the
-  vector expects `parse.trailing-content`. It is on the runner's
-  `KNOWN_FAILING_VECTORS` list, by name, so CI stays green for exactly it and
-  for nothing else.
+  code-agnostic mode. The runner exits non-zero on any failing vector and
+  never on skips (E-22); it has no list of tolerated failures.
 
-Track 1 has zero fails. Track 2's single fail is the named spec question
-above. Run it yourself:
+Neither track has a fail. Run it yourself:
 
 ```
 cargo run -p conformance --bin self-test

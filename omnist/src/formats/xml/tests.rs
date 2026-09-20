@@ -1560,3 +1560,36 @@ fn read_xml_report_with_no_report_behaves_like_read_xml() {
         edges(vec![("a", edges(vec![("b", leaf_str("hi"))]))])
     );
 }
+
+#[test]
+fn a_non_predefined_entity_in_an_attribute_value_is_refused() {
+    let entity = ("$".to_string(), "format.entity-forbidden".to_string());
+    for src in [
+        "<r a=\"&foo;\"><b>1</b></r>",
+        "<r><b a='x&nbsp;y'>1</b></r>",
+        "<r a=\"&amp;&foo;\"/>",
+        "<r><b/><c a=\"&foo;\"/></r>",
+    ] {
+        assert_eq!(refusal(src), entity, "{src}");
+    }
+    // The first refusal in document order wins, and well-formedness comes first.
+    assert_eq!(
+        refusal("<!DOCTYPE d><r a=\"&foo;\"/>").1,
+        "format.dtd-forbidden"
+    );
+    match read_xml("<r a=\"&foo;\"><b></r>").unwrap_err() {
+        OmnistError::Parse(e) => assert_eq!(e.code, "parse.codec-syntax"),
+        other => panic!("expected a syntax error, got {other:?}"),
+    }
+}
+
+#[test]
+fn predefined_entities_and_character_references_in_attribute_values_stay_legal() {
+    for src in [
+        "<r a=\"&amp; &lt; &gt; &quot; &apos;\"><b>1</b></r>",
+        "<r a=\"&#65;&#x42;\"><b>1</b></r>",
+    ] {
+        let doc = read_xml(src);
+        assert!(doc.is_ok(), "{src}: {doc:?}");
+    }
+}

@@ -57,7 +57,7 @@ and refuses the rest, rather than ignoring it. Each refusal is a
 | Construct | `code` |
 |---|---|
 | any `DOCTYPE` declaration (refused on sight, even if nothing uses it) | `format.dtd-forbidden` |
-| an entity reference other than the five predefined ones | `format.entity-forbidden` |
+| an entity reference other than the five predefined ones, in text or in an attribute value | `format.entity-forbidden` |
 | text alongside child elements | `format.mixed-content` |
 
 These are refusals, not syntax errors: the input is well-formed XML. The

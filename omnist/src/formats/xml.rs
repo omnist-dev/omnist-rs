@@ -252,6 +252,7 @@ fn read_xml_raw(text: &str, mut report: Option<&mut WriteReport>) -> Result<RawN
                 let mut node_count = 1;
                 let tag = local_name(e.name());
                 let path = crate::report::child_path("$", &tag, 0);
+                refuse_attribute_entities(&e, &mut refusal);
                 record_elem_diagnostics(&e, &path, report.as_deref_mut());
                 let content = parse_content(
                     &mut reader,
@@ -267,6 +268,7 @@ fn read_xml_raw(text: &str, mut report: Option<&mut WriteReport>) -> Result<RawN
             Event::Empty(e) => {
                 let tag = local_name(e.name());
                 let path = crate::report::child_path("$", &tag, 0);
+                refuse_attribute_entities(&e, &mut refusal);
                 record_elem_diagnostics(&e, &path, report.as_deref_mut());
                 break RawNode::Edges(vec![(tag, RawNode::Leaf(Scalar::Str(String::new())))]);
             }
@@ -455,6 +457,7 @@ fn parse_content(
                     .and_modify(|n| *n += 1)
                     .or_insert(0);
                 let child_path = crate::report::child_path(path, &tag, index);
+                refuse_attribute_entities(&e, refusal);
                 record_elem_diagnostics(&e, &child_path, report.as_deref_mut());
                 let child = parse_content(
                     reader,
@@ -483,6 +486,7 @@ fn parse_content(
                     .and_modify(|n| *n += 1)
                     .or_insert(0);
                 let child_path = crate::report::child_path(path, &tag, index);
+                refuse_attribute_entities(&e, refusal);
                 record_elem_diagnostics(&e, &child_path, report.as_deref_mut());
                 children.push((tag, RawNode::Leaf(Scalar::Str(String::new()))));
             }
@@ -576,6 +580,40 @@ fn record_elem_diagnostics(
             "an XML namespace prefix was discarded on read",
             Severity::Warning,
         );
+    }
+}
+
+/// The data-XML profile refuses an entity reference other than the five
+/// predefined ones "on sight, not on use", wherever it stands -- an
+/// attribute value included, although attributes are otherwise dropped on
+/// read. quick_xml reports entity references as their own events only in
+/// text, so attribute values are scanned here. A numeric character reference
+/// and the five predefined entities stay legal. The refusal is only
+/// RECORDED (raised after well-formedness, like the others); an attribute
+/// quick_xml cannot parse is ignored here because the element's own
+/// well-formedness is checked by the reader.
+fn refuse_attribute_entities(e: &quick_xml::events::BytesStart<'_>, refusal: &mut Refusal) {
+    for attr in e.attributes().filter_map(Result::ok) {
+        let value = String::from_utf8_lossy(&attr.value);
+        let mut rest: &str = &value;
+        while let Some(at) = rest.find('&') {
+            rest = &rest[at + 1..];
+            let Some(end) = rest.find(';') else { break };
+            let name = &rest[..end];
+            if !name.starts_with('#') && !matches!(name, "lt" | "gt" | "amp" | "apos" | "quot") {
+                note_refusal(
+                    refusal,
+                    "format.entity-forbidden",
+                    format!(
+                        "entity reference '&{name};' in an attribute value is outside the \
+                         data-XML profile (only the five predefined XML entities and numeric \
+                         character references are read)"
+                    ),
+                );
+                return;
+            }
+            rest = &rest[end + 1..];
+        }
     }
 }
 

@@ -38,4 +38,35 @@ mod tests {
              -- it's citing a stale SHA left over from a previous submodule bump"
         );
     }
+
+    /// `book.toml` builds the published site from `src/`, which duplicates
+    /// `docs/`; the two drifted once (a change updated `docs/` and forgot the
+    /// twin). Every markdown page under `docs/` must be byte-identical to its
+    /// `src/` twin.
+    #[test]
+    fn book_sources_match_docs() {
+        fn walk(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+            for e in std::fs::read_dir(dir).unwrap().filter_map(Result::ok) {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if p.extension().is_some_and(|x| x == "md") {
+                    out.push(p);
+                }
+            }
+        }
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut pages = Vec::new();
+        walk(&root.join("docs"), &mut pages);
+        assert!(!pages.is_empty());
+        for page in pages {
+            let rel = page.strip_prefix(root.join("docs")).unwrap();
+            let twin = root.join("src").join(rel);
+            let a = std::fs::read(&page).unwrap();
+            // A missing twin reads as empty, which differs from any real page.
+            let b = std::fs::read(&twin).unwrap_or_default();
+            let msg = format!("src/{0} differs from docs/{0}: copy it over", rel.display());
+            assert!(a == b, "{msg}");
+        }
+    }
 }
