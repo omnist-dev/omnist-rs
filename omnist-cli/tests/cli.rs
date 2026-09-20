@@ -1141,15 +1141,14 @@ fn convert_from_oml_to_a_non_oml_format() {
 }
 
 // Was `convert_report_result_format_oml_with_an_error_severity_adjustment`:
-// used JSON's NaN->null (`Severity::Error`) before #161 made that fail the
-// write outright instead of succeeding with a report. Switched to XML's
-// `string.illegal_xml_char` (a C0 control character other than tab/LF/CR)
-// -- still a real `Severity::Error` adjustment on a write that still
-// succeeds (substituted with U+FFFD), untouched by this PR (see the
-// module doc comment on why only NaN/Infinity and empty-internal-node
-// changed, not every `format.*`/`Severity::Error` case).
+// first used JSON's NaN->null, then XML's C0-control-character U+FFFD
+// substitution, both `Severity::Error` adjustments on a write that still
+// succeeded. Both now fail the write outright (`write.unsupported-value`,
+// spec Sec8.3.8/8.3.9): XML has no spelling for the character, so nothing is
+// substituted. No write succeeds with an `Error`-severity adjustment any
+// more; `check` (a preview) still reports them, see the `check` tests.
 #[test]
-fn convert_report_result_format_oml_with_an_error_severity_adjustment() {
+fn convert_of_an_xml_illegal_control_character_fails_the_write() {
     let input = fixture("convert_error_report_oml_in", r#"{"a": "bad\u0001text"}"#);
     let r = run(&[
         "convert",
@@ -1162,8 +1161,12 @@ fn convert_report_result_format_oml_with_an_error_severity_adjustment() {
         "--result-format",
         "oml",
     ]);
-    assert_eq!(r.code, 0, "stderr: {}", r.stderr);
-    assert!(r.stderr.contains("severity: \"error\""));
+    assert_ne!(r.code, 0, "stdout: {}", r.stdout);
+    assert!(
+        r.stderr.contains("write.unsupported-value"),
+        "stderr: {}",
+        r.stderr
+    );
 }
 
 #[test]

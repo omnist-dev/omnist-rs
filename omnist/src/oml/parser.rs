@@ -35,6 +35,7 @@ impl<'a> Parser<'a> {
         if self.node_count > document::MAX_NODES {
             return Err(self.sc.error_at(
                 pos,
+                "document.limit.nodes",
                 format!(
                     "document exceeds the maximum node count ({})",
                     document::MAX_NODES
@@ -84,6 +85,7 @@ impl<'a> Parser<'a> {
             let text: String = self.sc.text[self.start..self.end].to_string();
             return Err(self.sc.error_at(
                 self.start,
+                "parse.trailing-content",
                 format!(
                     "unexpected trailing content after the document body (token {})",
                     Self::tok_display(&self.kind, &text)
@@ -124,6 +126,7 @@ impl<'a> Parser<'a> {
                 let text: String = self.sc.text[colon_start..colon_end].to_string();
                 return Err(self.sc.error_at(
                     colon_start,
+                    "parse.unexpected-token",
                     format!(
                         "expected ':' after label {label:?}, got {}",
                         Self::tok_display(&colon_kind, &text)
@@ -143,8 +146,15 @@ impl<'a> Parser<'a> {
             }
             if !matches!(self.kind, TokKind::Sep) {
                 let text: String = self.sc.text[self.start..self.end].to_string();
+                // omnist-spec#103: the code for leftover content after a
+                // complete EDGE with no separator is an open spec question
+                // (`parse.unexpected-token` here vs `parse.trailing-content`,
+                // which the vector `a: 2024-01-01T99` expects). Left at the
+                // grammar's own reading -- a token where none is allowed --
+                // until that issue is settled.
                 return Err(self.sc.error_at(
                     self.start,
+                    "parse.unexpected-token",
                     format!(
                         "expected a separator (newline or ';') or '}}', got {}",
                         Self::tok_display(&self.kind, &text)
@@ -164,6 +174,7 @@ impl<'a> Parser<'a> {
                 if RESERVED.contains(&text.as_str()) {
                     Err(self.sc.error_at(
                         start,
+                        "parse.reserved-word-label",
                         format!(
                             "{text:?} is a reserved word and cannot be a bare label; quote it: \
                              \"{text}\""
@@ -177,6 +188,7 @@ impl<'a> Parser<'a> {
                 let text: String = self.sc.text[start..end].to_string();
                 Err(self.sc.error_at(
                     start,
+                    "parse.unexpected-token",
                     format!("expected a label, got {}", Self::tok_display(&other, &text)),
                 ))
             }
@@ -187,6 +199,7 @@ impl<'a> Parser<'a> {
         if depth > document::MAX_DEPTH {
             return Err(self.sc.error_at(
                 self.start,
+                "document.limit.depth",
                 format!(
                     "nesting exceeds the maximum depth ({})",
                     document::MAX_DEPTH
@@ -217,6 +230,7 @@ impl<'a> Parser<'a> {
             let text: String = self.sc.text[close_start..close_end].to_string();
             return Err(self.sc.error_at(
                 close_start,
+                "parse.unexpected-token",
                 format!(
                     "expected '}}', got {}",
                     Self::tok_display(&close_kind, &text)
@@ -231,15 +245,18 @@ impl<'a> Parser<'a> {
         self.advance()?; // consume '['
         self.skip_sep()?;
         if matches!(self.kind, TokKind::RBracket) {
-            return Err(self
-                .sc
-                .error_at(open_start, "empty array is not allowed".to_string()));
+            return Err(self.sc.error_at(
+                open_start,
+                "parse.empty-array",
+                "empty array is not allowed".to_string(),
+            ));
         }
         let mut elements = Vec::new();
         loop {
             if matches!(self.kind, TokKind::LBracket) {
                 return Err(self.sc.error_at(
                     self.start,
+                    "parse.nested-array",
                     "nested array is not allowed (arrays may only contain scalars, null, or \
                      brace subtrees)"
                         .to_string(),
@@ -260,8 +277,25 @@ impl<'a> Parser<'a> {
         let (close_kind, close_start, close_end) = self.advance()?;
         if !matches!(close_kind, TokKind::RBracket) {
             let text: String = self.sc.text[close_start..close_end].to_string();
+            // A newline or `;` where a `,` belongs is its own diagnostic
+            // (`parse.separator-in-array`), not a generic unexpected token.
+            // Whitespace, newlines and `;` are the only things that can
+            // separate two tokens (a comment always ends in a newline), so
+            // looking back over that run from the offending token finds a
+            // separator exactly when the scanner emitted one.
+            let separator_seen = self.sc.text[..close_start]
+                .chars()
+                .rev()
+                .take_while(|c| c.is_whitespace() || *c == ';')
+                .any(|c| c == '\n' || c == ';');
+            let code = if separator_seen {
+                "parse.separator-in-array"
+            } else {
+                "parse.unexpected-token"
+            };
             return Err(self.sc.error_at(
                 close_start,
+                code,
                 format!(
                     "expected ',' or ']' in array, got {}",
                     Self::tok_display(&close_kind, &text)
@@ -294,6 +328,7 @@ impl<'a> Parser<'a> {
                 "false" => Ok(RawNode::Leaf(Scalar::Bool(false))),
                 _ => Err(self.sc.error_at(
                     start,
+                    "parse.bare-word",
                     format!("bare word {text:?} is not a valid value here; strings must be quoted"),
                 )),
             },
@@ -301,6 +336,7 @@ impl<'a> Parser<'a> {
                 let text: String = self.sc.text[start..end].to_string();
                 Err(self.sc.error_at(
                     start,
+                    "parse.unexpected-token",
                     format!("expected a value, got {}", Self::tok_display(&other, &text)),
                 ))
             }

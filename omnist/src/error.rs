@@ -21,15 +21,37 @@ use thiserror::Error;
 pub struct DocumentError {
     /// The path inside the document where the error occurred.
     pub path: String,
+    /// The spec's stable machine-readable code (omnist-spec §8.3.2 and
+    /// §8.3.8, e.g. `document.unlabeled-element`,
+    /// `format.dtd-forbidden`), when the failure is one the taxonomy names.
+    /// `None` for API-misuse errors (reading `.value()` on an internal
+    /// node, `get_one` on a repeated label, ...) that no conformance
+    /// diagnostic describes.
+    pub code: Option<String>,
     /// Human-readable error description.
     pub message: String,
 }
 
 impl DocumentError {
-    /// Construct a new `DocumentError` at the given path.
+    /// Construct a new `DocumentError` at the given path, with no
+    /// taxonomy code (an API-misuse error).
     pub fn new(path: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
             path: path.into(),
+            code: None,
+            message: message.into(),
+        }
+    }
+
+    /// Construct a `DocumentError` carrying a spec taxonomy `code`.
+    pub fn with_code(
+        path: impl Into<String>,
+        code: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            path: path.into(),
+            code: Some(code.into()),
             message: message.into(),
         }
     }
@@ -79,18 +101,42 @@ pub struct ParseError {
     pub line: usize,
     /// Column number where parsing failed (1-indexed).
     pub col: usize,
+    /// The spec's stable machine-readable code (omnist-spec §8.3.1, e.g.
+    /// `parse.unexpected-token`, `parse.codec-syntax`).
+    pub code: String,
     /// Human-readable parse failure description.
     pub message: String,
 }
 
 impl ParseError {
-    /// Construct a new `ParseError` with position coordinates.
-    pub fn new(line: usize, col: usize, message: impl Into<String>) -> Self {
+    /// Construct a new `ParseError` with position coordinates and the
+    /// spec's `parse.*` code.
+    pub fn new(
+        line: usize,
+        col: usize,
+        code: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
         Self {
             line,
             col,
+            code: code.into(),
             message: message.into(),
         }
+    }
+
+    /// Construct a `parse.codec-syntax` error (omnist-spec §8.3.1): input a
+    /// JSON/YAML/TOML/XML codec could not accept, whether malformed in its
+    /// own format or refused by a byte-level precondition the spec imposes
+    /// ahead of the codec (E-24).
+    pub fn codec_syntax(line: usize, col: usize, message: impl Into<String>) -> Self {
+        Self::new(line, col, "parse.codec-syntax", message)
+    }
+
+    /// The `text position` path (`line:col`, omnist-spec §8.4) of this
+    /// error.
+    pub fn position(&self) -> String {
+        format!("{}:{}", self.line, self.col)
     }
 }
 
@@ -130,6 +176,14 @@ pub struct WriteError {
     pub message: String,
     /// Optional accumulated `WriteReport` when written in strict mode.
     pub report: Option<crate::report::WriteReport>,
+    /// The Document path of the value that could not be written, when the
+    /// failure is one the spec's taxonomy names (omnist-spec §8.3.8 and
+    /// §8.3.9); `None` otherwise.
+    pub path: Option<String>,
+    /// The spec's stable code for the failure (`write.unsupported-value`,
+    /// `format.multiple-roots`, ...); `None` when the taxonomy has no code
+    /// for it.
+    pub code: Option<String>,
 }
 
 impl WriteError {
@@ -138,6 +192,23 @@ impl WriteError {
         Self {
             message: message.into(),
             report: None,
+            path: None,
+            code: None,
+        }
+    }
+
+    /// Construct a `WriteError` that carries the structured `(path, code)`
+    /// diagnostic the spec's taxonomy assigns to it.
+    pub fn with_diagnostic(
+        path: impl Into<String>,
+        code: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            message: message.into(),
+            report: None,
+            path: Some(path.into()),
+            code: Some(code.into()),
         }
     }
 
@@ -147,6 +218,8 @@ impl WriteError {
         Self {
             message: message.into(),
             report: Some(report),
+            path: None,
+            code: None,
         }
     }
 
@@ -260,13 +333,43 @@ mod tests {
 
     #[test]
     fn parse_error_display_includes_line_col_and_message() {
-        let e = ParseError::new(3, 7, "stray character '@'");
+        let e = ParseError::new(3, 7, "parse.unexpected-token", "stray character '@'");
         assert_eq!(e.to_string(), "line 3, col 7: stray character '@'");
     }
 
     #[test]
+    fn parse_error_carries_a_code_and_a_text_position_path() {
+        let e = ParseError::new(3, 7, "parse.trailing-content", "x");
+        assert_eq!(e.code, "parse.trailing-content");
+        assert_eq!(e.position(), "3:7");
+        let c = ParseError::codec_syntax(1, 1, "bad");
+        assert_eq!(c.code, "parse.codec-syntax");
+        assert_eq!(c.position(), "1:1");
+    }
+
+    #[test]
+    fn document_error_code_is_none_unless_the_taxonomy_names_it() {
+        assert_eq!(DocumentError::new("$", "misuse").code, None);
+        let e = DocumentError::with_code("$.a", "document.unlabeled-element", "x");
+        assert_eq!(e.code.as_deref(), Some("document.unlabeled-element"));
+        assert_eq!(e.path, "$.a");
+        assert_eq!(e.to_string(), "$.a: x");
+    }
+
+    #[test]
+    fn write_error_diagnostic_fields_are_set_only_by_with_diagnostic() {
+        let plain = WriteError::new("boom");
+        assert_eq!((plain.path, plain.code), (None, None));
+        let d = WriteError::with_diagnostic("$.n", "write.unsupported-value", "nope");
+        assert_eq!(d.path.as_deref(), Some("$.n"));
+        assert_eq!(d.code.as_deref(), Some("write.unsupported-value"));
+        let r = WriteError::with_report("strict", crate::report::WriteReport::new());
+        assert_eq!((r.path, r.code), (None, None));
+    }
+
+    #[test]
     fn omnist_error_wraps_parse_error_transparently() {
-        let e = ParseError::new(1, 1, "boom");
+        let e = ParseError::new(1, 1, "parse.unexpected-token", "boom");
         let wrapped: OmnistError = e.clone().into();
         assert_eq!(wrapped.to_string(), e.to_string());
         assert!(matches!(wrapped, OmnistError::Parse(ref inner) if *inner == e));

@@ -77,6 +77,16 @@ use writer::{write_edges, write_edges_compact, write_scalar};
 /// and triple-quoted multiline-string (`"""..."""`) spellings -- see the
 /// module doc comment.
 pub fn read_oml(text: &str) -> Result<RawNode, ParseError> {
+    // D-15/D-21: one leading BOM is stripped, a second is rejected at 1:1.
+    // This is the only place OML strips it (see `crate::bom`).
+    let text = crate::bom::strip_leading_bom(text).map_err(|_| {
+        ParseError::new(
+            1,
+            1,
+            "parse.unexpected-token",
+            crate::bom::DOUBLED_BOM_MESSAGE,
+        )
+    })?;
     let sc = Scanner::new(text);
     let mut parser = Parser::new(sc)?;
     parser.parse_document()

@@ -68,8 +68,9 @@ pub(super) struct Scanner<'a> {
 
 impl<'a> Scanner<'a> {
     pub(super) fn new(text: &'a str) -> Self {
-        // Strip a leading UTF-8 BOM, matching the Python reference.
-        let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+        // A leading BOM is stripped (and a doubled one rejected) by
+        // `read_oml` via `crate::bom::strip_leading_bom` before a Scanner
+        // is ever built; this constructor takes the text as it is.
         // `pos`/`n` are byte offsets into `text` (kept on UTF-8 char
         // boundaries throughout), not char indices -- this scanner reads
         // UTF-8 lazily via `char_at` instead of materializing the whole
@@ -114,9 +115,11 @@ impl<'a> Scanner<'a> {
         (line, col)
     }
 
-    pub(super) fn error_at(&self, pos: usize, msg: String) -> ParseError {
+    /// A [`ParseError`] at byte offset `pos`, carrying the spec's `parse.*`
+    /// (or, for the safety limits, `document.limit.*`) code.
+    pub(super) fn error_at(&self, pos: usize, code: &str, msg: String) -> ParseError {
         let (line, col) = self.line_col(pos);
-        ParseError::new(line, col, msg)
+        ParseError::new(line, col, code, msg)
     }
 
     fn word_boundary_ok(&self, end: usize) -> bool {
@@ -154,7 +157,11 @@ impl<'a> Scanner<'a> {
                 '-' => self.scan_minus(start),
                 c if c.is_ascii_digit() => self.scan_digit_start(start),
                 c if c.is_alphabetic() || c == '_' => self.scan_word(start),
-                other => Err(self.error_at(start, format!("stray character {other:?}"))),
+                other => Err(self.error_at(
+                    start,
+                    "parse.unexpected-token",
+                    format!("stray character {other:?}"),
+                )),
             };
         }
     }
@@ -229,6 +236,7 @@ impl<'a> Scanner<'a> {
                 None => {
                     return Err(self.error_at(
                         start,
+                        "parse.unterminated-string",
                         "unterminated string (missing closing \")".to_string(),
                     ));
                 }
@@ -245,6 +253,7 @@ impl<'a> Scanner<'a> {
                 Some(c) if (c as u32) < 0x20 => {
                     return Err(self.error_at(
                         start,
+                        "parse.control-character",
                         format!("control character U+{:04X} in string", c as u32),
                     ));
                 }
@@ -271,6 +280,7 @@ impl<'a> Scanner<'a> {
                 None => {
                     return Err(self.error_at(
                         start,
+                        "parse.unterminated-string",
                         "unterminated multiline string (missing closing \"\"\")".to_string(),
                     ));
                 }
@@ -309,6 +319,7 @@ impl<'a> Scanner<'a> {
                 Some(c) => {
                     return Err(self.error_at(
                         start,
+                        "parse.control-character",
                         format!("control character U+{:04X} in multiline string", c as u32),
                     ));
                 }
@@ -323,6 +334,7 @@ impl<'a> Scanner<'a> {
                 None => {
                     return Err(self.error_at(
                         start,
+                        "parse.unterminated-string",
                         "unterminated raw string (missing closing ')".to_string(),
                     ));
                 }
@@ -342,7 +354,11 @@ impl<'a> Scanner<'a> {
     /// `i` -- matches the Python reference's error-position convention.
     fn decode_escape(&self, tok_start: usize, i: usize) -> Result<(String, usize), ParseError> {
         let Some(c) = self.char_at(i + 1) else {
-            return Err(self.error_at(tok_start, "unterminated escape sequence".to_string()));
+            return Err(self.error_at(
+                tok_start,
+                "parse.unterminated-string",
+                "unterminated escape sequence".to_string(),
+            ));
         };
         let simple = match c {
             '"' => Some('"'),
@@ -359,7 +375,11 @@ impl<'a> Scanner<'a> {
             return Ok((ch.to_string(), i + 2));
         }
         if c != 'u' {
-            return Err(self.error_at(tok_start, format!("invalid escape \\{c}")));
+            return Err(self.error_at(
+                tok_start,
+                "parse.invalid-escape",
+                format!("invalid escape \\{c}"),
+            ));
         }
         let cp = self.read_hex4(tok_start, i + 2)?;
         let j = i + 6;
@@ -373,6 +393,7 @@ impl<'a> Scanner<'a> {
             let unpaired_err = || {
                 self.error_at(
                     tok_start,
+                    "parse.unpaired-surrogate",
                     format!(
                         "unpaired high surrogate \\u{cp:04x} (needs a following low-surrogate \
                          \\uDC00-\\uDFFF escape)"
@@ -400,7 +421,11 @@ impl<'a> Scanner<'a> {
             };
         }
         if (0xDC00..=0xDFFF).contains(&cp) {
-            return Err(self.error_at(tok_start, format!("unpaired low surrogate \\u{cp:04x}")));
+            return Err(self.error_at(
+                tok_start,
+                "parse.unpaired-surrogate",
+                format!("unpaired low surrogate \\u{cp:04x}"),
+            ));
         }
         // cp is outside the surrogate range (both branches above already
         // returned), so it's always a valid Unicode scalar value -- see
@@ -420,6 +445,7 @@ impl<'a> Scanner<'a> {
         if hex.len() != 4 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
             return Err(self.error_at(
                 tok_start,
+                "parse.invalid-escape",
                 r"invalid \u escape (need 4 hex digits)".to_string(),
             ));
         }
@@ -436,7 +462,11 @@ impl<'a> Scanner<'a> {
         if self.char_at(start + 1).is_some_and(|c| c.is_ascii_digit()) {
             return self.scan_number(start);
         }
-        Err(self.error_at(start, "stray character '-'".to_string()))
+        Err(self.error_at(
+            start,
+            "parse.unexpected-token",
+            "stray character '-'".to_string(),
+        ))
     }
 
     fn scan_digit_start(&mut self, start: usize) -> Result<(TokKind, usize, usize), ParseError> {
@@ -477,7 +507,17 @@ impl<'a> Scanner<'a> {
             // which put the reported line:col well past the literal for
             // any multi-char token, disagreeing with every conformance
             // vector's expected `{line}:{col}` (all point at `start`).
-            return Err(self.error_at(start, format!("invalid {label} {text:?}")));
+            // The code names which part is out of range (spec section
+            // 8.3.1): the calendar date -- alone, or the date portion of a
+            // datetime -- is `parse.invalid-date`; a clock time, the time
+            // portion of a datetime, or a tz offset is `parse.invalid-time`.
+            let code = match kind {
+                TemporalKind::Date => "parse.invalid-date",
+                TemporalKind::Time => "parse.invalid-time",
+                TemporalKind::Datetime if !is_iso_date(&text[..10]) => "parse.invalid-date",
+                TemporalKind::Datetime => "parse.invalid-time",
+            };
+            return Err(self.error_at(start, code, format!("invalid {label} {text:?}")));
         }
         self.pos = end;
         let canonical = match kind {
@@ -574,6 +614,7 @@ impl<'a> Scanner<'a> {
         if int_digits.len() > 1 && int_digits.as_bytes()[0] == b'0' {
             return Err(self.error_at(
                 start,
+                "parse.leading-zero",
                 format!("leading zero in numeric literal {int_digits:?} is not allowed"),
             ));
         }
@@ -611,7 +652,11 @@ impl<'a> Scanner<'a> {
         } else {
             let digits = &text[if text.starts_with('-') { 1 } else { 0 }..];
             if digits.len() > MAX_INT_DIGITS {
-                return Err(self.error_at(start, over_cap_message("", digits.len())));
+                return Err(self.error_at(
+                    start,
+                    "document.limit.int-digits",
+                    over_cap_message("", digits.len()),
+                ));
             }
             // Arbitrary-precision (issue #104): `text` is exclusively
             // ASCII digits with an optional leading `-` by construction,

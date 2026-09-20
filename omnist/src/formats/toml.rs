@@ -222,6 +222,11 @@ use toml_edit::{Item, TableLike};
 /// [`crate::error::DocumentError`] via [`Doc::of`], matching the other
 /// format readers.
 pub fn read_toml(text: &str) -> Result<Doc, OmnistError> {
+    // D-15/D-21: one leading BOM is stripped, a second is rejected at 1:1.
+    // toml_edit would reject the second on its own grammar; the pre-check
+    // makes that uniform and puts the position/code where the spec says.
+    let text = crate::bom::strip_leading_bom(text)
+        .map_err(|_| ParseError::codec_syntax(1, 1, crate::bom::DOUBLED_BOM_MESSAGE))?;
     let parsed: toml_edit::DocumentMut = text
         .parse()
         .map_err(|e: toml_edit::TomlError| toml_parse_error(text, &e))?;
@@ -247,7 +252,7 @@ fn toml_parse_error(text: &str, e: &toml_edit::TomlError) -> ParseError {
         return toml_overflow_error(text, span);
     }
     let (line, col) = line_col_bytes(text, span.start);
-    ParseError::new(line, col, format!("invalid TOML: {}", e.message()))
+    ParseError::codec_syntax(line, col, format!("invalid TOML: {}", e.message()))
 }
 
 /// Recovers the raw digit run from an integer literal `toml_edit` refused
@@ -269,9 +274,14 @@ fn toml_overflow_error(text: &str, span: std::ops::Range<usize>) -> ParseError {
         .trim_start_matches("0X")
         .len();
     if digit_count > MAX_INT_DIGITS {
-        return ParseError::new(line, col, over_cap_message("invalid TOML: ", digit_count));
+        return ParseError::new(
+            line,
+            col,
+            "document.limit.int-digits",
+            over_cap_message("invalid TOML: ", digit_count),
+        );
     }
-    ParseError::new(line, col, out_of_range_message("invalid TOML: ", raw))
+    ParseError::codec_syntax(line, col, out_of_range_message("invalid TOML: ", raw))
 }
 
 /// Converts a `toml_edit` table (top-level document or inline table) into a

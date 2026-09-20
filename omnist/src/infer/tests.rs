@@ -294,6 +294,75 @@ fn infer_with_report_allow_any_false_matches_infer_and_has_no_fallbacks() {
 }
 
 // ---------------------------------------------------------------------------
+// S-21 (spec section 3, `docs/03-schema-model.md`): `infer` MUST NOT emit
+// `any` unless requested, and when requested every opening is reported.
+// Both ways a field can open to `any` (conflicting scalar kinds, mixed
+// object/scalar shape), at the root and nested.
+// ---------------------------------------------------------------------------
+
+/// Two samples whose `a` disagrees on scalar kind and whose `m` mixes an
+/// object with a scalar, both at the root AND inside the nested record
+/// `order` (so four candidate openings in all).
+fn s21_samples() -> Vec<Doc> {
+    let sample = |kind: Value, shape: Value| {
+        doc(obj(&[
+            ("a", kind.clone()),
+            ("m", shape.clone()),
+            ("order", obj(&[("a", kind), ("m", shape)])),
+        ]))
+    };
+    vec![
+        sample(
+            Value::Int((1).into()),
+            obj(&[("k", Value::Int((1).into()))]),
+        ),
+        sample(Value::Str("s".into()), Value::Int((2).into())),
+    ]
+}
+
+#[test]
+fn s21_allow_any_off_never_emits_any_and_reports_the_first_conflict_with_a_schema_path() {
+    let err = infer(&s21_samples(), "Root").unwrap_err();
+    // The first offender in traversal order is the root's `a`; the path is a
+    // schema path (record.label, E-13), never `$.label`.
+    assert_eq!(
+        (err.path.as_str(), err.code.as_str()),
+        ("Root.a", "algebra.infer-conflicting-scalars")
+    );
+    let err = infer_with_report(&s21_samples(), "Root", false).unwrap_err();
+    assert_eq!(err.code, "algebra.infer-conflicting-scalars");
+    // A mixed-shape-only input reports the other code, also as a schema path.
+    let mixed = vec![
+        doc(obj(&[("m", obj(&[("k", Value::Int((1).into()))]))])),
+        doc(obj(&[("m", Value::Int((2).into()))])),
+    ];
+    let err = infer(&mixed, "Root").unwrap_err();
+    assert_eq!(
+        (err.path.as_str(), err.code.as_str()),
+        ("Root.m", "algebra.infer-mixed-shape")
+    );
+}
+
+#[test]
+fn s21_allow_any_on_opens_and_reports_every_opening_including_nested_ones() {
+    let (schema, fallbacks) = infer_with_report(&s21_samples(), "Root", true).unwrap();
+    let mut locations: Vec<&str> = fallbacks.iter().map(|f| f.location.as_str()).collect();
+    locations.sort_unstable();
+    assert_eq!(locations, ["Order.a", "Order.m", "Root.a", "Root.m"]);
+    // Every field reported is exactly a field opened to `any`, and vice versa.
+    let mut opened: Vec<String> = Vec::new();
+    for (rec_name, rec) in schema.env() {
+        for f in rec.fields() {
+            if f.ty == FieldType::Any {
+                opened.push(format!("{rec_name}.{}", f.label));
+            }
+        }
+    }
+    opened.sort_unstable();
+    assert_eq!(opened, locations);
+}
+
+// ---------------------------------------------------------------------------
 // Misc error paths
 // ---------------------------------------------------------------------------
 

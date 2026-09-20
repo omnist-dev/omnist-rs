@@ -66,6 +66,10 @@ use indexmap::IndexMap;
 /// `DocumentError` propagate uncaught alongside its own caught
 /// `json.JSONDecodeError`/`ValueError` -> `ParseError` translation.
 pub fn read_json(text: &str) -> Result<Doc, OmnistError> {
+    // D-15/D-21: one leading BOM is stripped, a second is rejected at 1:1
+    // (`parse.codec-syntax`, E-24) before the scanner sees the text.
+    let text = crate::bom::strip_leading_bom(text)
+        .map_err(|_| ParseError::codec_syntax(1, 1, crate::bom::DOUBLED_BOM_MESSAGE))?;
     let mut p = Parser::new(text);
     p.skip_ws();
     let value = p.parse_value()?;
@@ -346,7 +350,15 @@ impl<'a> Parser<'a> {
 
     fn error_at(&self, pos: usize, msg: String) -> ParseError {
         let (line, col) = line_col_bytes(self.text, pos);
-        ParseError::new(line, col, format!("invalid JSON: {msg}"))
+        ParseError::codec_syntax(line, col, format!("invalid JSON: {msg}"))
+    }
+
+    /// Like [`Self::error_at`] for the safety limits, which carry their own
+    /// `document.limit.*` code (omnist-spec section 8.3.2) rather than
+    /// `parse.codec-syntax`.
+    fn limit_error_at(&self, pos: usize, code: &str, msg: String) -> ParseError {
+        let (line, col) = line_col_bytes(self.text, pos);
+        ParseError::new(line, col, code, format!("invalid JSON: {msg}"))
     }
 
     /// Decode the char starting at byte offset `at`, if any. `at` must be a
@@ -433,8 +445,9 @@ impl<'a> Parser<'a> {
     fn parse_object(&mut self) -> Result<Value, ParseError> {
         self.depth += 1;
         if self.depth > crate::document::MAX_DEPTH {
-            return Err(self.error_at(
+            return Err(self.limit_error_at(
                 self.pos,
+                "document.limit.depth",
                 format!(
                     "nesting exceeds the maximum depth ({})",
                     crate::document::MAX_DEPTH
@@ -482,8 +495,9 @@ impl<'a> Parser<'a> {
     fn parse_array(&mut self) -> Result<Value, ParseError> {
         self.depth += 1;
         if self.depth > crate::document::MAX_DEPTH {
-            return Err(self.error_at(
+            return Err(self.limit_error_at(
                 self.pos,
+                "document.limit.depth",
                 format!(
                     "nesting exceeds the maximum depth ({})",
                     crate::document::MAX_DEPTH
@@ -718,7 +732,11 @@ impl<'a> Parser<'a> {
         } else {
             let digits = &text[if text.starts_with('-') { 1 } else { 0 }..];
             if digits.len() > MAX_INT_DIGITS {
-                return Err(self.error_at(start, over_cap_message("", digits.len())));
+                return Err(self.limit_error_at(
+                    start,
+                    "document.limit.int-digits",
+                    over_cap_message("", digits.len()),
+                ));
             }
             // Arbitrary-precision (issue #104): the scanner only emits
             // number-shaped ASCII-digit text (with an optional leading

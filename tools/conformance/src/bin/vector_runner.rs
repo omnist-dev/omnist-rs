@@ -15,85 +15,49 @@
 //! operation name, following this crate's own Track-1 precedent
 //! (architecture-freedom, not a literal TS port).
 //!
-//! ## The three empirical decisions (issue #82 Step 3), verified for real
+//! ## Comparison mode: (path, code) sets, per section 8.5.2
 //!
-//! **1. Diagnostics matching mode: code-agnostic.** Verified directly by
-//! running `validate/scalar-kinds/number-does-not-satisfy-integer-even-when-whole`
-//! and several other real `validate`/`materialize` failure vectors through
-//! `Schema::validate`: `omnist::schema::ErrorCode::as_str()` produces bare
-//! codes (`"type-mismatch"`, `"cardinality"`, `"shape-mismatch"`,
-//! `"null-not-allowed"`), while the vectors' `expect.diagnostics[].code`
-//! values are operation-prefixed (`"validate.type-mismatch"`,
-//! `"validate.cardinality"`, ...). Same situation as omnist-ts (its own
-//! header comment documents the identical mismatch): omnist-rs's
-//! `ErrorCode` predates §8.3's taxonomy and was never renamed to match it.
-//! This runner therefore always compares diagnostics as the *set* of
-//! `path`s only, never `code`, matching TS's decision and rationale.
-//! Message text is never compared either way.
+//! Every failing vector is compared as a **set of `(path, code)` pairs**
+//! (E-17: message text never compared, order never compared, exact match --
+//! an extra diagnostic fails a vector just as a missing one does). This
+//! runner is NOT in code-agnostic mode any more (it was, up to spec
+//! v0.9.1-beta): the library's errors now carry the structured fields the
+//! taxonomy needs --
 //!
-//! **2. D-6 (integer/number kind collapse): confirmed NOT applicable,
-//! no skip detector built.** `omnist::document::Scalar` has separate
-//! `Int(i64)`/`Float(f64)` variants (`document.rs`), so there is no shape
-//! for the collapse D-6 describes to occur in at all -- unlike omnist-ts's
-//! single-JS-number `Scalar`, which needed `hasKindCollapseRisk`/
-//! `d6Affected` structural detectors. Running the one vector TS's own
-//! comment identifies as D-6-affected --
-//! `validate/scalar-kinds/number-does-not-satisfy-integer-even-when-whole`
-//! -- through this runner confirms it: omnist-rs's `Schema::validate`
-//! correctly rejects a `Float` value against an `integer`-typed field
-//! (kind mismatch, not a value-based heuristic), so the vector PASSES here
-//! with no skip needed. This is confirmation of the source-level
-//! inspection already done before this step, not a surprise, and is
-//! deliberately documented rather than silently omitted.
+//! - `ParseError { line, col, code, message }` (OML and the four codecs;
+//!   `position()` is the `line:col` text-position path of E-11),
+//! - `SchemaError { path, code, message }` (OSD, `infer`, `extract`),
+//! - `DocumentError { path, code: Option<_>, message }` (document limits,
+//!   the data-XML profile refusals),
+//! - `WriteError { path, code, .. }` and `WriteReport` adjustments (write),
+//! - `ValidationError { path, code }` (validate/materialize, namespaced per
+//!   family by `ErrorCode::as_str`).
 //!
-//! **3. D-1 (node-count limit) re-check: still not applicable, same as
-//! before -- but for a different reason than initially assumed.** All 6
-//! `document-model/limits.json` vectors carry a vector-local
-//! `declared_max_depth`/`declared_max_nodes`/`declared_max_int_digits` in
-//! `input`, small values (e.g. `3`, `1`) a harness is meant to configure
-//! the implementation under test to for the vector's duration (§2.4: the
-//! numbers themselves are not normative). `omnist::document::MAX_DEPTH`
-//! (200), `MAX_NODES` (1,000,000, general per PR #80), and
-//! `int_cap::MAX_INT_DIGITS` (4,300) are all compile-time `const`s with no
-//! runtime-configuration surface, so none of these 6 vectors can be run
-//! against the *real* limit value either way -- every one skips, citing
-//! "not yet implemented -- compile-time constants, no runtime
-//! configuration surface". (This is not the D-1 §9.4 ledger entry; it's a
-//! capability gap, hence "not yet implemented" rather than a numbered
-//! ledger citation.)
+//! A vector whose actual error carries no code or no path FAILS; it is never
+//! skipped for lack of structure.
 //!
-//! **Parse-error structural matching (a fourth, closely-related finding,
-//! not one of the three headline decisions but load-bearing for how many
-//! `oml-grammar`/`osd-grammar`/`formats-*` syntax-failure vectors run for
-//! real rather than skip).** Unlike omnist-ts's `ParseError` (message-only
-//! for syntax failures, forcing a blanket skip of every syntax-failure
-//! vector asserting `diagnostics`), omnist-rs's `ParseError` *always*
-//! carries structured `{line, col, message}` (`error.rs`), for every
-//! format's syntax failure, not just materialize-driven ones. Verified
-//! directly: `read_oml("nan: 1\n")` fails at line 1, col 4, matching the
-//! real vector `oml-grammar/reserved/nan-bare-is-a-number-token-not-a-label`'s
-//! `expect.diagnostics[0].path` of `"1:4"` exactly. This runner therefore
-//! compares a syntax failure's `"{line}:{col}"` against the vector's
-//! `path` directly (as a one-element set, matching the general
-//! path-set-comparison shape used everywhere else) instead of skipping --
-//! a narrower gap than TS's, not the favorable "no gap at all" outcome:
-//! `omnist::schema::parse_schema`'s `SchemaError` (used for
-//! `osd-grammar`/`schema-wellformedness` `parse_schema` vectors) now carries
-//! structured `path`, `code`, and `message` fields (issue #122), resolving
-//! the former skip branch and verifying diagnostics directly.
+//! ## Skips are only ever E-20 "not yet implemented"
 //!
-//! **Formerly-unreachable temporal-write-report skip, now resolved (issue
-//! #89, found during issue #82 Step 4 triage; resolved by issue #105).**
-//! `formats-json/basic/temporal-leaf-is-stringified-on-write` expects a
-//! `write` of a `date`/`time`/`datetime`-kind leaf to JSON to report a
-//! `format.temporal-stringified` adjustment. Before issue #105,
-//! `omnist::document::Scalar` had no temporal variant, so
-//! `decode_document`/`decode_scalar` collapsed those three kinds to plain
-//! `Scalar::Str` before any writer ran, making the vector structurally
-//! unreachable. Issue #105 gave `Scalar` real `Date`/`Time`/`Datetime`
-//! variants and `formats/json.rs::check_json` now genuinely emits
-//! `format.temporal-stringified` on write, so this vector runs for real
-//! and passes -- the former skip detector has been removed.
+//! Three categories exist, all E-20 "not yet implemented" (no E-21
+//! documented divergence applies to this port, and a skip reason is checked
+//! by the `every_skip_reason_is_true_for_its_vector` test against the
+//! vector's own input, so it cannot drift):
+//!
+//! 1. `document-model/limits.json` (6): the vector declares
+//!    `declared_max_depth`/`declared_max_nodes`/`declared_max_int_digits`,
+//!    and this port's limits are compile-time constants with no runtime
+//!    configuration surface, so the boundary cannot be pinned.
+//! 2. `formats-yaml/alias-expansion.json` (6): every vector declares
+//!    `declared_max_alias_expansion`, and D-18 (section 2.4.1) is not
+//!    implemented -- tracked as DIV-3 (section 9.4). Never run against the
+//!    port's own default limit, which would be a false pass.
+//! 3. `extensions-osd-oml/` (28): the OSD-OML extension operations
+//!    (`parse_schema_oml`, `schema_from_document`, `schema_to_document`,
+//!    `write_schema_oml`) have no implementation in this port yet.
+//!
+//! **D-6 (integer/number kind collapse) does not apply**:
+//! `omnist::document::Scalar` has separate `Int`/`Float` variants, so there
+//! is nothing to skip.
 //!
 //! Usage:
 //!
@@ -115,14 +79,41 @@ use omnist::oml::{read_oml, write_oml};
 use omnist::ops::{compatible_with, equivalent, extract, is_empty, lint};
 use omnist::osd::{parse_schema, to_osd};
 use omnist::report::WriteReport;
-use omnist::schema::Schema;
+use omnist::schema::{ErrorFamily, Schema};
 use serde_json::Value as Json;
 
+/// Every `declared_max_*` key in `test-suite/README.md`'s allowlist. A key
+/// missing from this list is NOT skipped -- the vector would run against the
+/// port's own default limit, which is a false pass on a boundary vector.
 const LIMIT_KEYS: &[&str] = &[
     "declared_max_depth",
     "declared_max_nodes",
     "declared_max_int_digits",
+    // D-18 (section 2.4.1), new in v0.18.0-beta.
+    "declared_max_alias_expansion",
 ];
+
+/// The E-20 "not yet implemented" skip reason for a vector carrying a
+/// `declared_max_*` key, or `None` if it carries none. The wording depends on
+/// the key, so the reason is true for THAT vector.
+fn limit_skip_reason(input: &Json) -> Option<String> {
+    if input.get("declared_max_alias_expansion").is_some() {
+        return Some(
+            "not yet implemented: D-18 alias expansion limit (section 2.4.1) is not enforced by \
+             this port's YAML reader; tracked as DIV-3 (section 9.4) and omnist-rs#180"
+                .to_string(),
+        );
+    }
+    LIMIT_KEYS
+        .iter()
+        .find(|k| input.get(**k).is_some())
+        .map(|k| {
+            format!(
+                "not yet implemented: {k} needs a runtime-configurable limit; this port's \
+                 limits are compile-time constants (omnist-rs#181)"
+            )
+        })
+}
 
 fn suite_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -274,27 +265,40 @@ fn expect_ok(v: &Json) -> bool {
     v["expect"]["ok"].as_bool().unwrap_or(false)
 }
 
-fn expected_diag_paths(v: &Json) -> Vec<String> {
+/// One diagnostic as section 8.5.2 compares it: a `(path, code)` pair.
+type Diag = (String, String);
+
+fn expected_diags(v: &Json) -> Vec<Diag> {
     v["expect"]["diagnostics"]
         .as_array()
         .cloned()
         .unwrap_or_default()
         .iter()
-        .filter_map(|d| d.get("path").and_then(Json::as_str).map(str::to_string))
+        .map(|d| {
+            (
+                d["path"].as_str().unwrap_or_default().to_string(),
+                d["code"].as_str().unwrap_or_default().to_string(),
+            )
+        })
         .collect()
 }
 
-fn paths_match(mut expected: Vec<String>, mut actual: Vec<String>) -> bool {
-    expected.sort();
-    actual.sort();
-    expected == actual
+/// E-17 rules 2 and 3: compare as a SET, exactly.
+fn diags_match(expected: &[Diag], actual: &[Diag]) -> bool {
+    let e: std::collections::BTreeSet<&Diag> = expected.iter().collect();
+    let a: std::collections::BTreeSet<&Diag> = actual.iter().collect();
+    e == a
 }
 
-/// A `"line:col"` diagnostic path from a real `omnist::error::ParseError`,
-/// mirroring the vector suite's own `"L:C"` convention -- see the
-/// module-level doc comment's "Parse-error structural matching" section.
-fn parse_error_path(line: usize, col: usize) -> String {
-    format!("{line}:{col}")
+/// Pass if the diagnostic sets match exactly, else fail showing both.
+fn check_diags(expected: &[Diag], actual: &[Diag]) -> VResult {
+    if diags_match(expected, actual) {
+        pass()
+    } else {
+        fail(format!(
+            "diagnostics differ: expected {expected:?}, got {actual:?}"
+        ))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -303,38 +307,22 @@ fn parse_error_path(line: usize, col: usize) -> String {
 
 fn run_parse(v: &Json) -> VResult {
     let input = &v["input"];
-    if LIMIT_KEYS.iter().any(|k| input.get(k).is_some()) {
-        return skip(
-            "not yet implemented -- compile-time constants, no runtime configuration surface",
-        );
+    if let Some(reason) = limit_skip_reason(input) {
+        return skip(reason);
     }
     let format = input["format"].as_str().unwrap_or("oml");
     let text = input["text"].as_str().unwrap_or_default();
 
-    // `read_oml` returns a bare `RawNode` + `ParseError`; the other four
-    // formats return `Doc` + `OmnistError`. Normalize both into
-    // `Result<RawNode, Option<ErrPos>>` (an optional structural position) so
-    // the rest of this driver is format-agnostic.
-    // `format.attribute-dropped`/`format.namespace-dropped` (spec Sec8.3.8,
-    // D-3) are read-time diagnostics only xml's reader emits, via
-    // `read_xml_report`'s `report: Option<&mut WriteReport>` (mirroring the
-    // write-side pattern) -- so only the "xml" arm below wires up a report;
-    // the other four formats have no read-time diagnostics to check.
+    // `format.attribute-dropped`/`format.namespace-dropped` (spec section
+    // 8.3.8, D-3) are read-time diagnostics only XML's reader emits, via
+    // `read_xml_report`'s `report`; the other formats have none.
     let mut xml_report = WriteReport::new();
-    let result: Result<RawNode, Option<ErrPos>> = match format {
-        "oml" => read_oml(text).map_err(|e| Some(ErrPos::LineCol(e.line, e.col))),
-        "json" => read_json(text)
-            .map(|d| d.to_raw())
-            .map_err(omnist_error_pos),
-        "toml" => read_toml(text)
-            .map(|d| d.to_raw())
-            .map_err(omnist_error_pos),
-        "xml" => read_xml_report(text, Some(&mut xml_report))
-            .map(|d| d.to_raw())
-            .map_err(omnist_error_pos),
-        "yaml" => read_yaml(text)
-            .map(|d| d.to_raw())
-            .map_err(omnist_error_pos),
+    let result: Result<RawNode, OmnistError> = match format {
+        "oml" => read_oml(text).map_err(OmnistError::from),
+        "json" => read_json(text).map(|d| d.to_raw()),
+        "toml" => read_toml(text).map(|d| d.to_raw()),
+        "xml" => read_xml_report(text, Some(&mut xml_report)).map(|d| d.to_raw()),
+        "yaml" => read_yaml(text).map(|d| d.to_raw()),
         other => return fail(format!("unknown format {other:?}")),
     };
 
@@ -347,78 +335,41 @@ fn run_parse(v: &Json) -> VResult {
             if raw != expected {
                 return fail("parsed document does not match expected");
             }
-            let expected_paths = expected_diag_paths(v);
-            if !expected_paths.is_empty() {
-                let actual_paths: Vec<String> = xml_report
-                    .adjustments()
-                    .iter()
-                    .map(|a| a.path.clone())
-                    .collect();
-                if !paths_match(expected_paths, actual_paths) {
-                    return fail("diagnostic paths differ");
-                }
-            }
-            pass()
+            // A successful read may still report diagnostics (XML's dropped
+            // attributes/namespaces); the set must match exactly, empty
+            // included.
+            let actual: Vec<Diag> = xml_report
+                .adjustments()
+                .iter()
+                .map(|a| (a.path.clone(), a.code.clone()))
+                .collect();
+            check_diags(&expected_diags(v), &actual)
         }
-        Err(pos) => {
+        Err(e) => {
             if expect_ok(v) {
-                return fail(format!(
-                    "expected success, parse failed (line/col: {pos:?})"
-                ));
+                return fail(format!("expected success, parse failed: {e}"));
             }
-            let expected_paths = expected_diag_paths(v);
-            parse_failure_result(pos, expected_paths)
+            parse_failure_result(&e, &expected_diags(v))
         }
     }
 }
-
-/// The `Err(pos)` half of [`run_parse`]'s dispatch, split out as its own
-/// pure function so every arm (including the two that no longer have a
-/// real vector reaching them now that issue #88's `DocumentError`-path
-/// handling exists -- see the two direct unit tests right below this
-/// function) is independently, directly testable rather than relying on
-/// the vector suite's shape to happen to exercise it.
-fn parse_failure_result(pos: Option<ErrPos>, expected_paths: Vec<String>) -> VResult {
-    if expected_paths.is_empty() {
-        return pass();
-    }
-    match pos {
-        Some(ErrPos::LineCol(line, col)) => {
-            let actual_paths = vec![parse_error_path(line, col)];
-            if paths_match(expected_paths, actual_paths) {
-                pass()
-            } else {
-                fail("parse-error line:col does not match expected diagnostic path")
-            }
-        }
-        Some(ErrPos::Path(path)) => {
-            let actual_paths = vec![path];
-            if paths_match(expected_paths, actual_paths) {
-                pass()
-            } else {
-                fail("document-error path does not match expected diagnostic path")
-            }
-        }
-        None => skip("syntax-level error carries no structured line/col here"),
+fn parse_failure_result(e: &OmnistError, expected: &[Diag]) -> VResult {
+    match error_diag(e) {
+        Some(actual) => check_diags(expected, &[actual]),
+        None => fail(format!(
+            "the read failed with an error that carries no structured (path, code): {e}"
+        )),
     }
 }
-
-/// A parse failure's structural position, normalized across the two shapes
-/// `run_parse` can see: a syntax-level `ParseError`'s `{line, col}` (compared
-/// as `"{line}:{col}"`, see the module doc's "Parse-error structural
-/// matching" section), or a `DocumentError`'s own `path` (already a
-/// `"$..."`-shaped string, e.g. issue #88's mapping-key-must-be-a-string
-/// rejection, used as-is with no reformatting).
-#[derive(Debug)]
-enum ErrPos {
-    LineCol(usize, usize),
-    Path(String),
-}
-
-fn omnist_error_pos(e: OmnistError) -> Option<ErrPos> {
+/// The `(path, code)` a read failure carries: a syntax-level `ParseError`'s
+/// `line:col` text position (E-11) and `parse.*` code, or a `DocumentError`'s
+/// own Document path and code (limits, the data-XML profile refusals).
+/// `None` if the error carries no structured code -- the caller FAILS the
+/// vector then; it is never a skip.
+fn error_diag(e: &OmnistError) -> Option<Diag> {
     match e {
-        OmnistError::Parse(pe) => Some(ErrPos::LineCol(pe.line, pe.col)),
-        OmnistError::Document(de) => Some(ErrPos::Path(de.path)),
+        OmnistError::Parse(pe) => Some((pe.position(), pe.code.clone())),
+        OmnistError::Document(de) => de.code.clone().map(|c| (de.path.clone(), c)),
         _ => None,
     }
 }
@@ -435,22 +386,12 @@ fn run_parse_schema(v: &Json) -> VResult {
         }
         Err(e) => {
             if expect_ok(v) {
-                return fail("expected success, parse_schema failed");
+                return fail(format!("expected success, parse_schema failed: {e}"));
             }
-            let expected_paths = expected_diag_paths(v);
-            if expected_paths.is_empty() {
-                return pass();
-            }
-            let actual_paths = vec![e.path.clone()];
-            if paths_match(expected_paths, actual_paths) {
-                pass()
-            } else {
-                fail("diagnostic paths differ")
-            }
+            check_diags(&expected_diags(v), &[(e.path.clone(), e.code.clone())])
         }
     }
 }
-
 fn run_validate(v: &Json) -> VResult {
     let schema = match parse_schema(v["input"]["schema"].as_str().unwrap_or_default()) {
         Ok(s) => s,
@@ -467,16 +408,18 @@ fn run_validate(v: &Json) -> VResult {
     if actual_ok != want_ok {
         return fail(format!("expected ok={want_ok}, got {actual_ok}"));
     }
-    if !want_ok {
-        let expected_paths = expected_diag_paths(v);
-        let actual_paths: Vec<String> = result.errors().iter().map(|e| e.path.clone()).collect();
-        if !paths_match(expected_paths, actual_paths) {
-            return fail("diagnostic paths differ");
-        }
-    }
-    pass()
+    let actual: Vec<Diag> = result
+        .errors()
+        .iter()
+        .map(|e| {
+            (
+                e.path.clone(),
+                e.code.as_str(ErrorFamily::Validate).to_string(),
+            )
+        })
+        .collect();
+    check_diags(&expected_diags(v), &actual)
 }
-
 fn run_materialize(v: &Json) -> VResult {
     let schema = match parse_schema(v["input"]["schema"].as_str().unwrap_or_default()) {
         Ok(s) => s,
@@ -499,22 +442,21 @@ fn run_materialize(v: &Json) -> VResult {
         match result {
             Ok(_) => fail("expected failure, materialize succeeded"),
             Err(e) => {
-                let expected_paths = expected_diag_paths(v);
-                if expected_paths.is_empty() {
-                    return pass();
-                }
-                let actual_paths: Vec<String> =
-                    e.0.errors().iter().map(|err| err.path.clone()).collect();
-                if paths_match(expected_paths, actual_paths) {
-                    pass()
-                } else {
-                    fail("diagnostic paths differ")
-                }
+                let actual: Vec<Diag> =
+                    e.0.errors()
+                        .iter()
+                        .map(|err| {
+                            (
+                                err.path.clone(),
+                                err.code.as_str(ErrorFamily::Materialize).to_string(),
+                            )
+                        })
+                        .collect();
+                check_diags(&expected_diags(v), &actual)
             }
         }
     }
 }
-
 fn run_write(v: &Json) -> VResult {
     let input = &v["input"];
     let format = input["format"].as_str().unwrap_or("oml");
@@ -540,6 +482,10 @@ fn run_write(v: &Json) -> VResult {
         "oml" => write_oml(&doc.to_raw(), 2),
         other => return fail(format!("unknown format {other:?}")),
     };
+    let report_diags: Vec<Diag> = report
+        .iter()
+        .map(|a| (a.path.clone(), a.code.clone()))
+        .collect();
     match result {
         Ok(text) => {
             if !expect_ok(v) {
@@ -561,25 +507,25 @@ fn run_write(v: &Json) -> VResult {
                     ));
                 }
             }
-            let expected_paths = expected_diag_paths(v);
-            if !expected_paths.is_empty() {
-                let actual_paths: Vec<String> = report.iter().map(|a| a.path.clone()).collect();
-                if !paths_match(expected_paths, actual_paths) {
-                    return fail("diagnostic paths differ");
-                }
-            }
-            pass()
+            // A successful write may carry diagnostics alongside `ok: true`
+            // (section 8.5.3); the set must match exactly, empty included.
+            check_diags(&expected_diags(v), &report_diags)
         }
-        Err(_) => {
+        Err(e) => {
             if expect_ok(v) {
-                fail("expected success, write failed")
-            } else {
-                pass()
+                return fail(format!("expected success, write failed: {e}"));
+            }
+            match (&e.path, &e.code) {
+                (Some(path), Some(code)) => {
+                    check_diags(&expected_diags(v), &[(path.clone(), code.clone())])
+                }
+                _ => fail(format!(
+                    "the write failed with an error that carries no structured (path, code): {e}"
+                )),
             }
         }
     }
 }
-
 fn run_schema_producing(v: &Json, f: impl Fn(&Schema) -> Schema) -> VResult {
     let schema = match parse_schema(v["input"]["schema"].as_str().unwrap_or_default()) {
         Ok(s) => s,
@@ -681,7 +627,7 @@ fn run_extract(v: &Json) -> VResult {
     } else {
         match result {
             Ok(_) => fail("expected failure, extract succeeded"),
-            Err(_) => pass(),
+            Err(e) => check_diags(&expected_diags(v), &[(e.path.clone(), e.code.clone())]),
         }
     }
 }
@@ -700,16 +646,33 @@ fn run_lint(v: &Json) -> VResult {
     if actual_ok != expected_ok {
         return fail(format!("expected ok={expected_ok}, got {actual_ok}"));
     }
-    let expected_locs: Vec<String> = v["expect"]["findings"]
+    let expected: std::collections::BTreeSet<(String, String, String)> = v["expect"]["findings"]
         .as_array()
         .cloned()
         .unwrap_or_default()
         .iter()
-        .filter_map(|f| f.get("location").and_then(Json::as_str).map(str::to_string))
+        .map(|f| {
+            (
+                f["code"].as_str().unwrap_or_default().to_string(),
+                f["severity"].as_str().unwrap_or_default().to_string(),
+                f["location"].as_str().unwrap_or_default().to_string(),
+            )
+        })
         .collect();
-    let actual_locs: Vec<String> = findings.iter().map(|f| f.location.clone()).collect();
-    if !paths_match(expected_locs, actual_locs) {
-        return fail("finding locations differ");
+    let actual: std::collections::BTreeSet<(String, String, String)> = findings
+        .iter()
+        .map(|f| {
+            (
+                f.code.to_string(),
+                f.severity.to_string(),
+                f.location.clone(),
+            )
+        })
+        .collect();
+    if expected != actual {
+        return fail(format!(
+            "findings (code, severity, location) differ: expected {expected:?}, got {actual:?}"
+        ));
     }
     pass()
 }
@@ -739,21 +702,36 @@ fn run_infer_common(v: &Json, with_report: bool) -> VResult {
     let _ = with_report; // both operations run the same call, per Track 1's precedent
     let result = infer_with_report(&samples, "Root", allow_any);
     if expect_ok(v) {
-        let (schema, _fallbacks) = match result {
+        let (schema, fallbacks) = match result {
             Ok(v) => v,
             Err(e) => return fail(format!("expected success, infer failed: {e}")),
         };
         let actual = to_osd(&schema, None);
         let expected = v_expect_schema(v);
         match compare_schema(&actual, &expected, "isomorphic") {
-            Ok(true) => pass(),
-            Ok(false) => fail("inferred schema is not isomorphic to expected"),
-            Err(e) => fail(format!("referee error: {e}")),
+            Ok(true) => {}
+            Ok(false) => return fail("inferred schema is not isomorphic to expected"),
+            Err(e) => return fail(format!("referee error: {e}")),
         }
+        // S-21: every opening to `any` must be reported (`fallbacks`), and
+        // none may occur when `allow_any` is off. `fallbacks` is compared by
+        // location (reason text is message-like, never compared, E-17).
+        if let Some(expected_fallbacks) = v["expect"].get("fallbacks").and_then(Json::as_array) {
+            let want: std::collections::BTreeSet<String> = expected_fallbacks
+                .iter()
+                .map(|f| f["location"].as_str().unwrap_or_default().to_string())
+                .collect();
+            let got: std::collections::BTreeSet<String> =
+                fallbacks.iter().map(|f| f.location.clone()).collect();
+            if want != got || expected_fallbacks.len() != fallbacks.len() {
+                return fail(format!("fallbacks differ: expected {want:?}, got {got:?}"));
+            }
+        }
+        pass()
     } else {
         match result {
             Ok(_) => fail("expected failure, infer succeeded"),
-            Err(_) => pass(),
+            Err(e) => check_diags(&expected_diags(v), &[(e.path.clone(), e.code.clone())]),
         }
     }
 }
@@ -773,6 +751,15 @@ fn run_infer_with_report(v: &Json) -> VResult {
     run_infer_common(v, true)
 }
 
+/// The four operations that belong to the OSD-OML extension
+/// (`docs/extensions/osd-oml.md`, section E.11).
+const EXTENSION_OPERATIONS: &[&str] = &[
+    "parse_schema_oml",
+    "schema_from_document",
+    "schema_to_document",
+    "write_schema_oml",
+];
+
 fn dispatch(v: &Json) -> VResult {
     let op = v["operation"].as_str().unwrap_or("");
     match op {
@@ -790,7 +777,16 @@ fn dispatch(v: &Json) -> VResult {
         "infer" => run_infer(v),
         "infer_with_report" => run_infer_with_report(v),
         "lint" => run_lint(v),
-        other => skip(format!("no driver wired up yet for operation {other:?}")),
+        // The OSD-OML extension (docs/extensions/osd-oml.md): not implemented
+        // by this port. E-20 "not yet implemented".
+        op if EXTENSION_OPERATIONS.contains(&op) => skip(format!(
+            "not yet implemented: {op} belongs to the OSD-OML extension, which this port does \
+             not implement (omnist-rs#175)"
+        )),
+        // An operation this runner knows nothing about is a FAIL, never a
+        // silent skip: a new spec operation must be wired up or explicitly
+        // classified.
+        other => fail(format!("no driver for unknown operation {other:?}")),
     }
 }
 
@@ -881,22 +877,17 @@ pub fn run_all(dir: &Path) -> (u32, u32, u32) {
 /// its issue -- an entry lingering after its fix would silently stop
 /// verifying that the fix stuck.
 const KNOWN_FAILING_VECTORS: &[&str] = &[
-    // Empty on purpose: every previously-listed entry is now fixed.
-    //
-    // Issue #162 fixed the XML write-side CR-as-numeric-character-reference
-    // entry. Issues #158/#163/#166 fixed the four OSD
-    // schema-construction-time validation entries ([0,0] cardinality, empty
-    // field labels, brackets in field labels). Issue #164 fixed both
-    // leading-zero entries, and #165 fixed the five temporal error-case
-    // entries -- all removed in the PRs that fixed them.
-    //
-    // `oml-grammar/temporals/tz-offset-within-range-is-valid` (#165's 6th,
-    // happy-path vector) stayed on this list longer than the rest: its
-    // `expect.document.value` was un-canonicalized (missing the `:00`
-    // seconds every sibling OML-datetime vector in the same file has),
-    // which was a genuine omnist-spec test-suite defect, not an omnist-rs
-    // gap -- filed as omnist-spec#51 and fixed there (commit 830590b,
-    // vendor bump in this same PR). Now passes and is removed here too.
+    // omnist-spec#103 (an OPEN SPEC QUESTION, deliberately not resolved
+    // here): the code for leftover content after a complete top-level EDGE
+    // with no separator. This vector expects `parse.trailing-content` at
+    // 1:14 for `a: 2024-01-01T99` (a DATE edge value, then the leftover
+    // identifier `T99`); this port reports `parse.unexpected-token` at the
+    // same position, following the grammar's own "a token where none is
+    // allowed" reading, which is also what §4.6.1/OML-25 does NOT claim to
+    // override for an edge (OML-25 is stated only for the scalar branch).
+    // The position (1:14) is right; only the code is in question. Remove
+    // this entry when the spec settles the question.
+    "oml-grammar/temporals/date-then-non-time-suffix-is-date-plus-trailing-content",
 ];
 
 fn main_with_dir(dir: &Path) -> u8 {
@@ -912,7 +903,7 @@ fn main_with_dir(dir: &Path) -> u8 {
     let total = passed + failed + skipped;
     println!(
         "\n{passed} passed, {failed} failed, {skipped} skipped (of {total} vectors) -- \
-         diagnostics compared in code-agnostic mode (path-set only)"
+         diagnostics compared as (path, code) sets (section 8.5.2)"
     );
     let vectors = iter_vectors(dir);
     let unexpected: Vec<&str> = vectors
@@ -948,202 +939,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn vector_count_is_204() {
-        // 146 -> 152 via vendor/omnist-spec v0.1.1-alpha -> commit f93c569
-        // (issue #104: arbitrary-precision `Scalar::Int`). The submodule
-        // pin bump brings in several bundled, otherwise-unrelated
-        // omnist-spec changes past the D-9 vector this issue actually
-        // needed (`git diff <old-pin> f93c569 --stat -- test-suite/`
-        // shows `document-model/limits.json`, `extract/extract.json`,
-        // `formats-json/json.json`, `infer/infer.json`, and
-        // `osd-grammar/grammar.json` all changed) -- not decomposed
-        // vector-by-vector here since several are genuinely unrelated to
-        // this fix, matching this file's own precedent (issue #99's pin
-        // bump bundled an unrelated NaN/Infinity vector the same way).
-        // 152 -> 153 via vendor/omnist-spec commit 964af7b (issue #154 /
-        // D-2: a second `root` declaration is now a normative error,
-        // `schema.duplicate-root`).
-        // 153 -> 155 via vendor/omnist-spec commit 7f7690c (issue #156 /
-        // D-3: `format.attribute-dropped` and `format.namespace-dropped`
-        // read-time diagnostics each get their own new vector;
-        // `format.interleaving-lost` reuses the pre-existing
-        // `formats-json/basic/cross-label-interleaving-lost-and-reported`
-        // vector, only adding its `expect.diagnostics`, so it does not add
-        // a vector of its own).
-        // 155 -> 172 via vendor/omnist-spec commit 0ac1eac (issues #158-166,
-        // D-2/D-3-adjacent grammar/write-side fixes bundled in the same
-        // pin bump). This PR (issues #159/#160/#161) only implements the
-        // write-side unconditional-failure trio -- see
-        // `full_suite_counts_match_the_measured_baseline`'s doc comment
-        // for exactly which of the 17 new failures this PR fixed vs. left
-        // for other issues.
-        // 172 -> 199 via vendor/omnist-spec commit c4141d0 (v0.7.0-beta):
-        // the OSD-OML extension (Sec.Extensions, first shipped in
-        // v0.6.0-beta) adds `extensions-osd-oml/parse.json`,
-        // `parse-errors.json`, and `write.json`, plus three new Sec3.3
-        // canonical-serialization-order characterization vectors
-        // (`osd-grammar/canonical-output/declaration-order-round-trips-exactly`,
-        // `prune/basic/survivors-keep-declaration-order-not-alphabetical`,
-        // `normalize/basic/output-order-is-alphabetical-not-declaration-order`)
-        // -- all three pass on arrival, confirming this port's existing
-        // declaration-order/alphabetical-order behavior already matched the
-        // newly-formalized principles.
-        // 199 -> 204 via vendor/omnist-spec commit 47a84d6 (v0.9.1-beta,
-        // via v0.8.0-beta/v0.9.0-beta): new Sec3.3 S-8 (`Name` grammar,
-        // `[A-Za-z_][A-Za-z0-9_]*` -- already the exact regex this port's
-        // tokenizer used, no behavior change) and S-3 clarified
-        // (reserved-name matching is exact and case-sensitive -- already
-        // this port's behavior via `==` on `&str`, verified directly
-        // against `osd.rs` before this bump, not assumed). One new
-        // characterization vector
-        // (`osd-grammar/reserved-names/case-mismatched-name-is-not-reserved`)
-        // passes on arrival; four new `extensions-osd-oml/*` vectors join
-        // the existing 24, all correctly `Status::Skip` (this port doesn't
-        // implement the OSD-OML extension yet, tracked in omnist-rs#175).
+    fn vector_count_is_249() {
+        // 204 -> 249 via the submodule pin bump v0.9.1-beta -> v0.19.0-beta.
         let vectors = iter_vectors(&suite_dir());
-        assert_eq!(vectors.len(), 204);
+        assert_eq!(vectors.len(), 249);
     }
 
     /// Full-suite regression guard: runs every real vector through every
     /// driver (also this file's real coverage-driving test, since
-    /// `main`/`main_with_dir` itself is process-entry-point code no test
-    /// calls directly). The exact counts are this step's honest,
-    /// freshly-reproduced measurement -- history through (124, 0, 22) at
-    /// 146 vectors (issue #99), then (129, 0, 23) at 152 vectors after
-    /// issue #104. (130, 0, 22) after issue #105. (146, 0, 6) after issue #122 (`SchemaError` structured path/code)
-    /// gained real `Date`/`Time`/`Datetime` variants): the
-    /// `formats-json/basic/temporal-leaf-is-stringified-on-write` vector,
-    /// previously skipped as structurally unreachable (issue #89, since
-    /// `Scalar` had no temporal variant to preserve through
-    /// `decode_scalar`), now passes for real -- confirmed via a fresh
-    /// `[PASS]` line in the harness's own output, not assumed. Now
-    /// (147, 0, 6) after issue #154 (D-2: duplicate `root` is now a
-    /// normative error, `schema.duplicate-root`). Every
-    /// count here is freshly reproduced by running the harness, not
-    /// computed by hand. Pinned so a future change that silently
-    /// regresses pass/fail/skip counts is caught, not a "this must
-    /// always be 0 fails" gate. Now (149, 0, 6) after issue #156 (D-3):
-    /// `format.attribute-dropped`/`format.namespace-dropped`
-    /// (`formats-xml/xml.json`, read-time, via `read_xml_report`'s new
-    /// `WriteReport` parameter) and `format.interleaving-lost`
-    /// (`formats-json/json.json`, write-time, via
-    /// `Doc::has_interleaving_loss`) all now pass for real.
-    /// (149, 0, 6) -> (153, 13, 6) via the 0ac1eac submodule pin bump
-    /// (issues #158-166) plus PR#167's write-side unconditional-failure
-    /// fixes (#159/#160/#161). The pin bump alone added 17 new/changed
-    /// failures at 172 total vectors; PR#167 fixed 4 of them (verified
-    /// fail -> pass by name, not assumed):
-    ///   - `formats-xml/basic/label-with-illegal-xml-characters-cannot-be-written` (#159)
-    ///   - `formats-toml/nulls/null-leaf-cannot-be-written` (#160)
-    ///   - `formats-json/basic/nan-cannot-be-written` (#161, renamed+flipped from
-    ///     `nan-substituted-with-null-and-reported`)
-    ///   - `formats-xml/basic/empty-internal-node-cannot-be-written` (#161, new)
+    /// `main`/`main_with_dir` is process-entry-point code). The counts are
+    /// freshly measured, not computed by hand.
     ///
-    /// `formats-toml/nulls/null-leaf-cannot-be-written-strict-is-the-same`
-    /// (#160's strict-mode companion) was already passing before PR#167
-    /// (TOML's null-write already failed in strict mode; only the
-    /// non-strict/unconditional-failure behavior needed fixing).
+    /// Spec v0.19.0-beta, diagnostics compared as (path, code) sets:
+    /// 208 pass, 1 fail, 40 skip of 249.
     ///
-    /// (153, 13, 6) -> (154, 12, 6) via issue #162 (XML write-side
-    /// carriage returns escaped as the numeric character reference
-    /// `&#13;` instead of written raw): `formats-xml/basic/carriage-
-    /// return-written-as-numeric-character-reference` moves fail -> pass
-    /// (verified, not assumed), and its entry is removed from
-    /// `KNOWN_FAILING_VECTORS` in the same PR, per that constant's own
-    /// doc comment.
+    /// - the 1 fail is `date-then-non-time-suffix-is-date-plus-trailing-content`,
+    ///   blocked on the open omnist-spec#103 (see `KNOWN_FAILING_VECTORS`);
+    /// - the 40 skips are E-20 "not yet implemented", never a documented
+    ///   divergence: 6 `document-model/limits` (no runtime-configurable
+    ///   limits), 6 `formats-yaml/alias-expansion` (D-18, DIV-3), and 28
+    ///   `extensions-osd-oml` (extension not implemented, omnist-rs#175).
     ///
-    /// (154, 12, 6) -> (158, 8, 6) via issues #158/#163/#166 (OSD
-    /// schema-construction-time validation): `[0,0]` cardinality, an
-    /// empty-string field label, and a field label containing `[`/`]`
-    /// (both a matched-pair shape and a lone, unmatched `]`) each now
-    /// fail to parse. Four vectors move fail -> pass (verified, not
-    /// assumed):
-    ///   - `osd-grammar/cardinality/zero-max-is-invalid-redundant-with-absence` (#158)
-    ///   - `osd-grammar/labels/empty-label-is-rejected` (#163)
-    ///   - `osd-grammar/labels/bracket-in-label-is-rejected` (#166)
-    ///   - `osd-grammar/labels/closing-bracket-alone-in-label-is-rejected` (#166)
-    ///
-    /// All four removed from `KNOWN_FAILING_VECTORS` in the same PR, per
-    /// that constant's own doc comment.
-    ///
-    /// (158, 8, 6) -> (165, 1, 6) via issues #164/#165 (OML tokenizer
-    /// numeric/temporal-literal grammar, `omnist/src/oml/scanner.rs`):
-    ///   - #164: a leading zero in a numeric literal's integer part (e.g.
-    ///     "01", "00.5") is now `parse.leading-zero`.
-    ///   - #165: DATE/TIME/DATETIME calendar/clock range validation was
-    ///     already correctly implemented (month 01-12, day valid for
-    ///     month/leap-year, hour/minute/second in range, no leap-second
-    ///     spelling, tz-offset sharing TIME's exact minute range rather
-    ///     than a separate, looser one) -- the real gap was a diagnostic-
-    ///     position bug (`finish_temporal` reported the token's *end*
-    ///     position, not its *start*, disagreeing with every conformance
-    ///     vector's expected `line:col`). Fixed by reporting at `start`.
-    ///
-    /// Seven vectors move fail -> pass (verified, not assumed):
-    ///   - `oml-grammar/numbers/leading-zero-integer-is-an-error` (#164)
-    ///   - `oml-grammar/numbers/leading-zero-in-decimal-is-an-error` (#164)
-    ///   - `oml-grammar/temporals/date-with-out-of-range-month-is-an-error` (#165)
-    ///   - `oml-grammar/temporals/date-with-day-invalid-for-month-is-an-error` (#165)
-    ///   - `oml-grammar/temporals/february-29-in-a-non-leap-year-is-an-error` (#165)
-    ///   - `oml-grammar/temporals/leap-second-is-an-error` (#165)
-    ///   - `oml-grammar/temporals/tz-offset-minute-out-of-range-is-an-error` (#165)
-    ///
-    /// All seven removed from `KNOWN_FAILING_VECTORS` in the same PR.
-    /// `tz-offset-within-range-is-valid` (#165's 6th, happy-path vector)
-    /// stayed on `KNOWN_FAILING_VECTORS` at the time -- it was a genuine
-    /// omnist-spec test-suite defect (filed as omnist-spec#51), not an
-    /// omnist-rs gap.
-    ///
-    /// (165, 1, 6) -> (166, 0, 6): omnist-spec#51 fixed upstream (commit
-    /// 830590b) -- vendor bumped to aac3ce0 in the PR that also added
-    /// Sec8.5.3's XML-whitespace-normalization rule (omnist-spec#52,
-    /// found while implementing #99 -- the CR-escaping vector's
-    /// `expect.text` baked in the Python reference's own indentation
-    /// choice, which isn't normative; this port's XML writer never
-    /// indents, so the vector failed here for a reason outside this
-    /// port's own correctness). `tz-offset-within-range-is-valid` moves
-    /// fail -> pass and is removed from `KNOWN_FAILING_VECTORS` above;
-    /// `carriage-return-written-as-numeric-character-reference` was
-    /// already passing once `normalize_xml_whitespace` was added to this
-    /// runner's own `text` comparison.
-    ///
-    /// This closes out every issue in the #158-166 batch, plus both
-    /// spec-suite defects this port found while doing so.
-    ///
-    /// (166, 0, 6) -> (169, 0, 30) via the v0.7.0-beta submodule pin bump
-    /// (commit c4141d0): 27 new vectors arrive (199 total). Three are Sec3.3
-    /// canonical-serialization-order characterization vectors and all pass
-    /// on arrival (verified by name, not assumed):
-    ///   - `osd-grammar/canonical-output/declaration-order-round-trips-exactly`
-    ///   - `prune/basic/survivors-keep-declaration-order-not-alphabetical`
-    ///   - `normalize/basic/output-order-is-alphabetical-not-declaration-order`
-    ///
-    /// The other 24 are all `extensions-osd-oml/*` vectors for the OSD-OML
-    /// extension (v0.6.0-beta) -- this port has not implemented that
-    /// extension yet, so every one of them is a legitimate `Status::Skip`
-    /// ("no driver wired up yet for operation ..."), not a failure. Zero new
-    /// failures.
-    ///
-    /// (169, 0, 30) -> (170, 0, 34) via the v0.9.1-beta submodule pin bump
-    /// (commit 47a84d6, via v0.8.0-beta/v0.9.0-beta): Sec3.3 S-8 (`Name`
-    /// grammar) and S-3 (reserved-name matching is exact/case-sensitive)
-    /// are both characterization only -- this port's tokenizer already used
-    /// the exact `[A-Za-z_][A-Za-z0-9_]*` regex S-8 states, and its
-    /// reserved-name checks (`osd.rs`, `name == "any"` /
-    /// `ScalarKind::ALL.iter().any(|k| k.as_str() == name)`) are already
-    /// plain `&str` equality, verified directly against source before this
-    /// bump landed, not assumed. One new vector passes on arrival:
-    ///   - `osd-grammar/reserved-names/case-mismatched-name-is-not-reserved`
-    ///
-    /// Four new `extensions-osd-oml/*` vectors join the existing 24 (28
-    /// total), all `Status::Skip` for the same not-yet-implemented reason,
-    /// tracked in omnist-rs#175.
+    /// History: (170, 0, 34) at v0.9.1-beta / 204 vectors, path-only mode.
+    /// At v0.19.0-beta the same code, before any change, was (197, 18, 34)
+    /// path-only; switching to (path, code) mode and adopting the sweep
+    /// gives (208, 1, 40).
     #[test]
     fn full_suite_counts_match_the_measured_baseline() {
         let (passed, failed, skipped) = run_all(&suite_dir());
         assert_eq!(
             (passed, failed, skipped),
-            (170, 0, 34),
+            (208, 1, 40),
             "vector pass/fail/skip counts changed -- if this is an intentional fix or a new \
              vector, update the pinned baseline; if not, something regressed"
         );
@@ -1277,54 +1103,87 @@ mod tests {
     }
 
     #[test]
-    fn run_parse_failure_with_no_diagnostics_passes() {
+    fn run_parse_failure_with_no_expected_diagnostics_fails() {
+        // Exact matching (E-17 rule 3): an unexpected diagnostic fails the
+        // vector, so `expect.diagnostics` may not be left off a failure.
         let v = json!({"operation": "parse", "input": {"format": "oml", "text": "[[["}, "expect": {"ok": false}});
+        assert_eq!(dispatch(&v).status, Status::Fail);
+    }
+
+    #[test]
+    fn run_parse_failure_with_the_right_path_but_the_wrong_code_fails() {
+        // The false green a code-agnostic run would give: right ok, right
+        // path, wrong code.
+        let v = json!({
+            "operation": "parse",
+            "input": {"format": "oml", "text": "nan: 1\n"},
+            "expect": {"ok": false, "diagnostics": [{"path": "1:4", "code": "parse.unexpected-token"}]}
+        });
+        let r = dispatch(&v);
+        assert_eq!(r.status, Status::Fail);
+        assert!(
+            r.message.contains("parse.trailing-content"),
+            "{}",
+            r.message
+        );
+    }
+
+    #[test]
+    fn run_parse_failure_with_the_right_path_and_code_passes() {
+        let v = json!({
+            "operation": "parse",
+            "input": {"format": "oml", "text": "nan: 1\n"},
+            "expect": {"ok": false, "diagnostics": [{"path": "1:4", "code": "parse.trailing-content"}]}
+        });
         assert_eq!(dispatch(&v).status, Status::Pass);
     }
 
     #[test]
-    fn run_parse_non_oml_syntax_failure_with_diagnostics_matches_by_line_col() {
-        // json's `error_at` also produces a structured line/col (json.rs),
-        // so this checks the non-oml `omnist_error_pos` path specifically.
+    fn run_parse_non_oml_syntax_failure_with_diagnostics_matches_by_line_col_and_code() {
+        // json's `error_at` produces a structured line/col and the
+        // `parse.codec-syntax` code (json.rs).
         let v = json!({
             "operation": "parse",
             "input": {"format": "json", "text": "{"},
-            "expect": {"ok": false, "diagnostics": [{"path": "1:2"}]}
+            "expect": {"ok": false, "diagnostics": [{"path": "1:2", "code": "parse.codec-syntax"}]}
         });
-        let r = dispatch(&v);
-        assert!(matches!(r.status, Status::Pass | Status::Fail));
+        assert_eq!(dispatch(&v).status, Status::Pass);
     }
 
     #[test]
-    fn omnist_error_pos_returns_none_for_non_parse_non_document_variants() {
-        // No real `read_*` format function constructs a Schema/Materialize/
-        // Write/Format `OmnistError` today, so this catch-all arm has no
-        // real vector reaching it -- exercised directly instead, matching
-        // this file's own "both arms real and independently tested"
-        // convention (see `parse_failure_result`'s doc comment).
+    fn error_diag_is_none_for_errors_with_no_structured_code() {
+        // No real `read_*` function constructs a Format/Write error, and an
+        // API-misuse `DocumentError` carries no code: the runner FAILS such
+        // a vector (never skips it).
         let e: OmnistError = omnist::error::FormatError("x".to_string()).into();
-        assert!(omnist_error_pos(e).is_none());
+        assert!(error_diag(&e).is_none());
+        let e: OmnistError = omnist::error::DocumentError::new("$", "misuse").into();
+        assert!(error_diag(&e).is_none());
     }
 
     #[test]
-    fn parse_failure_result_none_pos_with_diagnostics_skips() {
-        let r = parse_failure_result(None, vec!["$".to_string()]);
-        assert_eq!(r.status, Status::Skip);
-    }
-
-    #[test]
-    fn parse_failure_result_document_path_mismatch_fails() {
-        let r = parse_failure_result(
-            Some(ErrPos::Path("$.wrong".to_string())),
-            vec!["$".to_string()],
-        );
+    fn parse_failure_result_with_no_structured_code_fails_not_skips() {
+        let e: OmnistError = omnist::error::FormatError("x".to_string()).into();
+        let r = parse_failure_result(&e, &[("$".to_string(), "document.limit.depth".to_string())]);
         assert_eq!(r.status, Status::Fail);
     }
 
     #[test]
-    fn parse_failure_result_document_path_match_passes() {
-        let r = parse_failure_result(Some(ErrPos::Path("$".to_string())), vec!["$".to_string()]);
-        assert_eq!(r.status, Status::Pass);
+    fn parse_failure_result_document_path_or_code_mismatch_fails() {
+        let e: OmnistError =
+            omnist::error::DocumentError::with_code("$", "format.dtd-forbidden", "x").into();
+        let wrong_path = [("$.wrong".to_string(), "format.dtd-forbidden".to_string())];
+        assert_eq!(parse_failure_result(&e, &wrong_path).status, Status::Fail);
+        let wrong_code = [("$".to_string(), "format.mixed-content".to_string())];
+        assert_eq!(parse_failure_result(&e, &wrong_code).status, Status::Fail);
+    }
+
+    #[test]
+    fn parse_failure_result_document_path_and_code_match_passes() {
+        let e: OmnistError =
+            omnist::error::DocumentError::with_code("$", "format.dtd-forbidden", "x").into();
+        let right = [("$".to_string(), "format.dtd-forbidden".to_string())];
+        assert_eq!(parse_failure_result(&e, &right).status, Status::Pass);
     }
 
     #[test]
@@ -1452,9 +1311,106 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_unknown_operation_skips() {
+    fn a_write_failure_with_no_structured_code_fails_the_vector() {
+        // TOML cannot write a scalar-rooted Document; that WriteError has no
+        // taxonomy (path, code), so the vector fails rather than passing on
+        // `ok: false` alone.
+        let v = json!({
+            "operation": "write",
+            "input": {"format": "toml", "document": {"scalar": {"kind": "integer", "value": 1}}},
+            "expect": {"ok": false, "diagnostics": [{"path": "$", "code": "write.unsupported-value"}]}
+        });
+        let r = dispatch(&v);
+        assert_eq!(r.status, Status::Fail);
+        assert!(r.message.contains("no structured"), "{}", r.message);
+    }
+
+    #[test]
+    fn infer_fallbacks_that_differ_fail_the_vector() {
+        let v = json!({
+            "operation": "infer_with_report",
+            "input": {"samples": ["x: 1\n", "x: \"a\"\n"], "allow_any": true},
+            "expect": {"ok": true, "schema": "record Root {\n    \"x\": any,\n}\nroot Root\n",
+                       "fallbacks": [{"location": "Root.y", "reason": "r"}]}
+        });
+        let r = dispatch(&v);
+        assert_eq!(r.status, Status::Fail);
+        assert!(r.message.contains("fallbacks differ"), "{}", r.message);
+    }
+
+    #[test]
+    fn dispatch_unknown_operation_fails_it_does_not_skip() {
         let v = json!({"operation": "frobnicate"});
-        assert_eq!(dispatch(&v).status, Status::Skip);
+        assert_eq!(dispatch(&v).status, Status::Fail);
+    }
+
+    /// A skip reason is only acceptable if it is TRUE for the vector it is
+    /// attached to (the TypeScript port's first pass skipped 22 vectors under
+    /// a reason that did not describe them). Checks every skip in the real
+    /// suite against the vector's own input/operation, and pins the three
+    /// categories by name and count so a fourth cannot appear unnoticed.
+    #[test]
+    fn every_skip_reason_is_true_for_its_vector() {
+        let (mut limits, mut alias, mut ext) = (0, 0, 0);
+        for nv in iter_vectors(&suite_dir()) {
+            let v = &nv.vector;
+            let r = dispatch(v);
+            let input = &v["input"];
+            let op = v["operation"].as_str().unwrap();
+            let carries_limit_key = LIMIT_KEYS.iter().any(|k| input.get(*k).is_some());
+            if carries_limit_key {
+                // Every declared-limit vector MUST skip -- never run against
+                // the port's own default.
+                assert_eq!(r.status, Status::Skip, "{}", v["name"]);
+                if input.get("declared_max_alias_expansion").is_some() {
+                    alias += 1;
+                    assert!(
+                        v["name"]
+                            .as_str()
+                            .unwrap()
+                            .starts_with("formats-yaml/alias-expansion/")
+                    );
+                    assert!(r.message.contains("D-18") && r.message.contains("DIV-3"));
+                    assert!(r.message.contains("omnist-rs#180"), "{}", r.message);
+                } else {
+                    limits += 1;
+                    assert!(
+                        v["name"]
+                            .as_str()
+                            .unwrap()
+                            .starts_with("document-model/limits/")
+                    );
+                    let key = LIMIT_KEYS
+                        .iter()
+                        .find(|k| input.get(**k).is_some())
+                        .unwrap();
+                    assert!(r.message.contains(key), "{}", r.message);
+                    assert!(r.message.contains("omnist-rs#181"), "{}", r.message);
+                }
+            } else if EXTENSION_OPERATIONS.contains(&op) {
+                ext += 1;
+                assert_eq!(r.status, Status::Skip, "{}", v["name"]);
+                assert!(
+                    v["name"]
+                        .as_str()
+                        .unwrap()
+                        .starts_with("extensions-osd-oml/")
+                );
+                assert!(r.message.contains(op) && r.message.contains("omnist-rs#175"));
+            } else {
+                assert_ne!(r.status, Status::Skip, "{}: unexplained skip", v["name"]);
+            }
+        }
+        assert_eq!((limits, alias, ext), (6, 6, 28));
+    }
+
+    #[test]
+    fn dispatch_extension_operation_skips_with_a_true_reason() {
+        for op in EXTENSION_OPERATIONS {
+            let r = dispatch(&json!({"operation": op}));
+            assert_eq!(r.status, Status::Skip);
+            assert!(r.message.contains("OSD-OML extension"), "{}", r.message);
+        }
     }
 
     #[test]
@@ -1578,7 +1534,7 @@ mod tests {
             "expect": {
                 "ok": true,
                 "document": {"edges": [["a", {"edges": [["b", {"scalar": {"kind": "string", "value": "hi"}}]]}]]},
-                "diagnostics": [{"path": "$.a"}]
+                "diagnostics": [{"path": "$.a", "code": "format.attribute-dropped"}]
             }
         });
         assert_eq!(dispatch(&v).status, Status::Pass);
@@ -1609,13 +1565,13 @@ mod tests {
     }
 
     #[test]
-    fn run_parse_schema_invalid_expect_false_no_diagnostics_passes() {
+    fn run_parse_schema_invalid_expect_false_no_diagnostics_fails() {
         let v = json!({
             "operation": "parse_schema",
             "input": {"text": "not valid osd"},
             "expect": {"ok": false}
         });
-        assert_eq!(dispatch(&v).status, Status::Pass);
+        assert_eq!(dispatch(&v).status, Status::Fail);
     }
 
     #[test]
@@ -1690,18 +1646,32 @@ mod tests {
         let v = json!({
             "operation": "materialize",
             "input": {"schema": schema, "document": bad_doc.clone()},
-            "expect": {"ok": false, "diagnostics": [{"path": "$.wrong"}]}
+            "expect": {"ok": false, "diagnostics": [{"path": "$.wrong", "code": "materialize.inexact-conversion"}]}
         });
         assert_eq!(dispatch(&v).status, Status::Fail);
 
-        // Genuine failure, no `diagnostics` field to check -- the
-        // `expected_paths.is_empty() => pass()` shortcut.
+        // A genuine failure with no `diagnostics` field: exact matching
+        // (E-17 rule 3) means the unexpected diagnostic fails the vector.
         let v = json!({
             "operation": "materialize",
-            "input": {"schema": schema, "document": bad_doc},
+            "input": {"schema": schema, "document": bad_doc.clone()},
             "expect": {"ok": false}
         });
-        assert_eq!(dispatch(&v).status, Status::Pass);
+        assert_eq!(dispatch(&v).status, Status::Fail);
+
+        // Right path, wrong code fails; right path and code passes.
+        let wrong_code = json!({
+            "operation": "materialize",
+            "input": {"schema": schema, "document": bad_doc.clone()},
+            "expect": {"ok": false, "diagnostics": [{"path": "$.a", "code": "validate.type-mismatch"}]}
+        });
+        assert_eq!(dispatch(&wrong_code).status, Status::Fail);
+        let right = json!({
+            "operation": "materialize",
+            "input": {"schema": schema, "document": bad_doc},
+            "expect": {"ok": false, "diagnostics": [{"path": "$.a", "code": "materialize.inexact-conversion"}]}
+        });
+        assert_eq!(dispatch(&right).status, Status::Pass);
     }
 
     #[test]

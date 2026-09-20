@@ -1501,3 +1501,46 @@ fn test_read_oml_node_count_limit() {
     let err = read_oml(&past_limit).unwrap_err();
     assert!(err.to_string().contains("maximum node count"));
 }
+
+/// A scanner error surfacing at every position the parser advances from:
+/// each input ends in an unterminated string (or a stray character) that the
+/// scanner rejects only when the parser asks for that token. The parser must
+/// propagate it, with the scanner's own code, from every one of these call
+/// sites.
+#[test]
+fn a_scanner_error_propagates_from_every_parser_position() {
+    let cases: &[(&str, &str)] = &[
+        ("\"abc", "parse.unterminated-string"),
+        ("a: 1\n\"x", "parse.unterminated-string"),
+        ("{\"x", "parse.unterminated-string"),
+        ("a: {\n\"x", "parse.unterminated-string"),
+        ("a: { b: 1 } \"x", "parse.unterminated-string"),
+        ("a: { b: 1\n} \"x", "parse.unterminated-string"),
+        ("a: [\"x", "parse.unterminated-string"),
+        ("a: [\n\"x", "parse.unterminated-string"),
+        ("a: [1\n\"x", "parse.unterminated-string"),
+        ("a: [1, \"x", "parse.unterminated-string"),
+        ("a: [1,\n\"x", "parse.unterminated-string"),
+        ("a: [1] \"x", "parse.unterminated-string"),
+        ("a: [@]", "parse.unexpected-token"),
+        ("a: [1, @]", "parse.unexpected-token"),
+        ("a: 1\n@", "parse.unexpected-token"),
+        ("a: @", "parse.unexpected-token"),
+    ];
+    for (text, code) in cases {
+        let err = crate::oml::read_oml(text).unwrap_err();
+        assert_eq!(err.code, *code, "{text:?}: {err}");
+    }
+}
+
+#[test]
+fn a_missing_comma_in_an_array_is_a_separator_error_only_when_a_separator_stood_there() {
+    let code = |text: &str| crate::oml::read_oml(text).unwrap_err().code;
+    assert_eq!(code("a: [1\n2]"), "parse.separator-in-array");
+    assert_eq!(code("a: [1; 2]"), "parse.separator-in-array");
+    assert_eq!(code("a: [1 ;\n 2]"), "parse.separator-in-array");
+    assert_eq!(code("a: [1 # note\n 2]"), "parse.separator-in-array");
+    assert_eq!(code("a: [1 2]"), "parse.unexpected-token");
+    assert_eq!(code("a: [1 }"), "parse.unexpected-token");
+    assert_eq!(code("a: [1"), "parse.unexpected-token");
+}

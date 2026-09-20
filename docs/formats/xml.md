@@ -43,9 +43,35 @@ including `quick-xml` 0.41.0) on 2026-07-26 against the RustSec advisory
 database found **zero** matches -- unlike TS's port, which carried an
 unfixable `fast-xml-parser` advisory (omnist-ts#38). `quick-xml` also has
 no DTD/external-entity expansion support at all (only the five predefined
-XML entities are recognized; an undefined entity is a parse error) -- XXE
--safe by construction, not by configuration (Python's `read_xml` needs
-`defusedxml` instead of the stdlib `ElementTree` for the same protection).
+XML entities are recognized) -- XXE-safe by construction, not by
+configuration (Python's `read_xml` needs `defusedxml` instead of the stdlib
+`ElementTree` for the same protection).
+
+## The data-XML profile: what the reader refuses
+
+`read_xml` reads a deliberately narrow subset (omnist-spec's
+[data-XML profile](https://spec.omnist.dev/formats/xml/#the-data-xml-profile))
+and refuses the rest, rather than ignoring it. Each refusal is a
+`DocumentError` at path `$` whose `code` is:
+
+| Construct | `code` |
+|---|---|
+| any `DOCTYPE` declaration (refused on sight, even if nothing uses it) | `format.dtd-forbidden` |
+| an entity reference other than the five predefined ones | `format.entity-forbidden` |
+| text alongside child elements | `format.mixed-content` |
+
+These are refusals, not syntax errors: the input is well-formed XML. The
+refusal is raised only after the whole document has proved well-formed, so
+malformed XML is always `parse.codec-syntax` (never misreported as a
+refusal). Numeric character references and the five predefined entities stay
+legal; comments, CDATA sections and processing instructions are inert.
+
+## Illegal characters fail the write
+
+XML 1.0 cannot represent a raw C0 control character other than tab, LF and CR
+(nor U+FFFE/U+FFFF). A string holding one fails `write_xml` with
+`write.unsupported-value` at that string's path, strict or not; it is no
+longer replaced with U+FFFD.
 
 ## Namespaces: a disclosed simplification
 

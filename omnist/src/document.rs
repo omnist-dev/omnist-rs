@@ -197,8 +197,9 @@ struct Entry {
 /// that walks every public entry point and confirms each one does.
 pub(crate) fn check_write_depth(depth: usize, path: &str) -> Result<(), DocumentError> {
     if depth > MAX_DEPTH {
-        return Err(DocumentError::new(
+        return Err(DocumentError::with_code(
             path,
+            "document.limit.depth",
             format!("nesting exceeds the maximum depth ({MAX_DEPTH})"),
         ));
     }
@@ -240,8 +241,9 @@ fn child_specs<'a>(
             for (i, item) in items.iter().enumerate() {
                 let ip = format!("{path}[{i}]");
                 if matches!(item, Value::Array(_)) {
-                    return Err(DocumentError::new(
+                    return Err(DocumentError::with_code(
                         ip,
+                        "document.unlabeled-element",
                         "an array of arrays has no labeled-edge form",
                     ));
                 }
@@ -282,8 +284,9 @@ fn build_node(
             }
             push(arena, NodeData::Internal(edges), depth, path)
         }
-        Value::Array(_) => Err(DocumentError::new(
+        Value::Array(_) => Err(DocumentError::with_code(
             path,
+            "document.unlabeled-element",
             "a bare array has no labeled-edge form (arrays appear only as a repeated field)",
         )),
         // Scalars are matched directly as top-level arms of this match
@@ -316,8 +319,9 @@ fn push(
     path: &str,
 ) -> Result<NodeId, DocumentError> {
     if arena.len() >= MAX_NODES {
-        return Err(DocumentError::new(
+        return Err(DocumentError::with_code(
             path,
+            "document.limit.nodes",
             format!("document exceeds the maximum node count ({MAX_NODES})"),
         ));
     }

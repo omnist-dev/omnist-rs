@@ -220,7 +220,7 @@ fn infer_type(
             return Ok(FieldType::Any);
         }
         return Err(SchemaError::new(
-            format!("$.{label}"),
+            format!("{record_name}.{label}"),
             "algebra.infer-mixed-shape",
             format!("label {label:?} mixes objects and values; cannot infer one type"),
         ));
@@ -290,7 +290,7 @@ fn infer_type(
             return Ok(FieldType::Any);
         }
         return Err(SchemaError::new(
-            format!("$.{label}"),
+            format!("{record_name}.{label}"),
             "algebra.infer-conflicting-scalars",
             format!(
                 "label {label:?} has values of more than one scalar ({}); cannot infer one scalar type",
