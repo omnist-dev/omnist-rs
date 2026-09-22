@@ -159,6 +159,7 @@ version = "0.3.0-alpha"
 dependencies = [
  "num-bigint",
  "omnist",
+ "omnist-cli",
  "serde_json",
 ]
 

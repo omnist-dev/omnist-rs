@@ -29,5 +29,5 @@ fn main() {
     assert!(!pruned.env().contains_key("Dead"));
     assert!(!pruned.env().contains_key("Broken"));
 
-    println!("{}", to_osd(&pruned, Some(2)));
+    println!("{}", to_osd(&pruned, Some(2)).unwrap());
 }

@@ -26,7 +26,7 @@ fn main() {
     ];
 
     let schema = infer(&samples, "Person").unwrap();
-    let text = to_osd(&schema, Some(2));
+    let text = to_osd(&schema, Some(2)).unwrap();
     println!("{text}");
 
     // The inferred schema accepts every sample it was drafted from.

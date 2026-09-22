@@ -36,6 +36,7 @@ use std::io::{self, Read, Write};
 
 use clap::{Parser, Subcommand, ValueEnum};
 use omnist::document::{Doc, Value};
+use omnist::error::ParseError;
 use omnist::schema::Schema;
 use omnist::{OmnistError, WriteError, WriteReport};
 
@@ -357,19 +358,73 @@ pub struct SchemaPairArgs {
 // I/O plumbing
 // ---------------------------------------------------------------------------
 
-/// Read `path` (or stdin for `-`). On failure, the message names the path
-/// (mirroring Python's `OSError` string, which embeds the filename) rather
-/// than a bare OS message with no context.
-fn read_input(path: &str) -> Result<String, String> {
+/// Read the raw bytes of `path` (or stdin for `-`). On failure, the message
+/// names the path (mirroring Python's `OSError` string, which embeds the
+/// filename) rather than a bare OS message with no context.
+///
+/// The bytes are NOT decoded here: this CLI is a byte-oriented entry point
+/// (omnist-spec D-14, section 2.5), so decoding is [`decode_input`]'s job and
+/// happens exactly once, in [`read_document_bytes`] and friends, where a
+/// failure is a `parse.invalid-encoding` diagnostic rather than an I/O error.
+fn read_bytes(path: &str) -> Result<Vec<u8>, String> {
     if path == "-" {
-        let mut s = String::new();
+        let mut bytes = Vec::new();
         io::stdin()
-            .read_to_string(&mut s)
+            .read_to_end(&mut bytes)
             .map_err(|e| format!("{e} (reading stdin)"))?;
-        Ok(s)
+        Ok(bytes)
     } else {
-        std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))
+        std::fs::read(path).map_err(|e| format!("{path}: {e}"))
     }
+}
+
+/// D-14 (omnist-spec section 2.5): decode `bytes` as UTF-8, strictly.
+///
+/// Invalid UTF-8 is rejected with `parse.invalid-encoding` at `1:1` -- a
+/// fixed position, not the offending byte's offset -- and NEVER repaired
+/// (no `U+FFFD` replacement, no lossy fallback). This runs on the bytes,
+/// before the readers' D-15 BOM strip and D-21 doubled-BOM check, so a
+/// truncated BOM (`EF BB`) or a BOM followed by a stray continuation byte is a
+/// D-14 failure here, not a BOM error later. One input yields at most one
+/// such diagnostic however many malformed sequences it holds.
+pub fn decode_input(bytes: Vec<u8>) -> Result<String, ParseError> {
+    String::from_utf8(bytes).map_err(|_| {
+        ParseError::new(
+            1,
+            1,
+            INVALID_ENCODING,
+            "the input is not valid UTF-8 (D-14); it is rejected, never repaired",
+        )
+    })
+}
+
+/// The spec's code for a D-14 failure (section 8.3.1).
+pub const INVALID_ENCODING: &str = "parse.invalid-encoding";
+
+/// Decode `bytes` (D-14) and read them as a Document in `fmt`, exactly as
+/// the `convert`, `check`, `validate` and `infer` commands do after reading
+/// their input file or stdin. `schema` is the optional XML schema hint.
+pub fn read_document_bytes(
+    fmt: Fmt,
+    bytes: Vec<u8>,
+    schema: Option<&omnist::schema::Schema>,
+) -> Result<Doc, OmnistError> {
+    let text = decode_input(bytes)?;
+    read_by_fmt(fmt, &text, schema)
+}
+
+/// Decode `bytes` (D-14) and read them as OML, as `format` does. Unlike
+/// [`read_document_bytes`] with [`Fmt::Oml`], this keeps the raw tree.
+pub fn read_oml_bytes(bytes: Vec<u8>) -> Result<omnist::document::RawNode, OmnistError> {
+    let text = decode_input(bytes)?;
+    Ok(omnist::oml::read_oml(&text)?)
+}
+
+/// Decode `bytes` (D-14) and parse them as OSD, as every `schema` command
+/// and `--schema` does after reading its file.
+pub fn parse_schema_bytes(bytes: Vec<u8>) -> Result<Schema, OmnistError> {
+    let text = decode_input(bytes)?;
+    Ok(omnist::osd::parse_schema(&text)?)
 }
 
 fn write_output(path: Option<&str>, mut text: String) -> Result<(), String> {
@@ -430,6 +485,12 @@ fn extract_errors(e: &OmnistError) -> Vec<(String, String, String)> {
                 )
             })
             .collect(),
+        // D-14: an encoding failure is the one read failure with a fixed,
+        // comparable diagnostic (`1:1`), so it is reported as a structured
+        // entry; other syntax failures keep Python's `[]`.
+        OmnistError::Parse(pe) if pe.code == INVALID_ENCODING => {
+            vec![(pe.position(), pe.code.clone(), pe.message.clone())]
+        }
         _ => vec![],
     }
 }
@@ -667,16 +728,35 @@ fn encode_validation_result(
     }
 }
 
-fn to_osd_text(schema: &Schema, compact: bool) -> String {
+/// Canonical OSD text for `schema`, or the exit code to return. A field label
+/// with no OSD spelling (OSD-14) fails the write with `write.unsupported-value`
+/// like every other writer refusal; only `infer` can reach it from real input,
+/// since a label read from OSD text is always spellable.
+fn to_osd_text(schema: &Schema, compact: bool, json: bool) -> Result<String, i32> {
     omnist::osd::to_osd(schema, if compact { None } else { Some(4) })
+        .map_err(|e| generic_fail(json, &e.into()))
+}
+
+/// [`to_osd_text`], but for a schema every one of whose labels is known to
+/// have come from OSD text (via [`parse_schema_file`], possibly reshaped by
+/// `normalize`/`prune`/`extract`, none of which invents a label). Those
+/// labels already passed OSD's own tokenizer, which rejects a raw C0
+/// control character in a string body -- escape context included -- so
+/// OSD-14 cannot fire here; only `infer`'s document-derived labels (with no
+/// such origin) can, and it uses [`to_osd_text`] directly. Not reachable via
+/// any real input, same class as `cmd_convert`'s/`cmd_check`'s existing
+/// depth-guard `.expect()`s.
+fn to_osd_text_from_parsed_schema(schema: &Schema, compact: bool) -> String {
+    omnist::osd::to_osd(schema, if compact { None } else { Some(4) })
+        .expect("a schema parsed from OSD text carries no C0-control label for OSD-14 to reject")
 }
 
 /// Read + parse an OSD schema file (or `-`), producing the uniform failure
 /// exit code (`2`, matching Python's generic parse-error path) on either an
 /// I/O error or a [`omnist::SchemaError`].
 fn parse_schema_file(path: &str, json: bool) -> Result<Schema, i32> {
-    let text = read_input(path).map_err(|e| io_fail(json, &e))?;
-    omnist::osd::parse_schema(&text).map_err(|e| generic_fail(json, &e.into()))
+    let bytes = read_bytes(path).map_err(|e| io_fail(json, &e))?;
+    parse_schema_bytes(bytes).map_err(|e| generic_fail(json, &e))
 }
 
 // ---------------------------------------------------------------------------
@@ -684,13 +764,13 @@ fn parse_schema_file(path: &str, json: bool) -> Result<Schema, i32> {
 // ---------------------------------------------------------------------------
 
 fn cmd_format(args: FormatArgs) -> i32 {
-    let text = match read_input(&args.input) {
-        Ok(t) => t,
+    let bytes = match read_bytes(&args.input) {
+        Ok(b) => b,
         Err(e) => return io_fail(args.json, &e),
     };
-    let raw = match omnist::oml::read_oml(&text) {
+    let raw = match read_oml_bytes(bytes) {
         Ok(r) => r,
-        Err(e) => return generic_fail(args.json, &e.into()),
+        Err(e) => return generic_fail(args.json, &e),
     };
     if args.arrays {
         return fail(args.json, ARRAYS_UNSUPPORTED_MSG, &[], 2);
@@ -728,8 +808,8 @@ fn cmd_convert(args: ConvertArgs) -> i32 {
             2,
         );
     }
-    let text = match read_input(&args.input) {
-        Ok(t) => t,
+    let bytes = match read_bytes(&args.input) {
+        Ok(b) => b,
         Err(e) => return io_fail(args.json, &e),
     };
     let schema = match args.schema.as_deref() {
@@ -739,7 +819,7 @@ fn cmd_convert(args: ConvertArgs) -> i32 {
         },
         None => None,
     };
-    let mut doc = match read_by_fmt(args.from, &text, schema.as_ref()) {
+    let mut doc = match read_document_bytes(args.from, bytes, schema.as_ref()) {
         Ok(d) => d,
         Err(e) => return generic_fail(args.json, &e),
     };
@@ -794,11 +874,11 @@ fn cmd_convert(args: ConvertArgs) -> i32 {
 }
 
 fn cmd_check(args: CheckArgs) -> i32 {
-    let text = match read_input(&args.input) {
-        Ok(t) => t,
+    let bytes = match read_bytes(&args.input) {
+        Ok(b) => b,
         Err(e) => return io_fail(args.json, &e),
     };
-    let doc = match read_by_fmt(args.from, &text, None) {
+    let doc = match read_document_bytes(args.from, bytes, None) {
         Ok(d) => d,
         Err(e) => return generic_fail(args.json, &e),
     };
@@ -822,11 +902,11 @@ fn cmd_validate(args: ValidateArgs) -> i32 {
         Ok(s) => s,
         Err(code) => return code,
     };
-    let text = match read_input(&args.input) {
-        Ok(t) => t,
+    let bytes = match read_bytes(&args.input) {
+        Ok(b) => b,
         Err(e) => return io_fail(args.json, &e),
     };
-    let doc = match read_by_fmt(args.from, &text, Some(&schema)) {
+    let doc = match read_document_bytes(args.from, bytes, Some(&schema)) {
         Ok(d) => d,
         Err(e) => return generic_fail(args.json, &e),
     };
@@ -859,11 +939,11 @@ fn cmd_infer(args: InferArgs) -> i32 {
     }
     let mut docs = Vec::with_capacity(args.input.len());
     for path in &args.input {
-        let text = match read_input(path) {
-            Ok(t) => t,
+        let bytes = match read_bytes(path) {
+            Ok(b) => b,
             Err(e) => return io_fail(args.json, &e),
         };
-        match read_by_fmt(args.from, &text, None) {
+        match read_document_bytes(args.from, bytes, None) {
             Ok(d) => docs.push(d),
             Err(e) => return generic_fail(args.json, &e),
         }
@@ -875,7 +955,10 @@ fn cmd_infer(args: InferArgs) -> i32 {
     for fb in &fallbacks {
         eprintln!("warning: {} opened as `any` ({})", fb.location, fb.reason);
     }
-    let text_out = to_osd_text(&schema, args.compact);
+    let text_out = match to_osd_text(&schema, args.compact, args.json) {
+        Ok(t) => t,
+        Err(code) => return code,
+    };
     if let Err(e) = write_output(args.output.as_deref(), text_out) {
         return io_fail(args.json, &e);
     }
@@ -890,7 +973,7 @@ fn cmd_schema_format(args: SchemaFormatArgs) -> i32 {
         Ok(s) => s,
         Err(code) => return code,
     };
-    let out = to_osd_text(&schema, args.compact);
+    let out = to_osd_text_from_parsed_schema(&schema, args.compact);
     if let Err(e) = write_output(args.output.as_deref(), out) {
         return io_fail(args.json, &e);
     }
@@ -905,7 +988,7 @@ fn cmd_schema_normalize(args: SchemaFormatArgs) -> i32 {
         Ok(s) => s,
         Err(code) => return code,
     };
-    let out = to_osd_text(&omnist::ops::normalize(&schema), args.compact);
+    let out = to_osd_text_from_parsed_schema(&omnist::ops::normalize(&schema), args.compact);
     if let Err(e) = write_output(args.output.as_deref(), out) {
         return io_fail(args.json, &e);
     }
@@ -917,7 +1000,7 @@ fn cmd_schema_prune(args: SchemaPruneArgs) -> i32 {
         Ok(s) => s,
         Err(code) => return code,
     };
-    let out = to_osd_text(&omnist::ops::prune(&schema), args.compact);
+    let out = to_osd_text_from_parsed_schema(&omnist::ops::prune(&schema), args.compact);
     if let Err(e) = write_output(args.output.as_deref(), out) {
         return io_fail(args.json, &e);
     }
@@ -953,7 +1036,7 @@ fn cmd_schema_extract(args: SchemaExtractArgs) -> i32 {
             return fail(args.json, &e.to_string(), &[], 1);
         }
     };
-    let out = to_osd_text(&extracted, args.compact);
+    let out = to_osd_text_from_parsed_schema(&extracted, args.compact);
     if let Err(e) = write_output(args.output.as_deref(), out) {
         return io_fail(args.json, &e);
     }
