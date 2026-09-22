@@ -414,14 +414,17 @@ for the grammar.
 
 ```rust
 pub fn parse_schema(text: &str) -> Result<Schema, SchemaError>;
-pub fn to_osd(schema: &Schema, indent: Option<usize>) -> String;
+pub fn to_osd(schema: &Schema, indent: Option<usize>) -> Result<String, WriteError>;
 ```
 <!-- doc-illustrative -->
 
 `parse_schema` parses OSD text into a `Schema`. `to_osd` serializes a
 `Schema` back to OSD text: `indent: None` renders a single-line,
 machine-oriented form; `Some(n)` sets the pretty-printed indent width in
-spaces. Both forms round-trip through `parse_schema`.
+spaces. Both forms round-trip through `parse_schema`. Labels are escaped per
+OSD-15 (a backslash is written `\\`, a double quote `\"`, nothing else);
+`to_osd` fails with `write.unsupported-value` (OSD-14) for a field label
+containing a C0 control character, which OSD text cannot spell.
 
 ## Formats (`omnist::formats` and `omnist::oml`)
 

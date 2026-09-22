@@ -1,5 +1,61 @@
 # Changelog
 
+## 0.3.0-alpha (unreleased, continued)
+
+Adopts omnist-spec **v0.21.0-beta** (was v0.19.0-beta), still unreleased on
+`main` as 0.3.0-alpha -- these changes are breaking for library users (see
+below), but since 0.3.0-alpha has not been published yet, no further version
+bump is needed; the breaking surface simply lands in the same unreleased
+release.
+
+Conformance, Track 2 (JSON vectors), before and after, `(path, code)` set
+comparison:
+
+- v0.19.0-beta suite, previous release: 209 pass, 0 fail, 40 skip of 249.
+- v0.21.0-beta suite, this code before any change: 219 pass, 14 fail, 40 skip
+  of 273 (14 new failures: 8 `bytes_hex` D-14 vectors the runner did not yet
+  know the field for, plus the 4 new OSD-15 canonical-escaping vectors, plus
+  2 more D-14 vectors this runner's own `text`-only dispatch could not reach).
+- v0.21.0-beta suite, after: **233 pass, 0 fail, 40 skip of 273**. Track 1
+  unaffected: 19 pass, 0 fail. The runner exits non-zero on any failing
+  vector.
+
+Breaking:
+
+- `omnist::osd::to_osd` now returns `Result<String, WriteError>` instead of
+  `String` (OSD-14: a field label with a C0 control character has no OSD
+  spelling and the write fails with `write.unsupported-value` rather than
+  emitting text no reader accepts). Every caller in this workspace was
+  updated.
+
+Added:
+
+- `omnist_cli::{decode_input, read_document_bytes, read_oml_bytes,
+  parse_schema_bytes}`: the CLI's byte-oriented D-14 check (strict UTF-8
+  decode, `parse.invalid-encoding` at `1:1`, never a lossy repair), and the
+  byte-taking read entry points built on it. Every CLI command that reads a
+  document, OML or OSD file (or stdin) now goes through them; `read_input`
+  became `read_bytes`.
+
+Changed:
+
+- OSD-15: `to_osd` now escapes a label's backslash as `\\` and double quote
+  as `\"`, and nothing else -- previously it escaped nothing, silently
+  corrupting a label containing either character on write.
+- YAML: block collections (`- - -...` or one more indent per line) are now
+  depth-guarded during the event stream itself, not only after a `Document`
+  is built -- yaml-rust2's own `Parser::load` recurses with no limit for
+  block collections and a ~15 KB input could overflow the stack before this
+  crate's depth check ever ran.
+- OML-26/OML-27 (`docs/04-oml-grammar.md` section 4.6.1): unchanged behavior,
+  carried forward from the v0.19.0-beta sweep and now backed by spec text
+  (the port implemented this ahead of the rule landing).
+- Conformance runner (Track 2): a read-side vector (`parse`, `parse_schema`)
+  may give its input as `bytes_hex` instead of `text` (E-27); the runner
+  decodes the hex and hands the bytes to `omnist-cli`'s byte-oriented entry
+  points -- an in-process call, not a spawned subprocess -- never by
+  decoding with replacement and running the result as text.
+
 ## 0.3.0-alpha
 
 Adopts omnist-spec **v0.19.0-beta** (was v0.9.1-beta). Breaking for library users: `ParseError` gains `code`, `DocumentError` gains `code: Option<String>`, `WriteError` gains `path`/`code`, and `ParseError::new` takes a code argument.

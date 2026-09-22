@@ -573,8 +573,8 @@ fn cross_implementation_oracle_bounded_sample() {
 
         let a_path = dir.join(format!("omnist-oracle-{}-{}-a.osd", std::process::id(), i));
         let b_path = dir.join(format!("omnist-oracle-{}-{}-b.osd", std::process::id(), i));
-        std::fs::write(&a_path, osd::to_osd(&a, None)).unwrap();
-        std::fs::write(&b_path, osd::to_osd(&b, None)).unwrap();
+        std::fs::write(&a_path, osd::to_osd(&a, None).unwrap()).unwrap();
+        std::fs::write(&b_path, osd::to_osd(&b, None).unwrap()).unwrap();
 
         let output = std::process::Command::new(&python)
             .arg(script)
@@ -606,20 +606,20 @@ fn cross_implementation_oracle_bounded_sample() {
             rust_compat,
             py_compat,
             "compatible_with disagreement (case {i}):\na = {}\nb = {}",
-            osd::to_osd(&a, Some(2)),
-            osd::to_osd(&b, Some(2)),
+            osd::to_osd(&a, Some(2)).unwrap(),
+            osd::to_osd(&b, Some(2)).unwrap(),
         );
         assert_eq!(
             rust_empty_a,
             py_empty_a,
             "is_empty disagreement (case {i}):\na = {}",
-            osd::to_osd(&a, Some(2)),
+            osd::to_osd(&a, Some(2)).unwrap(),
         );
         assert_eq!(
             rust_np_empty_a,
             py_np_empty_a,
             "is_empty(prune(normalize(_))) disagreement (case {i}):\na = {}",
-            osd::to_osd(&a, Some(2)),
+            osd::to_osd(&a, Some(2)).unwrap(),
         );
     }
 }

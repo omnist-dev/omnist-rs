@@ -25,6 +25,9 @@ path = "src/bin/vector_runner.rs"
 [dependencies]
 num-bigint = "0.4"
 omnist = { path = "../../omnist" }
+# The CLI is this port's byte-oriented entry point (D-14/E-27): the runner
+# presents `bytes_hex` inputs through it, never through a lossy decode.
+omnist-cli = { path = "../../omnist-cli" }
 # arbitrary_precision: a vector's integer-kind value can legitimately be a
 # bare JSON number literal beyond i64/f64 range (issue #104's own
 # arbitrary-precision-integer vectors) -- without this feature, serde_json

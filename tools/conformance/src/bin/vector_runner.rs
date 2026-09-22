@@ -80,6 +80,7 @@ use omnist::ops::{compatible_with, equivalent, extract, is_empty, lint};
 use omnist::osd::{parse_schema, to_osd};
 use omnist::report::WriteReport;
 use omnist::schema::{ErrorFamily, Schema};
+use omnist_cli::{Fmt, parse_schema_bytes, read_document_bytes, read_oml_bytes};
 use serde_json::Value as Json;
 
 /// Every `declared_max_*` key in `test-suite/README.md`'s allowlist. A key
@@ -305,25 +306,100 @@ fn check_diags(expected: &[Diag], actual: &[Diag]) -> VResult {
 // Per-operation drivers
 // ---------------------------------------------------------------------------
 
+/// A read-side vector's input (E-27): source text, or the bytes of a
+/// `bytes_hex` field.
+#[derive(Debug)]
+enum Source {
+    Text(String),
+    Bytes(Vec<u8>),
+}
+
+/// Reads a read-side vector's input: exactly one of `text` and `bytes_hex`
+/// (E-27). `bytes_hex` is decoded to the raw bytes and nothing else -- no
+/// trimming, no case folding -- and is NEVER decoded to text here: the caller
+/// hands the bytes to the CLI's byte-oriented entry point, whose own
+/// [`decode_input`](omnist_cli::decode_input) is the D-14 check.
+fn source_of(input: &Json) -> Result<Source, String> {
+    match (input.get("text"), input.get("bytes_hex")) {
+        (Some(_), Some(_)) => Err(
+            "the input carries both `text` and `bytes_hex`; exactly one is allowed (E-27)".into(),
+        ),
+        (None, None) => Err(
+            "the input carries neither `text` nor `bytes_hex`; exactly one is required (E-27)"
+                .into(),
+        ),
+        (Some(text), None) => match text.as_str() {
+            Some(text) => Ok(Source::Text(text.to_string())),
+            None => Err("`text` is not a string".into()),
+        },
+        (None, Some(hex)) => match hex.as_str() {
+            Some(hex) => decode_hex(hex).map(Source::Bytes),
+            None => Err("`bytes_hex` is not a string".into()),
+        },
+    }
+}
+
+/// Strict `bytes_hex` decoding: lowercase hexadecimal, two digits per byte,
+/// no separators, no prefix (E-27).
+fn decode_hex(hex: &str) -> Result<Vec<u8>, String> {
+    if !hex.len().is_multiple_of(2) {
+        return Err(format!("`bytes_hex` {hex:?} has an odd number of digits"));
+    }
+    let digit = |b: u8| match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        _ => None,
+    };
+    hex.as_bytes()
+        .chunks(2)
+        .map(|pair| match (digit(pair[0]), digit(pair[1])) {
+            (Some(hi), Some(lo)) => Ok(hi << 4 | lo),
+            _ => Err(format!("`bytes_hex` {hex:?} is not lowercase hexadecimal")),
+        })
+        .collect()
+}
+
+/// The CLI's `--from` value for a vector's `format`, or `None` if unknown.
+fn cli_format(format: &str) -> Option<Fmt> {
+    match format {
+        "json" => Some(Fmt::Json),
+        "yaml" => Some(Fmt::Yaml),
+        "toml" => Some(Fmt::Toml),
+        "xml" => Some(Fmt::Xml),
+        "oml" => Some(Fmt::Oml),
+        _ => None,
+    }
+}
+
 fn run_parse(v: &Json) -> VResult {
     let input = &v["input"];
     if let Some(reason) = limit_skip_reason(input) {
         return skip(reason);
     }
     let format = input["format"].as_str().unwrap_or("oml");
-    let text = input["text"].as_str().unwrap_or_default();
+    let source = match source_of(input) {
+        Ok(s) => s,
+        Err(message) => return fail(message),
+    };
 
     // `format.attribute-dropped`/`format.namespace-dropped` (spec section
     // 8.3.8, D-3) are read-time diagnostics only XML's reader emits, via
     // `read_xml_report`'s `report`; the other formats have none.
     let mut xml_report = WriteReport::new();
-    let result: Result<RawNode, OmnistError> = match format {
-        "oml" => read_oml(text).map_err(OmnistError::from),
-        "json" => read_json(text).map(|d| d.to_raw()),
-        "toml" => read_toml(text).map(|d| d.to_raw()),
-        "xml" => read_xml_report(text, Some(&mut xml_report)).map(|d| d.to_raw()),
-        "yaml" => read_yaml(text).map(|d| d.to_raw()),
-        other => return fail(format!("unknown format {other:?}")),
+    let result: Result<RawNode, OmnistError> = match (source, format) {
+        (Source::Bytes(bytes), "oml") => read_oml_bytes(bytes),
+        (Source::Bytes(bytes), other) => match cli_format(other) {
+            Some(fmt) => read_document_bytes(fmt, bytes, None).map(|d| d.to_raw()),
+            None => return fail(format!("unknown format {other:?}")),
+        },
+        (Source::Text(text), "oml") => read_oml(&text).map_err(OmnistError::from),
+        (Source::Text(text), "json") => read_json(&text).map(|d| d.to_raw()),
+        (Source::Text(text), "toml") => read_toml(&text).map(|d| d.to_raw()),
+        (Source::Text(text), "xml") => {
+            read_xml_report(&text, Some(&mut xml_report)).map(|d| d.to_raw())
+        }
+        (Source::Text(text), "yaml") => read_yaml(&text).map(|d| d.to_raw()),
+        (Source::Text(_), other) => return fail(format!("unknown format {other:?}")),
     };
 
     match result {
@@ -369,14 +445,22 @@ fn parse_failure_result(e: &OmnistError, expected: &[Diag]) -> VResult {
 fn error_diag(e: &OmnistError) -> Option<Diag> {
     match e {
         OmnistError::Parse(pe) => Some((pe.position(), pe.code.clone())),
+        OmnistError::Schema(se) => Some((se.path.clone(), se.code.clone())),
         OmnistError::Document(de) => de.code.clone().map(|c| (de.path.clone(), c)),
         _ => None,
     }
 }
 
 fn run_parse_schema(v: &Json) -> VResult {
-    let text = v["input"]["text"].as_str().unwrap_or_default();
-    match parse_schema(text) {
+    let source = match source_of(&v["input"]) {
+        Ok(s) => s,
+        Err(message) => return fail(message),
+    };
+    let result: Result<Schema, OmnistError> = match source {
+        Source::Bytes(bytes) => parse_schema_bytes(bytes),
+        Source::Text(text) => parse_schema(&text).map_err(OmnistError::from),
+    };
+    match result {
         Ok(_) => {
             if expect_ok(v) {
                 pass()
@@ -388,7 +472,15 @@ fn run_parse_schema(v: &Json) -> VResult {
             if expect_ok(v) {
                 return fail(format!("expected success, parse_schema failed: {e}"));
             }
-            check_diags(&expected_diags(v), &[(e.path.clone(), e.code.clone())])
+            // parse_schema_bytes/parse_schema only ever fail with `Parse`
+            // (D-14, via decode_input) or `Schema` (OSD's own tokenizer/
+            // parser) -- both are structured per `error_diag`, unlike
+            // `run_parse`'s wider `OmnistError`, so there is no untested
+            // "no structured code" case to report here.
+            let actual = error_diag(&e).expect(
+                "a parse_schema failure is always a Parse or Schema error, both structured",
+            );
+            check_diags(&expected_diags(v), &[actual])
         }
     }
 }
@@ -531,7 +623,8 @@ fn run_schema_producing(v: &Json, f: impl Fn(&Schema) -> Schema) -> VResult {
         Ok(s) => s,
         Err(e) => return fail(format!("parse_schema failed: {e}")),
     };
-    let actual = to_osd(&f(&schema), None);
+    let actual = to_osd(&f(&schema), None)
+        .expect("vector-suite schemas carry no C0-control label for OSD-14 to reject");
     let expected = v["expect"]["schema"].as_str().unwrap_or_default();
     match compare_schema(&actual, expected, "exact") {
         Ok(true) => pass(),
@@ -617,7 +710,8 @@ fn run_extract(v: &Json) -> VResult {
             Ok(s) => s,
             Err(e) => return fail(format!("expected success, extract failed: {e}")),
         };
-        let actual = to_osd(&extracted, None);
+        let actual = to_osd(&extracted, None)
+            .expect("vector-suite schemas carry no C0-control label for OSD-14 to reject");
         let expected = v["expect"]["schema"].as_str().unwrap_or_default();
         match compare_schema(&actual, expected, "exact") {
             Ok(true) => pass(),
@@ -706,7 +800,8 @@ fn run_infer_common(v: &Json, with_report: bool) -> VResult {
             Ok(v) => v,
             Err(e) => return fail(format!("expected success, infer failed: {e}")),
         };
-        let actual = to_osd(&schema, None);
+        let actual = to_osd(&schema, None)
+            .expect("vector-suite schemas carry no C0-control label for OSD-14 to reject");
         let expected = v_expect_schema(v);
         match compare_schema(&actual, &expected, "isomorphic") {
             Ok(true) => {}
@@ -762,6 +857,15 @@ const EXTENSION_OPERATIONS: &[&str] = &[
 
 fn dispatch(v: &Json) -> VResult {
     let op = v["operation"].as_str().unwrap_or("");
+    // E-27: `bytes_hex` belongs to the three read-side drivers and no other;
+    // a vector giving it to any other operation is malformed, not runnable.
+    if v["input"].get("bytes_hex").is_some()
+        && !matches!(op, "parse" | "parse_schema" | "parse_schema_oml")
+    {
+        return fail(format!(
+            "operation {op:?} does not accept `bytes_hex` (E-27)"
+        ));
+    }
     match op {
         "parse" => run_parse(v),
         "parse_schema" => run_parse_schema(v),
@@ -890,12 +994,180 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use omnist::error::SchemaError;
+
+    // ------------------------------------------------------------- E-27
 
     #[test]
-    fn vector_count_is_249() {
-        // 204 -> 249 via the submodule pin bump v0.9.1-beta -> v0.19.0-beta.
+    fn source_of_rejects_both_text_and_bytes_hex() {
+        let input = json!({"format": "json", "text": "1", "bytes_hex": "31"});
+        assert!(source_of(&input).unwrap_err().contains("both"));
+    }
+
+    #[test]
+    fn source_of_rejects_neither_text_nor_bytes_hex() {
+        let input = json!({"format": "json"});
+        assert!(source_of(&input).unwrap_err().contains("neither"));
+    }
+
+    #[test]
+    fn source_of_rejects_a_non_string_text_field() {
+        let input = json!({"text": 1});
+        assert_eq!(source_of(&input).unwrap_err(), "`text` is not a string");
+    }
+
+    #[test]
+    fn source_of_rejects_a_non_string_bytes_hex_field() {
+        let input = json!({"bytes_hex": 1});
+        assert_eq!(
+            source_of(&input).unwrap_err(),
+            "`bytes_hex` is not a string"
+        );
+    }
+
+    #[test]
+    fn source_of_text_and_bytes_hex_happy_paths() {
+        assert!(matches!(
+            source_of(&json!({"text": "a: 1"})).unwrap(),
+            Source::Text(t) if t == "a: 1"
+        ));
+        assert!(matches!(
+            source_of(&json!({"bytes_hex": "6100"})).unwrap(),
+            Source::Bytes(b) if b == vec![0x61, 0x00]
+        ));
+    }
+
+    #[test]
+    fn decode_hex_rejects_an_odd_number_of_digits() {
+        assert!(
+            decode_hex("6")
+                .unwrap_err()
+                .contains("odd number of digits")
+        );
+    }
+
+    #[test]
+    fn decode_hex_rejects_uppercase_or_non_hex_digits() {
+        assert!(
+            decode_hex("6G")
+                .unwrap_err()
+                .contains("lowercase hexadecimal")
+        );
+        assert!(
+            decode_hex("6F")
+                .unwrap_err()
+                .contains("lowercase hexadecimal")
+        );
+    }
+
+    #[test]
+    fn cli_format_covers_every_codec_and_rejects_unknown() {
+        for (name, fmt) in [
+            ("json", Fmt::Json),
+            ("yaml", Fmt::Yaml),
+            ("toml", Fmt::Toml),
+            ("xml", Fmt::Xml),
+            ("oml", Fmt::Oml),
+        ] {
+            assert_eq!(cli_format(name), Some(fmt));
+        }
+        assert_eq!(cli_format("yamlx"), None);
+    }
+
+    #[test]
+    fn run_parse_rejects_bytes_hex_on_an_unknown_format() {
+        let v = json!({
+            "operation": "parse",
+            "input": {"format": "yamlx", "bytes_hex": "6100"},
+            "expect": {"ok": true}
+        });
+        assert_eq!(dispatch(&v).status, Status::Fail);
+    }
+
+    #[test]
+    fn run_parse_bytes_hex_on_a_known_format_runs_through_the_cli_entry_point() {
+        let v = json!({
+            "operation": "parse",
+            "input": {"format": "json", "bytes_hex": "31"},
+            "expect": {"ok": true, "document": {"scalar": {"kind": "integer", "value": 1}}}
+        });
+        assert_eq!(dispatch(&v).status, Status::Pass);
+    }
+
+    #[test]
+    fn run_parse_bytes_hex_invalid_utf8_reports_d14_through_the_cli() {
+        let v = json!({
+            "operation": "parse",
+            "input": {"format": "json", "bytes_hex": "80"},
+            "expect": {"ok": false, "diagnostics": [{"path": "1:1", "code": "parse.invalid-encoding"}]}
+        });
+        assert_eq!(dispatch(&v).status, Status::Pass);
+    }
+
+    #[test]
+    fn error_diag_reports_a_schema_error_path_and_code() {
+        let e = OmnistError::Schema(SchemaError::new("R", "schema.no-root", "no root"));
+        assert_eq!(
+            error_diag(&e),
+            Some(("R".to_string(), "schema.no-root".to_string()))
+        );
+    }
+
+    #[test]
+    fn run_parse_schema_bytes_hex_runs_through_the_cli_entry_point() {
+        let text = "record R { \"a\": string } root R\n";
+        let hex: String = text.bytes().map(|b| format!("{b:02x}")).collect();
+        let v = json!({
+            "operation": "parse_schema",
+            "input": {"bytes_hex": hex},
+            "expect": {"ok": true}
+        });
+        assert_eq!(dispatch(&v).status, Status::Pass);
+    }
+
+    #[test]
+    fn run_parse_reports_a_malformed_source_as_a_failure_not_a_panic() {
+        let v = json!({
+            "operation": "parse",
+            "input": {"format": "json"},
+            "expect": {"ok": true}
+        });
+        let r = dispatch(&v);
+        assert_eq!(r.status, Status::Fail);
+        assert!(r.message.contains("neither"), "{}", r.message);
+    }
+
+    #[test]
+    fn run_parse_schema_reports_a_malformed_source_as_a_failure_not_a_panic() {
+        let v = json!({
+            "operation": "parse_schema",
+            "input": {"text": "record R { a: string } root R", "bytes_hex": "31"},
+            "expect": {"ok": true}
+        });
+        let r = dispatch(&v);
+        assert_eq!(r.status, Status::Fail);
+        assert!(r.message.contains("both"), "{}", r.message);
+    }
+
+    #[test]
+    fn dispatch_rejects_bytes_hex_on_an_operation_that_does_not_accept_it() {
+        let v = json!({
+            "operation": "validate",
+            "input": {"bytes_hex": "31"},
+        });
+        let r = dispatch(&v);
+        assert_eq!(r.status, Status::Fail);
+        assert!(r.message.contains("E-27"));
+    }
+
+    #[test]
+    fn vector_count_is_273() {
+        // 204 -> 249 via the submodule pin bump v0.9.1-beta -> v0.19.0-beta,
+        // 249 -> 273 via v0.19.0-beta -> v0.21.0-beta (14 new bytes_hex D-14
+        // vectors, 4 new OSD-15 canonical-output vectors, 5 new OML-26/27
+        // vectors already counted at the v0.19.0-beta pin, 1 new infer vector).
         let vectors = iter_vectors(&suite_dir());
-        assert_eq!(vectors.len(), 249);
+        assert_eq!(vectors.len(), 273);
     }
 
     /// Full-suite regression guard: runs every real vector through every
@@ -903,8 +1175,8 @@ mod tests {
     /// `main`/`main_with_dir` is process-entry-point code). The counts are
     /// freshly measured, not computed by hand.
     ///
-    /// Spec v0.19.0-beta, diagnostics compared as (path, code) sets:
-    /// 209 pass, 0 fail, 40 skip of 249.
+    /// Spec v0.21.0-beta, diagnostics compared as (path, code) sets:
+    /// 233 pass, 0 fail, 40 skip of 273.
     ///
     /// - the 40 skips are E-20 "not yet implemented", never a documented
     ///   divergence: 6 `document-model/limits` (no runtime-configurable
@@ -914,13 +1186,18 @@ mod tests {
     /// History: (170, 0, 34) at v0.9.1-beta / 204 vectors, path-only mode.
     /// At v0.19.0-beta the same code, before any change, was (197, 18, 34)
     /// path-only; switching to (path, code) mode and adopting the sweep
-    /// gives (209, 0, 40).
+    /// gave (209, 0, 40) of 249. At v0.21.0-beta, before this port's own
+    /// changes, the baseline was (219, 14, 40) of 273: 14 new failures from
+    /// the D-14 `bytes_hex` vectors (unknown-input-field fails, per E-20) and
+    /// the OSD-15 canonical-escaping vectors. Implementing E-27/D-14 (the CLI
+    /// as byte-oriented entry point) and OSD-15 escaping brings it to
+    /// (233, 0, 40).
     #[test]
     fn full_suite_counts_match_the_measured_baseline() {
         let (passed, failed, skipped) = run_all(&suite_dir());
         assert_eq!(
             (passed, failed, skipped),
-            (209, 0, 40),
+            (233, 0, 40),
             "vector pass/fail/skip counts changed -- if this is an intentional fix or a new \
              vector, update the pinned baseline; if not, something regressed"
         );
