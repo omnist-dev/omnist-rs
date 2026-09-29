@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.3.1-alpha
+
+Adopts omnist-spec **v0.22.0-beta** (was v0.21.0-beta). 0.3.0-alpha is
+published, so this behaviour change ships as a patch bump of the alpha
+(`0.3.0-alpha` -> `0.3.1-alpha`); nothing in the public API changes.
+
+Conformance, Track 2 (JSON vectors), `(path, code)` set comparison:
+
+- v0.21.0-beta suite, previous release: 233 pass, 0 fail, 40 skip of 273.
+- v0.22.0-beta suite, this code before any change: 238 pass, **9 fail**, 40
+  skip of 287. The 9 failures: 7 OML-26 with-a-separator vectors
+  (`separator-then-comma`, `-then-closing-bracket`, `-then-a-non-label-token`,
+  `-then-nan`, `-then-opening-brace`, `-then-an-array`, `-then-colon`; this
+  port reported `parse.unexpected-token`, the position was already right),
+  and the two E-28 column vectors (`oml-grammar/errors/column-counts-code-
+  points-after-an-astral-character`, expected `1:12`, got `1:15`;
+  `osd-grammar/errors/...`, expected `2:18`, got `2:21`: byte columns).
+- v0.22.0-beta suite, after: **247 pass, 0 fail, 40 skip of 287** (skips
+  unchanged: 28 OSD-OML, 6 alias-expansion, 6 limits). Track 1: 19 pass, 0
+  fail. Referee self-test: 10/10.
+
+Changed:
+
+- **OML-26 / OML-25 / OML-27.** After a complete top-level edge (or scalar
+  document), any leftover token that cannot continue the edge list is
+  `parse.trailing-content` at that token, with or without a separator before
+  it. The list continues only when a separator is followed by a STRING or
+  IDENT (the next edge, reporting its own error if malformed). Inside `{...}`
+  and `[...]` a stray token stays `parse.unexpected-token`. Previously
+  every one of those tokens after a separator reported
+  `parse.unexpected-token`.
+- **E-28 / E-29.** OML and OSD `line:col`: the column now counts Unicode code
+  points from the start of the line (was bytes), lines end at LF. For example an emoji inside a string before a bad escape on the same line now
+  puts the error at `1:12` (was `1:15`). This changes
+  `ParseError::position()`, `ParseError::col`, the `SchemaError` path of OSD
+  parse errors, and the `line N, col N` text the CLI prints for OML.
+  Computation is linear (measured with the release CLI, before/after: an 8 MB
+  single-line string 0.149s/0.125s, a 4 MB astral line with an error at the
+  end 0.060s/0.071s, a 200k-token line 0.133s/0.132s, 200k tokens plus an
+  error at the end 0.071s/0.072s, 100k edges on one line 0.043s/0.046s).
+- Codec (JSON/YAML/TOML/XML) syntax positions are untouched (omnist-spec#114).
+
 ## 0.3.0-alpha (unreleased, continued)
 
 Adopts omnist-spec **v0.21.0-beta** (was v0.19.0-beta), still unreleased on

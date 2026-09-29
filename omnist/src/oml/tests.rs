@@ -1605,3 +1605,158 @@ fn leftover_content_after_a_top_level_edge_is_trailing_content_but_inside_braces
     );
     assert_eq!(oml_err("a: [1] b: 2"), pos("parse.trailing-content", "1:8"));
 }
+
+// -- OML-25/OML-26/OML-27 (spec v0.22.0-beta, omnist-spec#109) ----------------
+
+fn cp(code_point: u32) -> String {
+    char::from_u32(code_point).unwrap().to_string()
+}
+
+#[test]
+fn a_leftover_token_after_a_separator_is_trailing_content_at_that_token() {
+    // Every token class that cannot begin an edge, after LF and after `;`.
+    for token in [
+        "}",
+        "]",
+        ",",
+        ":",
+        "{",
+        "[",
+        "nan",
+        "inf",
+        "1",
+        "1.5",
+        "2024-01-01",
+        "12:00:00",
+    ] {
+        assert_eq!(
+            oml_err(&format!("a: 1\n{token}")),
+            ("parse.trailing-content".to_string(), "2:1".to_string()),
+            "LF then {token:?}"
+        );
+        assert_eq!(
+            oml_err(&format!("a: 1;{token}")),
+            ("parse.trailing-content".to_string(), "1:6".to_string()),
+            "`;` then {token:?}"
+        );
+        // Without a separator it was already trailing content.
+        assert_eq!(
+            oml_err(&format!("a: 1 {token}")),
+            ("parse.trailing-content".to_string(), "1:6".to_string()),
+            "space then {token:?}"
+        );
+    }
+    // After a braced edge value and an array edge as well.
+    assert_eq!(
+        oml_err("a: {b: 1}\n}"),
+        ("parse.trailing-content".to_string(), "2:1".to_string())
+    );
+    assert_eq!(
+        oml_err("a: [1, 2]\n,"),
+        ("parse.trailing-content".to_string(), "2:1".to_string())
+    );
+    // A trailing separator run before the leftover token changes nothing.
+    assert_eq!(
+        oml_err("a: 1\n;\n\n  }"),
+        ("parse.trailing-content".to_string(), "4:3".to_string())
+    );
+}
+
+#[test]
+fn a_string_or_ident_after_a_separator_is_the_next_edge_and_reports_its_own_error() {
+    assert!(read_oml("a: 1\nb: 2").is_ok());
+    assert!(read_oml("a: 1;b: 2").is_ok());
+    assert!(read_oml("a: 1\n\"b\": 2\n").is_ok());
+    assert_eq!(
+        oml_err("a: 1\nnull: 2"),
+        ("parse.reserved-word-label".to_string(), "2:1".to_string())
+    );
+    assert_eq!(
+        oml_err("a: 1\ntrue: 2"),
+        ("parse.reserved-word-label".to_string(), "2:1".to_string())
+    );
+    // The next edge is malformed: its own error, not trailing content.
+    assert_eq!(
+        oml_err("a: 1\nb 2"),
+        ("parse.unexpected-token".to_string(), "2:3".to_string())
+    );
+    assert_eq!(
+        oml_err("a: 1\n\"b\" 2"),
+        ("parse.unexpected-token".to_string(), "2:5".to_string())
+    );
+}
+
+#[test]
+fn a_scalar_document_followed_by_a_separator_and_a_stray_token_is_trailing_content() {
+    assert_eq!(
+        oml_err("1\n}"),
+        ("parse.trailing-content".to_string(), "2:1".to_string())
+    );
+    assert_eq!(
+        oml_err("1;]"),
+        ("parse.trailing-content".to_string(), "1:3".to_string())
+    );
+    assert_eq!(
+        oml_err("\"s\"\n,"),
+        ("parse.trailing-content".to_string(), "2:1".to_string())
+    );
+}
+
+#[test]
+fn inside_braces_and_arrays_a_stray_token_stays_unexpected_token() {
+    for text in [
+        "a: {b: 1\n]}",
+        "a: {b: 1;,}",
+        "a: {b: 1\n:}",
+        "{b: 1\n1}",
+        "a: [1, 2\n",
+        "a: [1\n",
+        "x: {a: [1, 2\n}",
+    ] {
+        assert_eq!(oml_err(text).0, "parse.unexpected-token", "{text:?}");
+    }
+    assert_eq!(
+        oml_err("a: [1\n2]"),
+        ("parse.separator-in-array".to_string(), "2:1".to_string())
+    );
+}
+
+// -- E-28/E-29: the column counts code points, lines end at LF -----------------
+
+#[test]
+fn oml_columns_count_code_points_not_bytes() {
+    let emoji = cp(0x1F600);
+    let e_acute = cp(0xE9);
+    let combining = format!("e{}", cp(0x301));
+    let want = |code: &str, p: &str| (code.to_string(), p.to_string());
+    // The string's opening quote is column 12 whatever the byte width.
+    assert_eq!(
+        oml_err(&format!("a: \"{emoji}\"; b: \"\\q\"")),
+        want("parse.invalid-escape", "1:12")
+    );
+    assert_eq!(
+        oml_err(&format!("a: \"{e_acute}\"; b: \"\\q\"")),
+        want("parse.invalid-escape", "1:12")
+    );
+    // A base letter plus a combining mark is two code points.
+    assert_eq!(
+        oml_err(&format!("a: \"{combining}\"; b: \"\\q\"")),
+        want("parse.invalid-escape", "1:13")
+    );
+    // A tab is one column.
+    assert_eq!(oml_err("a:\t\"\\q\""), want("parse.invalid-escape", "1:4"));
+    // Multi-byte text on an earlier line does not shift a later line.
+    assert_eq!(
+        oml_err(&format!("a: \"{emoji}\"\nb: \"\\q\"")),
+        want("parse.invalid-escape", "2:4")
+    );
+    // Multi-byte text before a stray token, and CRLF is one line break.
+    assert_eq!(
+        oml_err(&format!("a: \"{emoji}\"\r\n}}")),
+        want("parse.trailing-content", "2:1")
+    );
+    assert_eq!(
+        oml_err(&format!("a: \"{emoji}\" }}")),
+        want("parse.trailing-content", "1:8")
+    );
+}

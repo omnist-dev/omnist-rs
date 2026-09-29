@@ -127,7 +127,7 @@ fn tokenize(text: &str) -> Result<Vec<Tok>, SchemaError> {
 /// byte offset `pos` in `text`. Every `parse.*` diagnostic OSD raises
 /// carries one of these, never a raw offset and never `$`.
 fn text_position(text: &str, pos: usize) -> String {
-    let (line, col) = crate::formats::textpos::line_col_bytes(text, pos);
+    let (line, col) = crate::formats::textpos::line_col_chars(text, pos);
     format!("{line}:{col}")
 }
 
@@ -739,6 +739,32 @@ mod tests {
     fn lex_error(text: &str) -> (String, String) {
         let e = parse_schema(text).unwrap_err();
         (e.path, e.code)
+    }
+
+    /// E-28/E-29: the column counts code points (an astral character is one,
+    /// a combining mark is one), a tab is one column, and lines end at LF.
+    #[test]
+    fn osd_columns_count_code_points_not_bytes() {
+        let cp = |c: u32| char::from_u32(c).unwrap().to_string();
+        let want = |p: &str| (p.to_string(), "parse.control-character".to_string());
+        for (label, col) in [
+            (cp(0x1F600), "2:16"),
+            (cp(0xE9), "2:16"),
+            (format!("e{}", cp(0x301)), "2:17"),
+        ] {
+            let text =
+                format!("record R {{\n  \"{label}\": string, \"\x01\": string,\n}}\nroot R\n");
+            assert_eq!(lex_error(&text), want(col), "label {label:?}");
+        }
+        assert_eq!(
+            lex_error("record R {\n\t\"\x01\": string,\n}\nroot R\n"),
+            want("2:2")
+        );
+        // CRLF is one line break.
+        assert_eq!(
+            lex_error("record R {\r\n  \"\x01\": string,\r\n}\r\nroot R\r\n"),
+            want("2:3")
+        );
     }
 
     #[test]

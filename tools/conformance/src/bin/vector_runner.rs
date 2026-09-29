@@ -1230,13 +1230,16 @@ mod tests {
     }
 
     #[test]
-    fn vector_count_is_273() {
+    fn vector_count_is_287() {
         // 204 -> 249 via the submodule pin bump v0.9.1-beta -> v0.19.0-beta,
         // 249 -> 273 via v0.19.0-beta -> v0.21.0-beta (14 new bytes_hex D-14
         // vectors, 4 new OSD-15 canonical-output vectors, 5 new OML-26/27
-        // vectors already counted at the v0.19.0-beta pin, 1 new infer vector).
+        // vectors already counted at the v0.19.0-beta pin, 1 new infer vector),
+        // 273 -> 287 via v0.21.0-beta -> v0.22.0-beta (10 OML-26 with-a-
+        // separator vectors, the OML-25 scalar counterpart, OML-26's negative
+        // control, and 2 E-28 code-point column vectors).
         let vectors = iter_vectors(&suite_dir());
-        assert_eq!(vectors.len(), 273);
+        assert_eq!(vectors.len(), 287);
     }
 
     /// Full-suite regression guard: runs every real vector through every
@@ -1244,8 +1247,8 @@ mod tests {
     /// `main`/`main_with_dir` is process-entry-point code). The counts are
     /// freshly measured, not computed by hand.
     ///
-    /// Spec v0.21.0-beta, diagnostics compared as (path, code) sets:
-    /// 233 pass, 0 fail, 40 skip of 273.
+    /// Spec v0.22.0-beta, diagnostics compared as (path, code) sets:
+    /// 247 pass, 0 fail, 40 skip of 287.
     ///
     /// - the 40 skips are E-20 "not yet implemented", never a documented
     ///   divergence: 6 `document-model/limits` (no runtime-configurable
@@ -1261,13 +1264,17 @@ mod tests {
     /// unknown input field). The 4 OSD-15 canonical-escaping vectors were
     /// already passing: `quote_label` was already correct. Implementing
     /// E-27/D-14 (the CLI as byte-oriented entry point) brings it to
-    /// (233, 0, 40).
+    /// (233, 0, 40). At v0.22.0-beta, before any change, the baseline was
+    /// (238, 9, 40) of 287: 7 OML-26 with-a-separator vectors (this port
+    /// said `parse.unexpected-token`) and the 2 E-28 column vectors (byte
+    /// columns); implementing OML-26 and the code-point column brings it to
+    /// (247, 0, 40).
     #[test]
     fn full_suite_counts_match_the_measured_baseline() {
         let (passed, failed, skipped) = run_all(&suite_dir());
         assert_eq!(
             (passed, failed, skipped),
-            (233, 0, 40),
+            (247, 0, 40),
             "vector pass/fail/skip counts changed -- if this is an intentional fix or a new \
              vector, update the pinned baseline; if not, something regressed"
         );
