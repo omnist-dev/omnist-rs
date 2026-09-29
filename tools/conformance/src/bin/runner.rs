@@ -247,7 +247,8 @@ fn run_normalize(dir: &Path) -> CaseResult {
         Err(e) => return fail(format!("parse_schema failed: {e}")),
     };
     let normalized: Schema = normalize(&schema);
-    let actual = to_osd(&normalized, None);
+    let actual = to_osd(&normalized, None)
+        .expect("Track 1 fixture schemas carry no C0-control label for OSD-14 to reject");
     let expected = match read_required(dir, "expected.osd") {
         Ok(s) => s,
         Err(r) => return r,
@@ -269,7 +270,8 @@ fn run_prune(dir: &Path) -> CaseResult {
         Err(e) => return fail(format!("parse_schema failed: {e}")),
     };
     let pruned: Schema = prune(&schema);
-    let actual = to_osd(&pruned, None);
+    let actual = to_osd(&pruned, None)
+        .expect("Track 1 fixture schemas carry no C0-control label for OSD-14 to reject");
     let expected = match read_required(dir, "expected.osd") {
         Ok(s) => s,
         Err(r) => return r,
@@ -389,7 +391,8 @@ fn run_extract(dir: &Path) -> CaseResult {
             Ok(s) => s,
             Err(e) => return fail(format!("expected success, extract failed: {e}")),
         };
-        let actual = to_osd(&extracted, None);
+        let actual = to_osd(&extracted, None)
+            .expect("Track 1 fixture schemas carry no C0-control label for OSD-14 to reject");
         let expected = match read_required(dir, "expected/output.osd") {
             Ok(s) => s,
             Err(r) => return r,
@@ -460,7 +463,8 @@ fn run_infer(dir: &Path) -> CaseResult {
             Ok(v) => v,
             Err(e) => return fail(format!("expected success, infer failed: {e}")),
         };
-        let actual = to_osd(&schema, None);
+        let actual = to_osd(&schema, None)
+            .expect("Track 1 fixture schemas carry no C0-control label for OSD-14 to reject");
         let expected = match read_required(dir, "expected/output.osd") {
             Ok(s) => s,
             Err(r) => return r,

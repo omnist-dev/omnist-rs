@@ -53,7 +53,7 @@ use omnist::infer::infer;
 use omnist::osd::to_osd;
 
 let schema = infer(&samples, "Person").unwrap();
-println!("{}", to_osd(&schema, Some(2)));
+println!("{}", to_osd(&schema, Some(2)).unwrap());
 // record Person {
 //   "name": string,
 //   "age": integer,

@@ -186,7 +186,9 @@ struct Builder {
     error: Option<ParseError>,
     /// Set when an alias refers to an anchor that is not complete yet (a
     /// self-referential definition, D-20): `document.limit.alias-expansion`
-    /// at `$`. Like `error`, once set the receiver stops building.
+    /// at `$`; or when block/flow nesting runs far past
+    /// [`crate::document::MAX_DEPTH`]: `document.limit.depth` at `$`. Like
+    /// `error`, once set the receiver stops building.
     self_reference: Option<DocumentError>,
 }
 
@@ -201,6 +203,14 @@ impl Builder {
             error: None,
             self_reference: None,
         }
+    }
+
+    /// Whether opening one more collection would nest far beyond
+    /// [`crate::document::MAX_DEPTH`]. The margin keeps every boundary case
+    /// the later `check_write_depth` stages decide exactly as before; only
+    /// nesting they would reject anyway is caught here.
+    fn too_deep(&self) -> bool {
+        self.doc_stack.len() > crate::document::MAX_DEPTH + 8
     }
 
     /// Charges `n` newly-materialized nodes against the running total,
@@ -284,6 +294,15 @@ impl Builder {
                 1 => self.docs.push(self.doc_stack.pop().unwrap().0),
                 _ => unreachable!("a single document's stack never nests more than one root"),
             },
+            Event::SequenceStart(..) | Event::MappingStart(..) if self.too_deep() => {
+                // Nesting this far past the depth cap is rejected here,
+                // while the tree is still shallow enough to drop: yaml-rust2
+                // has no recursion limit for BLOCK collections (`- - - ...`
+                // or one more indent per line), so a small input could
+                // otherwise build a tree deep enough to overflow the stack
+                // when it is dropped or walked.
+                self.self_reference = Some(depth_error());
+            }
             Event::SequenceStart(aid, _) => {
                 if !self.charge(1, mark) {
                     return;
@@ -356,6 +375,50 @@ impl MarkedEventReceiver for Builder {
     }
 }
 
+/// The `document.limit.depth` error at `$`, identical to what
+/// `check_write_depth` reports for the same over-deep input.
+fn depth_error() -> DocumentError {
+    DocumentError::with_code(
+        "$",
+        "document.limit.depth",
+        format!(
+            "nesting exceeds the maximum depth ({})",
+            crate::document::MAX_DEPTH
+        ),
+    )
+}
+
+/// Drives `parser` to the end of the stream, handing every event to
+/// `builder` -- what `Parser::load(builder, true)` does, minus its recursion.
+///
+/// `load` walks nested collections with mutually recursive `load_node` /
+/// `load_sequence` / `load_mapping` calls and no depth limit for BLOCK
+/// collections (its scanner only limits flow nesting): about 15 KB of `- - -
+/// ...` or one more indent per line overflowed the stack and aborted the
+/// process, before any of this crate's depth guards could run. The event
+/// stream itself ([`Parser::next_token`]) is a flat state machine, so pulling
+/// events directly is safe at any depth; [`Builder`] stops building once it
+/// trips, so a hostile nesting costs a scan, not a stack.
+///
+/// One difference from `load`, which cleared the parser's anchor table
+/// between documents: this does not (that table is private), so a later
+/// document's alias to an earlier document's anchor now resolves instead of
+/// being an unknown-anchor scan error. A multi-document stream is rejected
+/// afterwards either way, as `parse.codec-syntax`.
+fn feed_events(
+    parser: &mut Parser<std::str::Chars<'_>>,
+    builder: &mut Builder,
+) -> Result<(), ScanError> {
+    loop {
+        let (ev, mark) = parser.next_token()?;
+        let done = ev == Event::StreamEnd;
+        builder.on_event(ev, mark);
+        if done {
+            return Ok(());
+        }
+    }
+}
+
 fn scan_error_to_parse_error(e: &ScanError) -> ParseError {
     let mark = e.marker();
     ParseError::codec_syntax(mark.line(), mark.col() + 1, format!("invalid YAML: {e}"))
@@ -380,9 +443,7 @@ pub fn read_yaml(text: &str) -> Result<Doc, OmnistError> {
         .map_err(|_| ParseError::codec_syntax(1, 1, crate::bom::DOUBLED_BOM_MESSAGE))?;
     let mut parser = Parser::new(text.chars());
     let mut builder = Builder::new();
-    parser
-        .load(&mut builder, true)
-        .map_err(|e| scan_error_to_parse_error(&e))?;
+    feed_events(&mut parser, &mut builder).map_err(|e| scan_error_to_parse_error(&e))?;
     if let Some(e) = builder.self_reference {
         return Err(e.into());
     }
@@ -1699,6 +1760,29 @@ mod tests {
             matches!(&err, OmnistError::Parse(e) if e.message.contains("single document")),
             "got {err:?}"
         );
+    }
+
+    #[test]
+    fn nesting_far_past_max_depth_trips_the_event_stream_guard_not_the_stack() {
+        // Deep enough that `Builder::too_deep` -- checked in the event
+        // stream, before yaml-rust2's own recursive `load` would overflow
+        // the stack -- fires well before any Document is even built: both
+        // block sequences and block mappings, since each has its own
+        // `SequenceStart`/`MappingStart` arm.
+        let mut seq = String::new();
+        for _ in 0..5000 {
+            seq.push_str("- ");
+        }
+        let err = read_yaml(&seq).unwrap_err();
+        assert!(matches!(err, OmnistError::Document(_)), "got {err:?}");
+
+        let mut map = String::new();
+        for i in 0..5000 {
+            map.push_str(&"  ".repeat(i));
+            map.push_str("a:\n");
+        }
+        let err = read_yaml(&map).unwrap_err();
+        assert!(matches!(err, OmnistError::Document(_)), "got {err:?}");
     }
 
     #[test]

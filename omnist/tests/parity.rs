@@ -249,7 +249,7 @@ fn parity_corpus_replays_every_fixture_against_rust() {
             "schema_osd_roundtrip_equivalent" => {
                 let text = fx["schema"].as_str().unwrap();
                 let s = parse_schema(text).unwrap();
-                let s2 = parse_schema(&to_osd(&s, None)).unwrap();
+                let s2 = parse_schema(&to_osd(&s, None).unwrap()).unwrap();
                 assert!(
                     omnist::ops::equivalent(&s, &s2),
                     "fixture {note:?}: to_osd()+parse_schema() round-trip is not equivalent()"

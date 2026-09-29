@@ -27,7 +27,7 @@ fn oml(text: &str) -> Result<String, Rejection> {
 
 fn osd(text: &str) -> Result<String, Rejection> {
     parse_schema(text)
-        .map(|s| to_osd(&s, None))
+        .map(|s| to_osd(&s, None).unwrap())
         .map_err(|e| (e.path, e.code))
 }
 
@@ -151,7 +151,7 @@ fn a_mark_that_is_not_at_offset_zero_is_never_stripped_or_rejected() {
         "record R {{\n    \"{label}\": string,\n}}\nroot R\n"
     ))
     .unwrap();
-    assert!(to_osd(&schema, None).contains(&label));
+    assert!(to_osd(&schema, None).unwrap().contains(&label));
 }
 
 #[test]
@@ -181,8 +181,8 @@ fn no_writer_ever_emits_a_leading_mark() {
         ("oml-compact", write_oml_compact(&doc.to_raw()).unwrap()),
     ];
     let schema = parse_schema("record R {\n    \"a\": string,\n}\nroot R\n").unwrap();
-    outputs.push(("osd", to_osd(&schema, None)));
-    outputs.push(("osd-compact", to_osd(&schema, Some(2))));
+    outputs.push(("osd", to_osd(&schema, None).unwrap()));
+    outputs.push(("osd-compact", to_osd(&schema, Some(2)).unwrap()));
     for (name, text) in outputs {
         assert!(!text.starts_with(BOM), "{name} wrote a leading BOM");
         assert!(!text.contains(BOM), "{name} wrote a BOM");

@@ -47,9 +47,8 @@ fn run_stdin(args: &[&str], stdin: Option<&str>) -> Run {
 }
 
 /// Like `run_stdin`, but feeds raw (possibly non-UTF-8) bytes -- needed to
-/// force `read_input`'s stdin branch (`io::stdin().read_to_string`) to hit
-/// its error path, which a `&str` can never do since it's already valid
-/// UTF-8 by construction.
+/// exercise the CLI's D-14 byte-level check, which a `&str` can never do since
+/// it's already valid UTF-8 by construction.
 fn run_stdin_bytes(args: &[&str], stdin: &[u8]) -> Run {
     let mut cmd = bin();
     cmd.args(args);
@@ -1303,15 +1302,20 @@ fn schema_equivalent_json_flag_picks_json_result_encoding() {
 // failures rather than mocks, per this project's coverage-gap policy.
 
 #[test]
-fn format_stdin_dash_with_invalid_utf8_hits_read_input_stdin_error_path() {
-    // A lone continuation byte (0x80) is never valid UTF-8 in any context,
-    // so `read_to_string` on stdin fails deterministically -- this is the
-    // only branch of `read_input` reachable without a real file-path I/O
-    // failure, since "-" bypasses `std::fs::read_to_string` entirely.
+fn format_stdin_dash_with_invalid_utf8_is_a_d14_diagnostic_not_an_io_error() {
+    // A lone continuation byte (0x80) is never valid UTF-8 in any context.
+    // Since omnist-spec v0.21.0-beta (D-14) that is `parse.invalid-encoding`
+    // at `1:1`, not the OS-level "stream did not contain valid UTF-8" I/O
+    // error the CLI used to print with no diagnostic.
     let r = run_stdin_bytes(&["format", "-"], &[0x61, 0x80, 0x62]);
     assert_eq!(r.code, 2);
     assert!(r.stderr.starts_with("error: "), "stderr: {}", r.stderr);
-    assert!(r.stderr.contains("(reading stdin)"), "stderr: {}", r.stderr);
+    assert!(r.stderr.contains("line 1, col 1"), "stderr: {}", r.stderr);
+    assert!(
+        !r.stderr.contains("(reading stdin)"),
+        "stderr: {}",
+        r.stderr
+    );
 }
 
 // `write_output`'s stdout `flush()` call itself is not separately tested
@@ -1349,4 +1353,333 @@ fn convert_xml_with_schema_pretypes_to_json() {
     ]);
     assert_eq!(r.code, 0, "stderr: {}", r.stderr);
     assert!(r.stdout.contains("\"qty\": 3"));
+}
+
+// --------------------------------------------------------------------- D-14
+//
+// The CLI is this port's byte-oriented entry point (omnist-spec D-14, section
+// 2.5; E-27): invalid UTF-8 on stdin or in a file is `parse.invalid-encoding`
+// at `1:1`, reported as ONE structured diagnostic, never repaired and never
+// an opaque I/O error. Every read surface is driven (JSON, YAML, TOML, XML,
+// OML through `convert`/`format`, OSD through `schema format`).
+
+/// A fresh scratch file holding raw `bytes`.
+fn fixture_bytes(name: &str, bytes: &[u8]) -> String {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let mut path = std::env::temp_dir();
+    path.push(format!(
+        "omnist-cli-test-{}-{}-{}",
+        std::process::id(),
+        name,
+        n
+    ));
+    std::fs::write(&path, bytes).unwrap();
+    path.to_string_lossy().into_owned()
+}
+
+/// The command line that reads `input` on the given read surface, asking for
+/// the machine-readable failure payload.
+fn read_surface_args<'a>(surface: &'a str, input: &'a str) -> Vec<&'a str> {
+    match surface {
+        "osd" => vec!["schema", "format", input, "--json"],
+        "oml" => vec!["format", input, "--json"],
+        codec => vec!["convert", input, "--from", codec, "--to", "json", "--json"],
+    }
+}
+
+const SURFACES: [&str; 6] = ["json", "yaml", "toml", "xml", "oml", "osd"];
+
+/// The single `(path, code)` of a `--json` failure payload, asserting there is
+/// exactly one diagnostic.
+fn only_diagnostic(r: &Run) -> (String, String) {
+    let v: serde_json::Value = serde_json::from_str(r.stdout.trim()).expect("a JSON payload");
+    assert_eq!(v["ok"], false, "stdout: {}", r.stdout);
+    let errors = v["errors"].as_array().expect("errors array");
+    assert_eq!(errors.len(), 1, "exactly one diagnostic: {}", r.stdout);
+    (
+        errors[0]["path"].as_str().unwrap().to_string(),
+        errors[0]["code"].as_str().unwrap().to_string(),
+    )
+}
+
+/// Malformed inputs, each pairing the bytes with what makes them malformed.
+/// The first eight are the vendored suite's own `bytes_hex` shapes.
+const INVALID_UTF8: &[(&str, &[u8])] = &[
+    ("truncated three-byte sequence", b"a: \"x\xe2\x82\"\n"),
+    ("overlong encoding", b"a: \"\xc0\xaf\"\n"),
+    ("lone continuation byte", b"a: \"\x80\"\n"),
+    ("encoded surrogate", b"a: \"\xed\xa0\x80\"\n"),
+    ("byte above the range", b"a: \"\xf5\x80\x80\x80\"\n"),
+    ("truncated four-byte sequence", b"a: \"\xf0\x9f\x98\"\n"),
+    ("above U+10FFFF", b"a: \"\xf4\x90\x80\x80\"\n"),
+    ("bad byte at offset zero", b"\xff a: 1\n"),
+    ("bad byte on a later line", b"a: 1\nb: 2\nc: \x80\n"),
+    ("two malformed sequences", b"\x80 a \xc0 b\n"),
+    // A BOM is EF BB BF, so a truncated one is malformed UTF-8: D-14, not D-15.
+    ("truncated BOM", b"\xef\xbb"),
+    ("lone BOM lead byte", b"\xef"),
+    ("BOM then a continuation byte", b"\xef\xbb\xbf\x80"),
+    (
+        "doubled BOM then bad bytes",
+        b"\xef\xbb\xbf\xef\xbb\xbf\x80",
+    ),
+    ("BOM then a truncated BOM", b"\xef\xbb\xbf\xef\xbb"),
+];
+
+#[test]
+fn invalid_utf8_on_stdin_is_one_parse_invalid_encoding_at_1_1_on_every_surface() {
+    for surface in SURFACES {
+        for (what, bytes) in INVALID_UTF8 {
+            let r = run_stdin_bytes(&read_surface_args(surface, "-"), bytes);
+            assert_eq!(r.code, 2, "{surface}: {what}: stderr {}", r.stderr);
+            assert_eq!(
+                only_diagnostic(&r),
+                ("1:1".to_string(), "parse.invalid-encoding".to_string()),
+                "{surface}: {what}"
+            );
+            let message =
+                serde_json::from_str::<serde_json::Value>(r.stdout.trim()).unwrap()["message"]
+                    .as_str()
+                    .unwrap()
+                    .to_string();
+            assert!(message.contains("UTF-8"), "{surface}: {what}: {message}");
+        }
+    }
+}
+
+#[test]
+fn invalid_utf8_in_a_file_is_reported_the_same_way() {
+    for surface in SURFACES {
+        for (what, bytes) in INVALID_UTF8 {
+            let path = fixture_bytes("d14", bytes);
+            let r = run(&read_surface_args(surface, &path));
+            assert_eq!(r.code, 2, "{surface}: {what}: stderr {}", r.stderr);
+            assert_eq!(
+                only_diagnostic(&r),
+                ("1:1".to_string(), "parse.invalid-encoding".to_string()),
+                "{surface}: {what}"
+            );
+        }
+    }
+}
+
+#[test]
+fn invalid_utf8_without_json_reports_a_positioned_error_line() {
+    let r = run_stdin_bytes(&["format", "-"], &[0x61, 0x80, 0x62]);
+    assert_eq!(r.code, 2);
+    assert!(
+        r.stderr.starts_with("error: line 1, col 1: "),
+        "{}",
+        r.stderr
+    );
+    assert!(r.stderr.contains("UTF-8"), "{}", r.stderr);
+    assert_eq!(r.stdout, "");
+}
+
+#[test]
+fn invalid_utf8_in_a_schema_file_or_the_schema_flag_is_rejected_too() {
+    let bad = fixture_bytes("d14schema", b"record R { \"\x80\": string } root R\n");
+    let r = run(&["schema", "is-empty", &bad, "--json"]);
+    assert_eq!(r.code, 2);
+    assert_eq!(only_diagnostic(&r).1, "parse.invalid-encoding");
+
+    let doc = fixture("d14doc", DOC_JSON);
+    let r = run(&[
+        "validate", &doc, "--from", "json", "--schema", &bad, "--json",
+    ]);
+    assert_eq!(r.code, 2);
+    assert_eq!(only_diagnostic(&r).1, "parse.invalid-encoding");
+
+    let r = run(&[
+        "convert", &doc, "--from", "json", "--to", "xml", "--schema", &bad, "--json",
+    ]);
+    assert_eq!(r.code, 2);
+    assert_eq!(only_diagnostic(&r).1, "parse.invalid-encoding");
+}
+
+#[test]
+fn invalid_utf8_is_rejected_by_check_validate_and_infer_too() {
+    let bad = fixture_bytes("d14cmds", b"{\"a\": \"\xe2\x82\"}");
+    let schema = fixture("d14cmds_schema", SCHEMA_OSD);
+    for args in [
+        vec!["check", &bad, "--from", "json", "--to", "xml", "--json"],
+        vec![
+            "validate", &bad, "--from", "json", "--schema", &schema, "--json",
+        ],
+        vec!["infer", &bad, "--from", "json", "--json"],
+    ] {
+        let r = run(&args);
+        assert_eq!(r.code, 2, "{args:?}: stderr {}", r.stderr);
+        assert_eq!(only_diagnostic(&r).1, "parse.invalid-encoding", "{args:?}");
+    }
+}
+
+#[test]
+fn valid_multi_byte_text_and_a_single_bom_are_accepted() {
+    // The controls: two-, three- and four-byte characters, so a reader cannot
+    // satisfy D-14 by rejecting everything multi-byte.
+    for (surface, text) in [
+        ("json", "{\"a\": \"\u{e9} \u{20ac} \u{1f600}\"}"),
+        ("yaml", "a: \"\u{e9} \u{20ac} \u{1f600}\"\n"),
+        ("toml", "a = \"\u{e9} \u{20ac} \u{1f600}\"\n"),
+        ("xml", "<a>\u{e9} \u{20ac} \u{1f600}</a>"),
+    ] {
+        for prefix in ["", "\u{FEFF}"] {
+            let input = format!("{prefix}{text}");
+            let r = run_stdin_bytes(
+                &["convert", "-", "--from", surface, "--to", "json"],
+                input.as_bytes(),
+            );
+            assert_eq!(r.code, 0, "{surface} {prefix:?}: stderr {}", r.stderr);
+            assert!(
+                r.stdout.contains('\u{1f600}') || surface == "xml",
+                "{}",
+                r.stdout
+            );
+        }
+    }
+    let r = run_stdin_bytes(&["format", "-"], "\u{FEFF}a: \"\u{e9}\"\n".as_bytes());
+    assert_eq!(r.code, 0, "stderr: {}", r.stderr);
+    assert!(r.stdout.contains('\u{e9}'));
+    let r = run_stdin_bytes(
+        &["schema", "format", "-"],
+        "record R { \"\u{e9}\": string } root R".as_bytes(),
+    );
+    assert_eq!(r.code, 0, "stderr: {}", r.stderr);
+    assert!(r.stdout.contains('\u{e9}'));
+}
+
+#[test]
+fn a_valid_utf8_doubled_bom_is_d21_not_d14() {
+    // EF BB BF EF BB BF is well-formed UTF-8: D-14 passes, D-15 strips one
+    // mark, D-21 rejects the second. Not `parse.invalid-encoding`.
+    for surface in SURFACES {
+        let r = run_stdin_bytes(
+            &read_surface_args(surface, "-"),
+            b"\xef\xbb\xbf\xef\xbb\xbfa: 1\n",
+        );
+        assert_eq!(r.code, 2, "{surface}: stderr {}", r.stderr);
+        assert!(
+            !r.stdout.contains("invalid-encoding"),
+            "{surface}: {}",
+            r.stdout
+        );
+        assert!(r.stderr.is_empty(), "{surface}: {}", r.stderr);
+    }
+}
+
+#[test]
+fn an_unreadable_stdin_is_still_an_io_error_not_an_encoding_one() {
+    // Stdin as a directory: `open` succeeds and `read` fails with EISDIR, a
+    // real OS-level failure on the `read_to_end` path (Linux).
+    let mut cmd = bin();
+    cmd.args(["format", "-", "--json"]);
+    cmd.stdin(std::fs::File::open(std::env::temp_dir()).unwrap());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    let output = cmd.output().unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("(reading stdin)"), "{stdout}");
+    assert!(stdout.contains("\"errors\": []"), "{stdout}");
+}
+
+// --------------------------------------------------------------- hostile input
+//
+// Panic/abort probes at the byte level: whatever a file or stdin holds, the
+// CLI exits with a code (`status.code()` is `None` after a signal such as a
+// stack-overflow SIGSEGV, which `run_stdin_bytes` turns into a test failure)
+// and never prints a Rust panic.
+
+fn assert_no_panic(what: &str, r: &Run) {
+    assert!(
+        matches!(r.code, 0..=2),
+        "{what}: unexpected exit code {} ({})",
+        r.code,
+        r.stderr
+    );
+    assert!(!r.stderr.contains("panicked"), "{what}: {}", r.stderr);
+}
+
+#[test]
+fn hostile_bytes_never_panic_on_any_read_surface() {
+    let deep_brackets = "[".repeat(100_000);
+    let deep_braces = "a: {".repeat(50_000);
+    let deep_xml = "<a>".repeat(50_000);
+    let deep_yaml = "- ".repeat(50_000);
+    // One more indent per line: yaml-rust2's `load` recurses per block level
+    // with no limit, and about 15 KB of this used to overflow the stack.
+    let deep_yaml_maps: String = (0..20_000)
+        .map(|i| format!("{}a:\n", " ".repeat(i)))
+        .collect();
+    let deep_yaml_mixed = format!("{}{}", "- ".repeat(30_000), "[".repeat(500));
+    let deep_json_obj = "{\"a\":".repeat(50_000);
+    let inputs: Vec<(&str, Vec<u8>)> = vec![
+        ("empty", vec![]),
+        ("bom only", b"\xef\xbb\xbf".to_vec()),
+        ("nul bytes", vec![0; 64]),
+        ("nul between text", b"a\x00b: \x001\n".to_vec()),
+        ("only invalid bytes", vec![0xff; 4096]),
+        ("deep brackets", deep_brackets.into_bytes()),
+        ("deep braces", deep_braces.into_bytes()),
+        ("deep xml", deep_xml.into_bytes()),
+        ("deep yaml", deep_yaml.into_bytes()),
+        ("deep yaml block maps", deep_yaml_maps.into_bytes()),
+        ("deep yaml flow after block", deep_yaml_mixed.into_bytes()),
+        ("deep json objects", deep_json_obj.into_bytes()),
+        (
+            "high code points",
+            "\u{10FFFF}\u{10FFFF}: \u{10FFFF}\n".into(),
+        ),
+        ("control characters", b"a: \x01\x02\x1f\n".to_vec()),
+    ];
+    for (what, bytes) in &inputs {
+        for surface in SURFACES {
+            let r = run_stdin_bytes(&read_surface_args(surface, "-"), bytes);
+            assert_no_panic(&format!("{surface}: {what}"), &r);
+        }
+    }
+}
+
+#[test]
+fn an_empty_file_and_a_bom_only_file_are_handled_on_every_surface() {
+    // Empty OML is the empty Document; a BOM-only file is the same after D-15.
+    for bytes in [&b""[..], &b"\xef\xbb\xbf"[..]] {
+        let r = run_stdin_bytes(&["format", "-"], bytes);
+        assert_eq!(r.code, 0, "stderr: {}", r.stderr);
+        assert_eq!(r.stdout.trim(), "");
+    }
+    for surface in ["json", "yaml", "toml", "xml"] {
+        for bytes in [&b""[..], &b"\xef\xbb\xbf"[..]] {
+            let r = run_stdin_bytes(&["convert", "-", "--from", surface, "--to", "json"], bytes);
+            assert_no_panic(&format!("{surface} empty"), &r);
+        }
+    }
+}
+
+// ------------------------------------------------------------------- OSD-14
+
+#[test]
+fn infer_over_a_document_with_a_control_character_label_fails_the_osd_write() {
+    // OSD-14: `infer` writes OSD, and a label carrying U+0001 has no OSD
+    // spelling -- `write.unsupported-value` at the record (`Root`), exit 2.
+    let doc = fixture("osd14_infer", "{\"a\\u0001b\": 1}");
+    let r = run(&["infer", &doc, "--from", "json"]);
+    assert_eq!(r.code, 2, "stderr: {}", r.stderr);
+    assert_eq!(r.stdout, "");
+    assert!(
+        r.stderr.contains("Root: write.unsupported-value"),
+        "{}",
+        r.stderr
+    );
+    let r = run(&["infer", &doc, "--from", "json", "--json"]);
+    assert_eq!(r.code, 2);
+    assert!(r.stdout.contains("write.unsupported-value"), "{}", r.stdout);
+    // The same document with a spellable label writes fine.
+    let ok = fixture("osd14_infer_ok", "{\"a\\\\b\\\"c\": 1}");
+    let r = run(&["infer", &ok, "--from", "json"]);
+    assert_eq!(r.code, 0, "stderr: {}", r.stderr);
+    assert!(r.stdout.contains(r#""a\\b\"c""#), "{}", r.stdout);
 }

@@ -30,7 +30,8 @@ use indexmap::IndexMap;
 use regex::Regex;
 use std::sync::LazyLock;
 
-use crate::error::SchemaError;
+use crate::error::{SchemaError, WriteError};
+use crate::report::unsupported_value_error;
 use crate::schema::{Field, FieldType, Record, Ref, Scalar, ScalarKind, Schema};
 
 // ---------------------------------------------------------------------------
@@ -590,8 +591,8 @@ pub fn parse_schema(text: &str) -> Result<Schema, SchemaError> {
 // Serialize a Schema back to OSD text
 // ---------------------------------------------------------------------------
 
-/// Serialize a [`Schema`] back to OSD text. Ported from Python's
-/// `osd.to_osd`/`_record`/`_field`/`_card`/`_type`.
+/// Serialize a [`Schema`] back to OSD text (canonical output, spec section
+/// 5.9). Ported from Python's `osd.to_osd`/`_record`/`_field`/`_card`/`_type`.
 ///
 /// `indent: None` renders a single-line, machine-oriented form (record
 /// definitions and the trailing `root` statement joined by spaces, fields
@@ -599,7 +600,33 @@ pub fn parse_schema(text: &str) -> Result<Schema, SchemaError> {
 /// pretty-printed, indented form -- mirroring `write_oml`/`write_json`'s
 /// own `indent: None` convention. A `Some(n)` sets the pretty-mode indent
 /// width in spaces. Both forms round-trip through [`parse_schema`].
-pub fn to_osd(schema: &Schema, indent: Option<usize>) -> String {
+///
+/// Labels are always quoted and escaped per OSD-15: a backslash is written
+/// `\\` and a double quote `\"`, and nothing else is escaped.
+///
+/// # Errors
+///
+/// OSD-14: a field label containing a C0 control character (`U+0000` to
+/// `U+001F`, tab and newline included) has no OSD spelling -- section 5.3.1
+/// bans the raw character in a string body and OSD's unescaping is weak, so
+/// no escape can stand in for it -- and the write fails with a
+/// [`WriteError`] carrying code `write.unsupported-value` (spec section
+/// 8.3.9, E-26), unconditionally. The diagnostic's `path` is the Schema
+/// path of the *record* holding the field (`R`, never `R.<label>`, since
+/// section 8.4 has no way to quote a label in a path). The first offending
+/// record in declaration order is reported. Such a schema still travels as
+/// OSD-OML, whose `\u00XX` escape is real.
+pub fn to_osd(schema: &Schema, indent: Option<usize>) -> Result<String, WriteError> {
+    if let Some((name, _)) = schema
+        .env()
+        .iter()
+        .find(|(_, rec)| rec.fields().iter().any(|f| has_c0_control(&f.label)))
+    {
+        return Err(unsupported_value_error(
+            name,
+            "a field label contains a C0 control character, which OSD text cannot spell (OSD-14)",
+        ));
+    }
     let mut parts: Vec<String> = schema
         .env()
         .iter()
@@ -607,9 +634,13 @@ pub fn to_osd(schema: &Schema, indent: Option<usize>) -> String {
         .collect();
     parts.push(format!("root {}", schema.root().name));
     if indent.is_none() {
-        return format!("{}\n", parts.join(" "));
+        return Ok(format!("{}\n", parts.join(" ")));
     }
-    format!("{}\n", parts.join("\n"))
+    Ok(format!("{}\n", parts.join("\n")))
+}
+
+fn has_c0_control(label: &str) -> bool {
+    label.chars().any(|c| (c as u32) < 0x20)
 }
 
 fn osd_record(name: &str, rec: &Record, indent: Option<usize>) -> String {
@@ -998,7 +1029,7 @@ mod tests {
     fn any_round_trips_through_to_osd() {
         let src = r#"record X { "a": any } root X"#;
         let schema = parse_schema(src).unwrap();
-        let rendered = to_osd(&schema, None);
+        let rendered = to_osd(&schema, None).unwrap();
         assert_eq!(rendered, "record X { \"a\": any } root X\n");
         let reparsed = parse_schema(&rendered).unwrap();
         assert_eq!(reparsed, schema);
@@ -1212,7 +1243,7 @@ root S
             root X
         "#;
         let schema = parse_schema(src).unwrap();
-        let rendered = to_osd(&schema, Some(4));
+        let rendered = to_osd(&schema, Some(4)).unwrap();
         assert_eq!(
             rendered,
             "record X {\n    \"a\": string,\n    \"b\" [0,1]: integer?,\n    \
@@ -1226,7 +1257,7 @@ root S
     fn to_osd_compact_round_trips_through_parse_schema() {
         let src = r#"record X { "a": string, "b" [0,1]: integer? } root X"#;
         let schema = parse_schema(src).unwrap();
-        let rendered = to_osd(&schema, None);
+        let rendered = to_osd(&schema, None).unwrap();
         assert_eq!(
             rendered,
             "record X { \"a\": string, \"b\" [0,1]: integer? } root X\n"
@@ -1240,7 +1271,7 @@ root S
         let src = r#"record X { "a" [2]: string } root X"#;
         let schema = parse_schema(src).unwrap();
         assert_eq!(
-            to_osd(&schema, None),
+            to_osd(&schema, None).unwrap(),
             "record X { \"a\" [2]: string } root X\n"
         );
     }
@@ -1249,7 +1280,7 @@ root S
     fn to_osd_renders_ref_type_bare() {
         let src = r#"record Leaf { "v": string } record X { "child": Leaf } root X"#;
         let schema = parse_schema(src).unwrap();
-        let rendered = to_osd(&schema, None);
+        let rendered = to_osd(&schema, None).unwrap();
         assert!(rendered.contains("\"child\": Leaf"));
     }
 
@@ -1260,8 +1291,8 @@ root S
             IndexMap::from([("X".to_string(), Record::new(vec![]).unwrap())]),
         )
         .unwrap();
-        assert_eq!(to_osd(&schema, None), "record X {  } root X\n");
-        assert_eq!(to_osd(&schema, Some(2)), "record X {\n}\nroot X\n");
+        assert_eq!(to_osd(&schema, None).unwrap(), "record X {  } root X\n");
+        assert_eq!(to_osd(&schema, Some(2)).unwrap(), "record X {\n}\nroot X\n");
     }
 
     #[test]
@@ -1278,13 +1309,13 @@ root S
             let schema = Schema::new(Ref::new("Root"), env).unwrap();
 
             // Test pretty OSD
-            let osd_pretty = to_osd(&schema, Some(4));
+            let osd_pretty = to_osd(&schema, Some(4)).unwrap();
             let parsed_pretty = parse_schema(&osd_pretty).expect("pretty OSD should re-parse");
             let rec_pretty = parsed_pretty.env().get("Root").unwrap();
             assert_eq!(rec_pretty.fields()[0].label, label);
 
             // Test compact OSD
-            let osd_compact = to_osd(&schema, None);
+            let osd_compact = to_osd(&schema, None).unwrap();
             let parsed_compact = parse_schema(&osd_compact).expect("compact OSD should re-parse");
             let rec_compact = parsed_compact.env().get("Root").unwrap();
             assert_eq!(rec_compact.fields()[0].label, label);
