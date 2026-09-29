@@ -319,6 +319,71 @@ proptest! {
 // Schema-algebra generators + properties
 // ---------------------------------------------------------------------------
 
+/// A field label exercising OSD-15's escaping (a `\` and a `"` turn up
+/// often, not as a rare edge case) and OSD's Unicode range generally --
+/// unlike `arb_label` above (a plain-identifier alphabet, deliberately
+/// avoiding the bracket-quoting path), this generator's whole point is to
+/// hit `quote_label`'s escaping and `unquote`'s un-escaping hard. Only `[`,
+/// `]` and the C0 controls (`U+0000`..`U+001F`, tab/newline included) are
+/// excluded -- S-8 keeps brackets out of a legal label and OSD-14 (a
+/// separate, dedicated test below) covers the C0 case on its own.
+fn arb_osd_label() -> impl Strategy<Value = String> {
+    proptest::collection::vec(
+        prop_oneof![
+            // Weighted so a generated label very often contains at least
+            // one backslash or quote, without ever being ONLY those --
+            // #4/5/6 keep the character mix wide (ASCII letters/digits,
+            // punctuation, and arbitrary non-control, non-bracket Unicode
+            // scalars, multi-byte included).
+            4 => Just('\\'),
+            4 => Just('"'),
+            3 => proptest::char::range('a', 'z'),
+            2 => proptest::char::range('0', '9'),
+            2 => prop_oneof![Just(' '), Just('-'), Just('_'), Just(':'), Just('/')],
+            3 => any::<char>().prop_filter("no C0 control or bracket", |c| {
+                (*c as u32) >= 0x20 && *c != '[' && *c != ']'
+            }),
+        ],
+        1..8,
+    )
+    .prop_map(|chars| chars.into_iter().collect())
+}
+
+/// A one-field, one-record `Schema` whose sole field is labeled `label`,
+/// typed as a plain (non-nullable) string.
+fn schema_with_label(label: &str) -> Schema {
+    let field = Field::required(
+        label,
+        FieldType::Scalar(schema::Scalar::new(schema::ScalarKind::String, false)),
+    )
+    .unwrap();
+    let mut env = IndexMap::new();
+    env.insert("R".to_string(), Record::new(vec![field]).unwrap());
+    Schema::new(Ref::new("R"), env).unwrap()
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(*CASES))]
+
+    /// OSD-14/OSD-15's round trip (docs/05-osd-grammar.md section 5.9): for
+    /// any label `to_osd` can legally write (no C0 control character, no
+    /// bracket), writing it and parsing the result back MUST reproduce the
+    /// exact original label -- proving OSD-15's escaping and OSD's
+    /// (weak) unescaping are exact inverses of each other across a wide
+    /// character mix, not merely for the four vectors that happen to pin
+    /// it. Both indent modes are exercised (compact and pretty), since
+    /// `quote_label` is shared by both.
+    #[test]
+    fn osd_write_read_round_trips_for_arbitrary_valid_labels(label in arb_osd_label()) {
+        let schema = schema_with_label(&label);
+        for indent in [None, Some(4)] {
+            let text = osd::to_osd(&schema, indent).unwrap();
+            let parsed = osd::parse_schema(&text).unwrap();
+            prop_assert_eq!(&parsed.env()["R"].fields()[0].label, &label);
+        }
+    }
+}
+
 fn arb_scalar_kind() -> impl Strategy<Value = schema::ScalarKind> {
     proptest::sample::select(schema::ScalarKind::ALL.to_vec())
 }

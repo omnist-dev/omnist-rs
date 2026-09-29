@@ -49,8 +49,14 @@
 //!    configuration surface, so the boundary cannot be pinned.
 //! 2. `formats-yaml/alias-expansion.json` (6): every vector declares
 //!    `declared_max_alias_expansion`, and D-18 (section 2.4.1) is not
-//!    implemented -- tracked as DIV-3 (section 9.4). Never run against the
-//!    port's own default limit, which would be a false pass.
+//!    implemented. This is E-20's "not yet implemented" category, the same
+//!    rollout-gap shape as DIV-4's rows (section 9.4 says as much: a port
+//!    citing a rollout-gap ledger entry as an E-21 reason is misreading
+//!    it) -- DIV-3 is cited below for tracking context only, never as an
+//!    E-21 "documented divergence" (this port's YAML reader has no
+//!    structural reason it could not enforce D-18; it simply doesn't yet).
+//!    Never run against the port's own default limit, which would be a
+//!    false pass.
 //! 3. `extensions-osd-oml/` (28): the OSD-OML extension operations
 //!    (`parse_schema_oml`, `schema_from_document`, `schema_to_document`,
 //!    `write_schema_oml`) have no implementation in this port yet.
@@ -100,8 +106,9 @@ const LIMIT_KEYS: &[&str] = &[
 fn limit_skip_reason(input: &Json) -> Option<String> {
     if input.get("declared_max_alias_expansion").is_some() {
         return Some(
-            "not yet implemented: D-18 alias expansion limit (section 2.4.1) is not enforced by \
-             this port's YAML reader; tracked as DIV-3 (section 9.4) and omnist-rs#180"
+            "not yet implemented (E-20): D-18 alias expansion limit (section 2.4.1) is not \
+             enforced by this port's YAML reader; tracking context only, not an E-21 citation: \
+             DIV-3 (section 9.4), omnist-rs#180"
                 .to_string(),
         );
     }
@@ -461,11 +468,29 @@ fn run_parse_schema(v: &Json) -> VResult {
         Source::Text(text) => parse_schema(&text).map_err(OmnistError::from),
     };
     match result {
-        Ok(_) => {
-            if expect_ok(v) {
-                pass()
-            } else {
-                fail("expected failure, parse_schema succeeded")
+        Ok(schema) => {
+            if !expect_ok(v) {
+                return fail("expected failure, parse_schema succeeded");
+            }
+            // omnist-spec section 8.5.3: `expect.schema`, where present, is
+            // compared byte-for-byte against the canonical OSD text this
+            // Schema renders to -- not just checked for successful parse.
+            // A vector with no `expect.schema` (most of them; the shape is
+            // usually the point, not a particular canonical spelling) has
+            // nothing further to check here.
+            match v["expect"].get("schema").and_then(|s| s.as_str()) {
+                Some(expected) => {
+                    let actual = to_osd(&schema, Some(4)).expect(
+                        "a schema this runner just parsed from OSD text carries no \
+                         C0-control label for OSD-14 to reject",
+                    );
+                    match compare_schema(&actual, expected, "canonical") {
+                        Ok(true) => pass(),
+                        Ok(false) => fail("parsed schema does not match expected"),
+                        Err(e) => fail(format!("referee error: {e}")),
+                    }
+                }
+                None => pass(),
             }
         }
         Err(e) => {
@@ -623,10 +648,10 @@ fn run_schema_producing(v: &Json, f: impl Fn(&Schema) -> Schema) -> VResult {
         Ok(s) => s,
         Err(e) => return fail(format!("parse_schema failed: {e}")),
     };
-    let actual = to_osd(&f(&schema), None)
+    let actual = to_osd(&f(&schema), Some(4))
         .expect("vector-suite schemas carry no C0-control label for OSD-14 to reject");
     let expected = v["expect"]["schema"].as_str().unwrap_or_default();
-    match compare_schema(&actual, expected, "exact") {
+    match compare_schema(&actual, expected, "canonical") {
         Ok(true) => pass(),
         Ok(false) => fail("output schema does not match expected"),
         Err(e) => fail(format!("referee error: {e}")),
@@ -710,10 +735,10 @@ fn run_extract(v: &Json) -> VResult {
             Ok(s) => s,
             Err(e) => return fail(format!("expected success, extract failed: {e}")),
         };
-        let actual = to_osd(&extracted, None)
+        let actual = to_osd(&extracted, Some(4))
             .expect("vector-suite schemas carry no C0-control label for OSD-14 to reject");
         let expected = v["expect"]["schema"].as_str().unwrap_or_default();
-        match compare_schema(&actual, expected, "exact") {
+        match compare_schema(&actual, expected, "canonical") {
             Ok(true) => pass(),
             Ok(false) => fail("extracted schema does not match expected"),
             Err(e) => fail(format!("referee error: {e}")),
@@ -1123,6 +1148,50 @@ mod tests {
             "expect": {"ok": true}
         });
         assert_eq!(dispatch(&v).status, Status::Pass);
+    }
+
+    #[test]
+    fn run_parse_schema_with_matching_expect_schema_passes() {
+        // omnist-spec section 8.5.3: `expect.schema`, when present, is
+        // compared byte-for-byte against the canonical OSD text -- this is
+        // the happy path of that check.
+        let v = json!({
+            "operation": "parse_schema",
+            "input": {"text": "record R { \"x\": string } root R\n"},
+            "expect": {"ok": true, "schema": "record R {\n    \"x\": string,\n}\nroot R\n"}
+        });
+        assert_eq!(dispatch(&v).status, Status::Pass);
+    }
+
+    #[test]
+    fn run_parse_schema_with_an_unparseable_expect_schema_is_a_referee_error() {
+        // A malformed vector (expect.schema is not OSD) must FAIL with a
+        // referee error, never pass and never panic.
+        let v = json!({
+            "operation": "parse_schema",
+            "input": {"text": "record R { \"x\": string } root R
+        "},
+            "expect": {"ok": true, "schema": "not valid osd"}
+        });
+        let r = dispatch(&v);
+        assert_eq!(r.status, Status::Fail);
+        assert!(r.message.contains("referee error"), "{}", r.message);
+    }
+
+    #[test]
+    fn run_parse_schema_with_mismatched_expect_schema_fails() {
+        let v = json!({
+            "operation": "parse_schema",
+            "input": {"text": "record R { \"x\": string } root R\n"},
+            "expect": {"ok": true, "schema": "record R {\n    \"y\": string,\n}\nroot R\n"}
+        });
+        let r = dispatch(&v);
+        assert_eq!(r.status, Status::Fail);
+        assert!(
+            r.message.contains("does not match expected"),
+            "{}",
+            r.message
+        );
     }
 
     #[test]
