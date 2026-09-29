@@ -117,8 +117,8 @@ fn limit_skip_reason(input: &Json) -> Option<String> {
         .find(|k| input.get(**k).is_some())
         .map(|k| {
             format!(
-                "not yet implemented: {k} needs a runtime-configurable limit; this port's \
-                 limits are compile-time constants (omnist-rs#181)"
+                "not yet implemented (E-20): {k} needs a runtime-configurable limit; this \
+                 port's limits are compile-time constants (omnist-rs#181)"
             )
         })
 }
@@ -909,7 +909,7 @@ fn dispatch(v: &Json) -> VResult {
         // The OSD-OML extension (docs/extensions/osd-oml.md): not implemented
         // by this port. E-20 "not yet implemented".
         op if EXTENSION_OPERATIONS.contains(&op) => skip(format!(
-            "not yet implemented: {op} belongs to the OSD-OML extension, which this port does \
+            "not yet implemented (E-20): {op} belongs to the OSD-OML extension, which this port does \
              not implement (omnist-rs#175)"
         )),
         // An operation this runner knows nothing about is a FAIL, never a
@@ -1256,10 +1256,11 @@ mod tests {
     /// At v0.19.0-beta the same code, before any change, was (197, 18, 34)
     /// path-only; switching to (path, code) mode and adopting the sweep
     /// gave (209, 0, 40) of 249. At v0.21.0-beta, before this port's own
-    /// changes, the baseline was (219, 14, 40) of 273: 14 new failures from
-    /// the D-14 `bytes_hex` vectors (unknown-input-field fails, per E-20) and
-    /// the OSD-15 canonical-escaping vectors. Implementing E-27/D-14 (the CLI
-    /// as byte-oriented entry point) and OSD-15 escaping brings it to
+    /// changes, the baseline was (219, 14, 40) of 273, and all 14 failures
+    /// were the D-14 `bytes_hex` vectors (the unmodified runner fails on the
+    /// unknown input field). The 4 OSD-15 canonical-escaping vectors were
+    /// already passing: `quote_label` was already correct. Implementing
+    /// E-27/D-14 (the CLI as byte-oriented entry point) brings it to
     /// (233, 0, 40).
     #[test]
     fn full_suite_counts_match_the_measured_baseline() {

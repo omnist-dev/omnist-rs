@@ -163,8 +163,7 @@ document previously claimed a fix that did not happen**; verified directly
 boundary never touches `quote_label`, and the pre-sweep code was measured
 against the four new `osd-grammar/canonical-output/label-*` vectors on its
 own: 219 pass / 14 fail / 40 skip, with all 14 failures being `bytes_hex`
-D-14 vectors and zero being OSD-15 vectors). Go and TypeScript independently
-report the same finding for their own OSD-15 rollouts.
+D-14 vectors and zero being OSD-15 vectors).
 
 OSD-14 (a field label with a C0 control character has no OSD spelling) has no
 conformance vector -- the suite's `schema` field is always OSD text, and a

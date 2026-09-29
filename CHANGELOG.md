@@ -31,8 +31,7 @@ Corrected:
   else, unchanged by this PR (confirmed: `git diff origin/main -- \
   omnist/src/osd.rs` touches `to_osd`'s signature and OSD-14's new check,
   never `quote_label`). The 4 new OSD-15 vectors pass because the writer was
-  already correct, not because of anything landed here. Go and TypeScript
-  independently found the same thing in their own v0.21.0-beta sweeps.
+  already correct, not because of anything landed here.
 - Fixed two real conformance-harness gaps found by independent review, with
   mutation evidence, plus a design correction found by a second review:
   `run_parse_schema` (Track 2) never compared `expect.schema` against the
