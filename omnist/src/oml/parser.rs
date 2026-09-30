@@ -130,6 +130,13 @@ impl<'a> Parser<'a> {
         let mut edges = Vec::new();
         self.skip_sep()?;
         while !matches!(self.kind, TokKind::RBrace | TokKind::Eof) {
+            // OML-26: at the top level the edge list continues only when a
+            // separator is followed by a label token (STRING or IDENT); any
+            // other leftover token is content after the document has ended,
+            // reported by `parse_document` as `parse.trailing-content`.
+            if top_level && !matches!(self.kind, TokKind::Str(_) | TokKind::Ident(_)) {
+                break;
+            }
             let label = self.parse_label()?;
             let (colon_kind, colon_start, colon_end) = self.advance()?;
             if !matches!(colon_kind, TokKind::Colon) {

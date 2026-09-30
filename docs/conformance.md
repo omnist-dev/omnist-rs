@@ -3,8 +3,8 @@
 This port has its own conformance-test harness (`tools/conformance/`)
 against [omnist-spec](https://github.com/omnist-dev/omnist-spec), the
 language-agnostic upstream specification. It vendors omnist-spec as a
-pinned git submodule (`vendor/omnist-spec`, currently commit `103a8c9`,
-the `v0.21.0-beta` tag) and
+pinned git submodule (`vendor/omnist-spec`, currently commit `8b8a746`,
+the `v0.22.0-beta` tag) and
 runs entirely against this crate's own library code -- it does not depend
 on the Python or TypeScript ports' implementations.
 
@@ -17,7 +17,7 @@ reporting rule:
 - **Track 1** (`vendor/omnist-spec/conformance/fixtures/`, directory-per-fixture,
   11 operations): **19 passed, 0 failed, 0 skipped**.
 - **Track 2** (`vendor/omnist-spec/test-suite/`, JSON-vector suite, 14-operation
-  vocabulary): **233 passed, 0 failed, 40 skipped** (of 273 vectors),
+  vocabulary): **247 passed, 0 failed, 40 skipped** (of 287 vectors),
   **diagnostics compared as `(path, code)` sets** (section 8.5.2), not in
   code-agnostic mode. The runner exits non-zero on any failing vector and
   never on skips (E-22); it has no list of tolerated failures.
@@ -34,7 +34,12 @@ cargo run -p conformance --bin vector_runner
 ## Every Track 2 skip, and why
 
 All 40 skips are one spec category, E-20 "not yet implemented"; none is an
-E-21 documented divergence. (The suite grew from 249 to 273 vectors across
+E-21 documented divergence. (v0.22.0-beta added 14 vectors (287 in all): 10
+OML-26 with-a-separator vectors, the OML-25 scalar counterpart, OML-26's
+negative control and 2 E-28 code-point column vectors, all passing; before
+this port adopted OML-26 and E-28 the baseline was 238 pass / 9 fail / 40
+skip, the failures being 7 OML-26 vectors and the 2 column vectors, see
+the CHANGELOG. The suite grew from 249 to 273 vectors across
 v0.20.0-beta and v0.21.0-beta -- 5 OML-26/27, 4 OSD-15 canonical-escaping and
 1 S-21 `infer` vector at v0.20.0-beta, then 14 new `bytes_hex` D-14 vectors at
 v0.21.0-beta -- and this port now runs every one of them for real, including
@@ -235,8 +240,8 @@ leaving Track 1 at 19/0 (exactly as `docs/conformance-harness.md` says it
 should -- Track 1's `"exact"` is meant to tolerate this); deleting
 `quote_label`'s escaping entirely fails the 4 OSD-15 vectors directly.
 Neither mutation-and-revert cycle surfaced an actual writer bug -- with the
-corrected comparisons in place, both tracks are unchanged at 233/0/40 (of
-273) and 19/0.
+corrected comparisons in place, both tracks were unchanged at 233/0/40 (of
+273, v0.21.0-beta) and 19/0.
 
 ## Real bugs this harness found and fixed
 

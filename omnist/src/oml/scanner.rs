@@ -94,25 +94,10 @@ impl<'a> Scanner<'a> {
         self.text.as_bytes().get(at).copied()
     }
 
+    /// 1-based `line:col` of byte offset `pos`; the column counts code
+    /// points (E-28), lines end at LF (E-29).
     pub(super) fn line_col(&self, pos: usize) -> (usize, usize) {
-        // Byte-offset line/col, matching `toml.rs`'s own `line_col`
-        // convention: counts `\n` *bytes* (always single-byte in UTF-8), so
-        // this is correct regardless of multi-byte characters earlier in
-        // the text.
-        let bytes = self.text.as_bytes();
-        let mut line = 1usize;
-        let mut last_nl: Option<usize> = None;
-        for (i, &b) in bytes[..pos].iter().enumerate() {
-            if b == b'\n' {
-                line += 1;
-                last_nl = Some(i);
-            }
-        }
-        let col = match last_nl {
-            Some(i) => pos - i,
-            None => pos + 1,
-        };
-        (line, col)
+        crate::formats::textpos::line_col_chars(self.text, pos)
     }
 
     /// A [`ParseError`] at byte offset `pos`, carrying the spec's `parse.*`
