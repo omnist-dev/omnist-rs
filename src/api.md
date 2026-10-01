@@ -460,12 +460,23 @@ pub fn read_yaml(text: &str) -> Result<Doc, OmnistError>;
 pub fn write_yaml(doc: &Doc, strict: bool, report: Option<&mut WriteReport>)
     -> Result<String, WriteError>;
 pub fn check_yaml(doc: &Doc) -> WriteReport;
+pub fn read_yaml_with(text: &str, options: &YamlReadOptions) -> Result<Doc, OmnistError>;
+pub struct YamlReadOptions { pub max_alias_expansion: u32 }
+pub fn with_max_alias_expansion(mut self, n: u32) -> Self; // on YamlReadOptions
+pub const DEFAULT_MAX_ALIAS_EXPANSION: u32 = 50;
+pub const MAX_ALIAS_EXPANSION_CEILING: u32 = 10_000;
 ```
 <!-- doc-illustrative -->
 
 YAML: block style, 2-space indent, insertion order preserved. `read_yaml`
 accepts exactly one YAML document (a multi-document stream errors, matching
 Python's `yaml.safe_load`); empty/blank input parses as a `Null` document.
+Both readers refuse input whose alias expansion factor exceeds the maximum
+(default 50) or that holds a self-referential anchor, with
+`document.limit.alias-expansion` at `$` and before anything is expanded
+(spec D-18/D-19/D-20); `read_yaml_with` takes a `YamlReadOptions` whose
+`max_alias_expansion` (`0` selects the default; above 10000 is refused)
+changes it. See [YAML](formats/yaml.md#alias-expansion-limit-d-18-d-19-d-20).
 
 ```rust
 // omnist::formats::toml

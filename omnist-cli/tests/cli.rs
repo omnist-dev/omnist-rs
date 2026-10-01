@@ -1683,3 +1683,84 @@ fn infer_over_a_document_with_a_control_character_label_fails_the_osd_write() {
     assert_eq!(r.code, 0, "stderr: {}", r.stderr);
     assert!(r.stdout.contains(r#""a\\b\"c""#), "{}", r.stdout);
 }
+
+// ---------------------------------------------- D-18 YAML alias expansion limit
+
+/// A "billion laughs" input: every anchor holds four aliases of the previous.
+fn alias_bomb() -> String {
+    let mut text = String::from("a0: &a0 [x, x]\n");
+    for i in 1..10 {
+        let refs = vec![format!("*a{}", i - 1); 4].join(", ");
+        text.push_str(&format!("a{i}: &a{i} [{refs}]\n"));
+    }
+    text
+}
+
+fn assert_alias_refusal(what: &str, r: &Run) {
+    assert_eq!(r.code, 2, "{what}: stderr {}", r.stderr);
+    assert_eq!(r.stdout, "", "{what}: no output on refusal");
+    assert!(r.stderr.starts_with("error: "), "{what}: {}", r.stderr);
+    assert!(
+        r.stderr.contains("alias expansion factor"),
+        "{what}: {}",
+        r.stderr
+    );
+    assert!(!r.stderr.contains("panicked"), "{what}: {}", r.stderr);
+}
+
+#[test]
+fn a_yaml_alias_bomb_is_refused_on_every_command_that_reads_yaml() {
+    let input = fixture("alias_bomb", &alias_bomb());
+    let schema = fixture("alias_bomb_schema", SCHEMA_OSD);
+    for to in ["json", "yaml", "toml", "xml"] {
+        let r = run(&["convert", &input, "--from", "yaml", "--to", to]);
+        assert_alias_refusal(&format!("convert --to {to}"), &r);
+    }
+    let r = run(&["convert", &input, "--from", "yaml", "--to", "oml"]);
+    assert_alias_refusal("convert --to oml", &r);
+    let r = run(&["check", &input, "--from", "yaml", "--to", "json"]);
+    assert_alias_refusal("check", &r);
+    let r = run(&["validate", &input, "--from", "yaml", "--schema", &schema]);
+    assert_alias_refusal("validate", &r);
+    let r = run(&["infer", &input, "--from", "yaml"]);
+    assert_alias_refusal("infer", &r);
+}
+
+#[test]
+fn a_yaml_alias_bomb_on_stdin_is_refused_and_a_json_payload_carries_the_message() {
+    let r = run_stdin(
+        &["convert", "-", "--from", "yaml", "--to", "json", "--json"],
+        Some(&alias_bomb()),
+    );
+    assert_eq!(r.code, 2, "stderr {}", r.stderr);
+    let v: serde_json::Value = serde_json::from_str(r.stdout.trim()).expect("a JSON payload");
+    assert_eq!(v["ok"], false);
+    assert!(
+        v["message"]
+            .as_str()
+            .unwrap()
+            .contains("alias expansion factor"),
+        "{}",
+        r.stdout
+    );
+}
+
+#[test]
+fn a_yaml_self_referential_anchor_is_refused_by_the_cli() {
+    let input = fixture("alias_cycle", "a: &a {<<: *a, k: 1}\n");
+    let r = run(&["convert", &input, "--from", "yaml", "--to", "json"]);
+    assert_eq!(r.code, 2, "stderr {}", r.stderr);
+    assert_eq!(r.stdout, "");
+    assert!(r.stderr.contains("refers to itself"), "{}", r.stderr);
+}
+
+#[test]
+fn ordinary_yaml_merge_keys_still_convert_through_the_cli() {
+    let input = fixture(
+        "alias_ok",
+        "d: &d {a: 1, b: 2}\nx: {<<: *d, c: 3}\ny: {<<: *d, c: 4}\n",
+    );
+    let r = run(&["convert", &input, "--from", "yaml", "--to", "json"]);
+    assert_eq!(r.code, 0, "stderr {}", r.stderr);
+    assert!(r.stdout.contains("\"c\""), "{}", r.stdout);
+}

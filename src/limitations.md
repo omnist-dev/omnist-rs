@@ -1,6 +1,6 @@
 # Limitations & stability
 
-## Alpha status: `0.3.1-alpha`, per this project's versioning rule
+## Alpha status: `0.4.0-alpha`, per this project's versioning rule
 
 The Rust port's first feature-complete milestone (issue #28) plus its own
 conformance-test harness against
@@ -22,6 +22,28 @@ precise type can't otherwise be resolved. In this Rust port, `FieldType::Any`
 is fully supported across `omnist::schema`, `omnist::osd` parsing (`record X { "a": any }`),
 and `omnist::infer` (with `allow_any` fallback mode when schemas have ambiguous
 types or mixed structures, also wired into the CLI's `infer --allow-any` flag).
+
+## Safety limits and the YAML alias expansion factor (D-10, D-11)
+
+Every limit below is finite, documented here, and reported with its
+`document.limit.*` code (spec section 2.4):
+
+| Limit | Value | Configurable |
+|---|---|---|
+| Maximum nesting depth | 200 | no (compile-time `MAX_DEPTH`) |
+| Maximum node count | 1,000,000 (documents), 100,000 (YAML materialization) | no |
+| Maximum integer digits | 4,300 | no |
+| Maximum alias expansion factor (YAML) | **50** | yes: `YamlReadOptions::max_alias_expansion` (`0` = default, at most 10000) |
+
+The alias expansion factor bounds the materialized-to-written value-slot
+ratio of every anchored node, every other mapping and sequence, and the
+document root; see [YAML](formats/yaml.md#alias-expansion-limit-d-18-d-19-d-20)
+for the counting rules and for what the default accepts (for example, merging
+a 150-key anchor into a mapping that writes one key of its own reads
+`E ~ 50.67` and is rejected at the default). It is a ratio, so it does **not**
+replace the node cap: a scalar-heavy document is bounded as a whole only by
+`max x S(root)`, and size limits such as the YAML node cap stay in force.
+Only YAML has an anchor mechanism, so the factor binds no other codec.
 
 ## `Scalar::Int` is arbitrary-precision (issue #104)
 
