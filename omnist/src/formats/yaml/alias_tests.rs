@@ -518,3 +518,18 @@ fn doc_example_raise_the_maximum() {
     let doc = read_yaml_with("a: &x [1, 2]\nb: *x\n", &options).unwrap();
     assert_eq!(doc.root().get("b").len(), 2);
 }
+
+#[test]
+fn inline_merge_sources_add_their_slots_minus_the_container_to_s() {
+    // p: W = S = 9. Each inline {a: *p}: W = 10, S = 2 (E = 5). In r the
+    // carrier adds 3 * (10 - 1) to W and 3 * (2 - 1) to S: W = 28, S = 5,
+    // E = 5.6, so 6 is the smallest accepting maximum. Counting the inline
+    // container's slot too (s instead of s - 1) would give S = 8 and 5.
+    let keys: Vec<String> = (0..8).map(|i| format!("k{i}: 1")).collect();
+    let text = format!(
+        "p: &p {{{}}}\nr: {{<<: [{{a: *p}}, {{a: *p}}, {{a: *p}}]}}\n",
+        keys.join(", ")
+    );
+    assert_accepted(&text, 6);
+    assert_rejected(&text, 5);
+}

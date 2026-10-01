@@ -45,6 +45,8 @@ replace the node cap: a scalar-heavy document is bounded as a whole only by
 `max x S(root)`, and size limits such as the YAML node cap stay in force.
 Only YAML has an anchor mechanism, so the factor binds no other codec.
 
+Note: an anchored literal merge sequence (`<<: &s [*p, *q]`) is currently counted as an ordinary merge value, which under-counts E for that spelling; omnist-spec PR #126 (D-18a, the merge carrier rule) will change this.
+
 ## `Scalar::Int` is arbitrary-precision (issue #104)
 
 `omnist::document::Scalar::Int` and `Value::Int` are backed by

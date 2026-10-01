@@ -28,6 +28,7 @@ Added:
   `MAX_ALIAS_EXPANSION_CEILING`. `read_yaml`, the registry codec and the CLI
   read with the default; the CLI has no flag for it.
 - **E-32 `line:col` placeholder** in the Track 2 runner (4 vectors).
+- Note: an anchored literal merge sequence (`<<: &s [*p, *q]`) is currently counted as an ordinary merge value, which under-counts E for that spelling; omnist-spec PR #126 (D-18a, the merge carrier rule) will change this.
 
 Changed:
 
