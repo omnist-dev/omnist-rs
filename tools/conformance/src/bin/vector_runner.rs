@@ -1,4 +1,4 @@
-//! Track 2: runs vendor/omnist-spec's `test-suite/` JSON-vector suite (139
+//! Track 2: runs vendor/omnist-spec's `test-suite/` JSON-vector suite (312
 //! vectors, envelope `name`/`spec`/`operation`/`purpose`/`input`/`expect`
 //! -- see `vendor/omnist-spec/test-suite/README.md` and
 //! `docs/08-conformance-and-errors.md` §8.5) against omnist-rs's own
@@ -38,7 +38,7 @@
 //!
 //! ## Skips are only ever E-20 "not yet implemented"
 //!
-//! Three categories exist, all E-20 "not yet implemented" (no E-21
+//! Two categories exist, both E-20 "not yet implemented" (no E-21
 //! documented divergence applies to this port, and a skip reason is checked
 //! by the `every_skip_reason_is_true_for_its_vector` test against the
 //! vector's own input, so it cannot drift):
@@ -47,19 +47,20 @@
 //!    `declared_max_depth`/`declared_max_nodes`/`declared_max_int_digits`,
 //!    and this port's limits are compile-time constants with no runtime
 //!    configuration surface, so the boundary cannot be pinned.
-//! 2. `formats-yaml/alias-expansion.json` (6): every vector declares
-//!    `declared_max_alias_expansion`, and D-18 (section 2.4.1) is not
-//!    implemented. This is E-20's "not yet implemented" category, the same
-//!    rollout-gap shape as DIV-4's rows (section 9.4 says as much: a port
-//!    citing a rollout-gap ledger entry as an E-21 reason is misreading
-//!    it) -- DIV-3 is cited below for tracking context only, never as an
-//!    E-21 "documented divergence" (this port's YAML reader has no
-//!    structural reason it could not enforce D-18; it simply doesn't yet).
-//!    Never run against the port's own default limit, which would be a
-//!    false pass.
-//! 3. `extensions-osd-oml/` (28): the OSD-OML extension operations
+//! 2. `extensions-osd-oml/` (28): the OSD-OML extension operations
 //!    (`parse_schema_oml`, `schema_from_document`, `schema_to_document`,
 //!    `write_schema_oml`) have no implementation in this port yet.
+//!
+//! **`formats-yaml/alias-expansion.json` (16) is not skipped.** Every vector
+//! there declares `declared_max_alias_expansion`, and the runner passes that
+//! value through `YamlReadOptions::max_alias_expansion` for those vectors and
+//! only those (D-18, section 2.4.1); every other YAML vector reads with the
+//! default. `(path, code)` is compared strictly, with no known-failing list.
+//!
+//! **E-32:** a `parse.codec-syntax` expectation whose path is the literal
+//! placeholder `line:col` (a lone diagnostic of a JSON/YAML/TOML/XML parse
+//! vector) is satisfied by the same code at a well-formed text position
+//! inside the input; every other path is compared byte for byte.
 //!
 //! **D-6 (integer/number kind collapse) does not apply**:
 //! `omnist::document::Scalar` has separate `Int`/`Float` variants, so there
@@ -78,7 +79,7 @@ use omnist::error::OmnistError;
 use omnist::formats::json::{read_json, write_json};
 use omnist::formats::toml::{read_toml, write_toml};
 use omnist::formats::xml::{read_xml_report, write_xml};
-use omnist::formats::yaml::{read_yaml, write_yaml};
+use omnist::formats::yaml::{YamlReadOptions, read_yaml_with, write_yaml};
 use omnist::infer::infer_with_report;
 use omnist::materialize::materialize;
 use omnist::oml::{read_oml, write_oml};
@@ -96,22 +97,12 @@ const LIMIT_KEYS: &[&str] = &[
     "declared_max_depth",
     "declared_max_nodes",
     "declared_max_int_digits",
-    // D-18 (section 2.4.1), new in v0.18.0-beta.
-    "declared_max_alias_expansion",
 ];
 
 /// The E-20 "not yet implemented" skip reason for a vector carrying a
 /// `declared_max_*` key, or `None` if it carries none. The wording depends on
 /// the key, so the reason is true for THAT vector.
 fn limit_skip_reason(input: &Json) -> Option<String> {
-    if input.get("declared_max_alias_expansion").is_some() {
-        return Some(
-            "not yet implemented (E-20): D-18 alias expansion limit (section 2.4.1) is not \
-             enforced by this port's YAML reader; tracking context only, not an E-21 citation: \
-             DIV-3 (section 9.4), omnist-rs#180"
-                .to_string(),
-        );
-    }
     LIMIT_KEYS
         .iter()
         .find(|k| input.get(**k).is_some())
@@ -393,6 +384,10 @@ fn run_parse(v: &Json) -> VResult {
     // 8.3.8, D-3) are read-time diagnostics only XML's reader emits, via
     // `read_xml_report`'s `report`; the other formats have none.
     let mut xml_report = WriteReport::new();
+    let source_text = match &source {
+        Source::Text(text) => Some(text.clone()),
+        Source::Bytes(_) => None,
+    };
     let result: Result<RawNode, OmnistError> = match (source, format) {
         (Source::Bytes(bytes), "oml") => read_oml_bytes(bytes),
         (Source::Bytes(bytes), other) => match cli_format(other) {
@@ -405,7 +400,19 @@ fn run_parse(v: &Json) -> VResult {
         (Source::Text(text), "xml") => {
             read_xml_report(&text, Some(&mut xml_report)).map(|d| d.to_raw())
         }
-        (Source::Text(text), "yaml") => read_yaml(&text).map(|d| d.to_raw()),
+        (Source::Text(text), "yaml") => {
+            // D-18: the declared maximum goes through the option, for the
+            // vectors that declare one and only those (every other vector
+            // reads with the default).
+            let mut options = YamlReadOptions::default();
+            if let Some(declared) = input.get("declared_max_alias_expansion") {
+                match declared.as_u64().and_then(|n| u32::try_from(n).ok()) {
+                    Some(n) => options = options.with_max_alias_expansion(n),
+                    None => return fail("declared_max_alias_expansion is not a u32"),
+                }
+            }
+            read_yaml_with(&text, &options).map(|d| d.to_raw())
+        }
         (Source::Text(_), other) => return fail(format!("unknown format {other:?}")),
     };
 
@@ -432,12 +439,69 @@ fn run_parse(v: &Json) -> VResult {
             if expect_ok(v) {
                 return fail(format!("expected success, parse failed: {e}"));
             }
-            parse_failure_result(&e, &expected_diags(v))
+            parse_failure_result(&e, &expected_diags(v), format, source_text.as_deref())
         }
     }
 }
-fn parse_failure_result(e: &OmnistError, expected: &[Diag]) -> VResult {
+
+/// E-32's literal expected path: "compare the code, and that the path is a
+/// well-formed text position inside the input, nothing closer".
+const PATH_PLACEHOLDER: &str = "line:col";
+
+/// Whether `expected` is exactly the one entry E-32a allows the placeholder
+/// on: a lone `parse.codec-syntax` diagnostic of a JSON, YAML, TOML or XML
+/// parse vector. Anywhere else the string `line:col` is an ordinary path,
+/// compared byte for byte, and so can never match a real one.
+fn placeholder_applies(expected: &[Diag], format: &str) -> bool {
+    expected.len() == 1
+        && expected[0].0 == PATH_PLACEHOLDER
+        && expected[0].1 == "parse.codec-syntax"
+        && matches!(format, "json" | "yaml" | "toml" | "xml")
+}
+
+/// E-32b: `path` is `^[1-9][0-9]*:[1-9][0-9]*$`, and, when the input text is
+/// known (a runner MAY check, E-31), lies inside it: the line is at most one
+/// more than the number of LF characters (E-29) and the column at most one
+/// more than the code points on that line (E-28).
+fn well_formed_position_inside(path: &str, input: Option<&str>) -> bool {
+    let number = |part: &str| {
+        let ok =
+            !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()) && !part.starts_with('0');
+        ok.then(|| part.parse::<usize>().ok()).flatten()
+    };
+    let Some((line, col)) = path
+        .split_once(':')
+        .and_then(|(l, c)| Some((number(l)?, number(c)?)))
+    else {
+        return false;
+    };
+    match input {
+        None => true,
+        Some(text) => text
+            .split('\n')
+            .nth(line - 1)
+            .is_some_and(|l| col <= l.chars().count() + 1),
+    }
+}
+
+fn parse_failure_result(
+    e: &OmnistError,
+    expected: &[Diag],
+    format: &str,
+    input: Option<&str>,
+) -> VResult {
     match error_diag(e) {
+        Some(actual) if placeholder_applies(expected, format) => {
+            if actual.1 == expected[0].1 && well_formed_position_inside(&actual.0, input) {
+                pass()
+            } else {
+                fail(format!(
+                    "diagnostics differ: expected code {} at a well-formed position inside \
+                     the input (E-32), got {actual:?}",
+                    expected[0].1
+                ))
+            }
+        }
         Some(actual) => check_diags(expected, &[actual]),
         None => fail(format!(
             "the read failed with an error that carries no structured (path, code): {e}"
@@ -1230,16 +1294,19 @@ mod tests {
     }
 
     #[test]
-    fn vector_count_is_287() {
+    fn vector_count_is_312() {
         // 204 -> 249 via the submodule pin bump v0.9.1-beta -> v0.19.0-beta,
         // 249 -> 273 via v0.19.0-beta -> v0.21.0-beta (14 new bytes_hex D-14
         // vectors, 4 new OSD-15 canonical-output vectors, 5 new OML-26/27
         // vectors already counted at the v0.19.0-beta pin, 1 new infer vector),
         // 273 -> 287 via v0.21.0-beta -> v0.22.0-beta (10 OML-26 with-a-
         // separator vectors, the OML-25 scalar counterpart, OML-26's negative
-        // control, and 2 E-28 code-point column vectors).
+        // control, and 2 E-28 code-point column vectors), 287 -> 312 via
+        // v0.22.0-beta -> v0.25.0-beta (25 new vectors: 10 more D-18 alias
+        // vectors, the 4 E-32 placeholder vectors, and the rest of the
+        // v0.23.0-v0.25.0 additions).
         let vectors = iter_vectors(&suite_dir());
-        assert_eq!(vectors.len(), 287);
+        assert_eq!(vectors.len(), 312);
     }
 
     /// Full-suite regression guard: runs every real vector through every
@@ -1247,13 +1314,14 @@ mod tests {
     /// `main`/`main_with_dir` is process-entry-point code). The counts are
     /// freshly measured, not computed by hand.
     ///
-    /// Spec v0.22.0-beta, diagnostics compared as (path, code) sets:
-    /// 247 pass, 0 fail, 40 skip of 287.
+    /// Spec v0.25.0-beta, diagnostics compared as (path, code) sets:
+    /// 278 pass, 0 fail, 34 skip of 312.
     ///
-    /// - the 40 skips are E-20 "not yet implemented", never a documented
+    /// - the 34 skips are E-20 "not yet implemented", never a documented
     ///   divergence: 6 `document-model/limits` (no runtime-configurable
-    ///   limits), 6 `formats-yaml/alias-expansion` (D-18, DIV-3), and 28
-    ///   `extensions-osd-oml` (extension not implemented, omnist-rs#175).
+    ///   limits) and 28 `extensions-osd-oml` (extension not implemented,
+    ///   omnist-rs#175). The 16 `formats-yaml/alias-expansion` vectors (D-18)
+    ///   run, with the declared maximum passed through the option.
     ///
     /// History: (170, 0, 34) at v0.9.1-beta / 204 vectors, path-only mode.
     /// At v0.19.0-beta the same code, before any change, was (197, 18, 34)
@@ -1268,13 +1336,19 @@ mod tests {
     /// (238, 9, 40) of 287: 7 OML-26 with-a-separator vectors (this port
     /// said `parse.unexpected-token`) and the 2 E-28 column vectors (byte
     /// columns); implementing OML-26 and the code-point column brings it to
-    /// (247, 0, 40).
+    /// (247, 0, 40). At v0.25.0-beta, before any change (alias skip kept), the
+    /// baseline was (258, 4, 50) of 312: the 4 failures were the E-32
+    /// `line:col` placeholder vectors. With the alias skip removed and nothing
+    /// implemented it was (266, 12, 34): the 8 alias vectors that expect a
+    /// rejection failed (the 8 that expect success pass with no check at
+    /// all) plus the 4 placeholders. Implementing E-32 and D-18/D-19/D-20
+    /// brings it to (278, 0, 34).
     #[test]
     fn full_suite_counts_match_the_measured_baseline() {
         let (passed, failed, skipped) = run_all(&suite_dir());
         assert_eq!(
             (passed, failed, skipped),
-            (247, 0, 40),
+            (278, 0, 34),
             "vector pass/fail/skip counts changed -- if this is an intentional fix or a new \
              vector, update the pinned baseline; if not, something regressed"
         );
@@ -1469,7 +1543,12 @@ mod tests {
     #[test]
     fn parse_failure_result_with_no_structured_code_fails_not_skips() {
         let e: OmnistError = omnist::error::FormatError("x".to_string()).into();
-        let r = parse_failure_result(&e, &[("$".to_string(), "document.limit.depth".to_string())]);
+        let r = parse_failure_result(
+            &e,
+            &[("$".to_string(), "document.limit.depth".to_string())],
+            "yaml",
+            None,
+        );
         assert_eq!(r.status, Status::Fail);
     }
 
@@ -1478,9 +1557,15 @@ mod tests {
         let e: OmnistError =
             omnist::error::DocumentError::with_code("$", "format.dtd-forbidden", "x").into();
         let wrong_path = [("$.wrong".to_string(), "format.dtd-forbidden".to_string())];
-        assert_eq!(parse_failure_result(&e, &wrong_path).status, Status::Fail);
+        assert_eq!(
+            parse_failure_result(&e, &wrong_path, "yaml", None).status,
+            Status::Fail
+        );
         let wrong_code = [("$".to_string(), "format.mixed-content".to_string())];
-        assert_eq!(parse_failure_result(&e, &wrong_code).status, Status::Fail);
+        assert_eq!(
+            parse_failure_result(&e, &wrong_code, "yaml", None).status,
+            Status::Fail
+        );
     }
 
     #[test]
@@ -1488,7 +1573,10 @@ mod tests {
         let e: OmnistError =
             omnist::error::DocumentError::with_code("$", "format.dtd-forbidden", "x").into();
         let right = [("$".to_string(), "format.dtd-forbidden".to_string())];
-        assert_eq!(parse_failure_result(&e, &right).status, Status::Pass);
+        assert_eq!(
+            parse_failure_result(&e, &right, "yaml", None).status,
+            Status::Pass
+        );
     }
 
     #[test]
@@ -1652,8 +1740,9 @@ mod tests {
     /// A skip reason is only acceptable if it is TRUE for the vector it is
     /// attached to (the TypeScript port's first pass skipped 22 vectors under
     /// a reason that did not describe them). Checks every skip in the real
-    /// suite against the vector's own input/operation, and pins the three
-    /// categories by name and count so a fourth cannot appear unnoticed.
+    /// suite against the vector's own input/operation, and pins the two
+    /// categories by name and count so a third cannot appear unnoticed. The
+    /// D-18 alias vectors are NOT among them: each must run and pass.
     #[test]
     fn every_skip_reason_is_true_for_its_vector() {
         let (mut limits, mut alias, mut ext) = (0, 0, 0);
@@ -1663,35 +1752,32 @@ mod tests {
             let input = &v["input"];
             let op = v["operation"].as_str().unwrap();
             let carries_limit_key = LIMIT_KEYS.iter().any(|k| input.get(*k).is_some());
-            if carries_limit_key {
+            if input.get("declared_max_alias_expansion").is_some() {
+                alias += 1;
+                assert_eq!(r.status, Status::Pass, "{}: {}", v["name"], r.message);
+                assert!(
+                    v["name"]
+                        .as_str()
+                        .unwrap()
+                        .starts_with("formats-yaml/alias-expansion/")
+                );
+            } else if carries_limit_key {
                 // Every declared-limit vector MUST skip -- never run against
                 // the port's own default.
                 assert_eq!(r.status, Status::Skip, "{}", v["name"]);
-                if input.get("declared_max_alias_expansion").is_some() {
-                    alias += 1;
-                    assert!(
-                        v["name"]
-                            .as_str()
-                            .unwrap()
-                            .starts_with("formats-yaml/alias-expansion/")
-                    );
-                    assert!(r.message.contains("D-18") && r.message.contains("DIV-3"));
-                    assert!(r.message.contains("omnist-rs#180"), "{}", r.message);
-                } else {
-                    limits += 1;
-                    assert!(
-                        v["name"]
-                            .as_str()
-                            .unwrap()
-                            .starts_with("document-model/limits/")
-                    );
-                    let key = LIMIT_KEYS
-                        .iter()
-                        .find(|k| input.get(**k).is_some())
-                        .unwrap();
-                    assert!(r.message.contains(key), "{}", r.message);
-                    assert!(r.message.contains("omnist-rs#181"), "{}", r.message);
-                }
+                limits += 1;
+                assert!(
+                    v["name"]
+                        .as_str()
+                        .unwrap()
+                        .starts_with("document-model/limits/")
+                );
+                let key = LIMIT_KEYS
+                    .iter()
+                    .find(|k| input.get(**k).is_some())
+                    .unwrap();
+                assert!(r.message.contains(key), "{}", r.message);
+                assert!(r.message.contains("omnist-rs#181"), "{}", r.message);
             } else if EXTENSION_OPERATIONS.contains(&op) {
                 ext += 1;
                 assert_eq!(r.status, Status::Skip, "{}", v["name"]);
@@ -1706,7 +1792,147 @@ mod tests {
                 assert_ne!(r.status, Status::Skip, "{}: unexplained skip", v["name"]);
             }
         }
-        assert_eq!((limits, alias, ext), (6, 6, 28));
+        assert_eq!((limits, alias, ext), (6, 16, 28));
+    }
+
+    /// The declared maximum must reach the reader: the boundary vectors only
+    /// pass if it does (a runner that ignored it would accept the one-past
+    /// vectors and reject nothing).
+    #[test]
+    fn the_declared_alias_maximum_reaches_the_reader() {
+        let vectors = iter_vectors(&suite_dir());
+        let get = |name: &str| {
+            vectors
+                .iter()
+                .find(|nv| nv.vector["name"] == name)
+                .expect("the named vector exists")
+        };
+        for name in [
+            "formats-yaml/alias-expansion/expansion-one-past-declared-limit-fails",
+            "formats-yaml/alias-expansion/expansion-at-declared-limit-succeeds",
+        ] {
+            assert_eq!(dispatch(&get(name).vector).status, Status::Pass, "{name}");
+        }
+        // The same text without its declared key reads at the default 50 and
+        // is accepted, so the "fails" vector would fail without the option.
+        let mut v = get("formats-yaml/alias-expansion/expansion-one-past-declared-limit-fails")
+            .vector
+            .clone();
+        v["input"]
+            .as_object_mut()
+            .unwrap()
+            .remove("declared_max_alias_expansion");
+        assert_eq!(dispatch(&v).status, Status::Fail);
+        // A declared value that is not a u32 fails loudly, never silently
+        // reads at the default.
+        let mut bad = get("formats-yaml/alias-expansion/expansion-at-declared-limit-succeeds")
+            .vector
+            .clone();
+        bad["input"]["declared_max_alias_expansion"] = json!("three");
+        let r = dispatch(&bad);
+        assert_eq!(r.status, Status::Fail);
+        assert!(r.message.contains("not a u32"), "{}", r.message);
+    }
+
+    fn diag(path: &str, code: &str) -> Vec<Diag> {
+        vec![(path.to_string(), code.to_string())]
+    }
+
+    #[test]
+    fn e32_placeholder_applies_only_to_a_lone_codec_syntax_entry_of_the_four_codecs() {
+        let ok = diag("line:col", "parse.codec-syntax");
+        for f in ["json", "yaml", "toml", "xml"] {
+            assert!(placeholder_applies(&ok, f), "{f}");
+        }
+        assert!(!placeholder_applies(&ok, "oml"));
+        assert!(!placeholder_applies(
+            &diag("line:col", "parse.unexpected-token"),
+            "json"
+        ));
+        assert!(!placeholder_applies(
+            &diag("1:1", "parse.codec-syntax"),
+            "json"
+        ));
+        let two = vec![
+            ok[0].clone(),
+            ("1:1".to_string(), "parse.codec-syntax".to_string()),
+        ];
+        assert!(!placeholder_applies(&two, "json"));
+        assert!(!placeholder_applies(&[], "json"));
+    }
+
+    #[test]
+    fn e32_position_must_be_well_formed_and_inside_the_input() {
+        for good in ["1:1", "1:5", "2:1", "10:3"] {
+            assert!(well_formed_position_inside(good, None), "{good}");
+        }
+        for bad in [
+            "",
+            "1",
+            "1:",
+            ":1",
+            "0:1",
+            "1:0",
+            "01:1",
+            "1:01",
+            "-1:1",
+            "1:-1",
+            "1: 1",
+            " 1:1",
+            "1:1 ",
+            "1:1:1",
+            "a:b",
+            "line:col",
+            "+1:1",
+            "99999999999999999999:1",
+        ] {
+            assert!(!well_formed_position_inside(bad, None), "{bad:?}");
+        }
+        // With the text: two lines, the first with 3 code points (col <= 4),
+        // an astral character counted as one.
+        let text = "ab\u{1F600}\nxy";
+        assert!(well_formed_position_inside("1:4", Some(text)));
+        assert!(!well_formed_position_inside("1:5", Some(text)));
+        assert!(well_formed_position_inside("2:3", Some(text)));
+        assert!(!well_formed_position_inside("2:4", Some(text)));
+        assert!(!well_formed_position_inside("3:1", Some(text)));
+    }
+
+    #[test]
+    fn e32_vector_passes_with_the_code_at_a_well_formed_position_and_fails_otherwise() {
+        let expected = diag("line:col", "parse.codec-syntax");
+        let pe = |line, col, code: &str| {
+            OmnistError::Parse(omnist::error::ParseError::new(line, col, code, "m"))
+        };
+        let r = parse_failure_result(
+            &pe(1, 7, "parse.codec-syntax"),
+            &expected,
+            "json",
+            Some("{\"a\": }"),
+        );
+        assert_eq!(r.status, Status::Pass, "{}", r.message);
+        // The placeholder never matches a different code.
+        let r = parse_failure_result(
+            &pe(1, 7, "parse.unexpected-token"),
+            &expected,
+            "json",
+            Some("{\"a\": }"),
+        );
+        assert_eq!(r.status, Status::Fail);
+        // Nor a position past the end of the input.
+        let r = parse_failure_result(
+            &pe(9, 1, "parse.codec-syntax"),
+            &expected,
+            "json",
+            Some("{}"),
+        );
+        assert_eq!(r.status, Status::Fail);
+        // Without the text (a bytes_hex vector) only the shape is checked.
+        let r = parse_failure_result(&pe(9, 1, "parse.codec-syntax"), &expected, "json", None);
+        assert_eq!(r.status, Status::Pass);
+        // On OML the string is an ordinary path, compared byte for byte.
+        let r = parse_failure_result(&pe(1, 1, "parse.codec-syntax"), &expected, "oml", None);
+        assert_eq!(r.status, Status::Fail);
     }
 
     #[test]

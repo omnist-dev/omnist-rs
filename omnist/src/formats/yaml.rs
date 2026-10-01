@@ -89,6 +89,10 @@
 //! Same 4300-digit cap, applied to a plain decimal integer scalar's digit run
 //! before attempting to parse it, mirroring `json.rs`'s identical guard.
 
+mod alias;
+#[cfg(test)]
+mod alias_tests;
+
 use std::collections::HashMap;
 
 use yaml_rust2::parser::{Event, MarkedEventReceiver, Parser, Tag};
@@ -388,17 +392,113 @@ fn depth_error() -> DocumentError {
     )
 }
 
-/// Drives `parser` to the end of the stream, handing every event to
-/// `builder` -- what `Parser::load(builder, true)` does, minus its recursion.
+/// The reference default for the maximum alias expansion factor (spec
+/// §2.4, D-18): the reader rejects any mapping or sequence whose
+/// materialized-to-written value-slot ratio exceeds it. Documented per D-11.
+pub const DEFAULT_MAX_ALIAS_EXPANSION: u32 = 50;
+
+/// The largest maximum alias expansion factor [`read_yaml_with`] accepts.
+/// A larger value is refused rather than clamped (D-10: the limit must be
+/// finite and meaningful; it is a denial-of-service bound, not a tuning knob
+/// without an upper end).
+pub const MAX_ALIAS_EXPANSION_CEILING: u32 = 10_000;
+
+/// Options for [`read_yaml_with`].
 ///
+/// ```
+/// use omnist::formats::yaml::{read_yaml_with, YamlReadOptions};
+///
+/// let opts = YamlReadOptions::default().with_max_alias_expansion(200);
+/// let doc = read_yaml_with("a: 1\n", &opts).unwrap();
+/// assert_eq!(doc.to_raw(), omnist::formats::yaml::read_yaml("a: 1\n").unwrap().to_raw());
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct YamlReadOptions {
+    /// The maximum alias expansion factor `E = W / S` any one mapping or
+    /// sequence (anchored or not, the document root included) may reach
+    /// before the reader rejects the input with
+    /// `document.limit.alias-expansion` (spec §2.4.1, D-18).
+    ///
+    /// `0` selects [`DEFAULT_MAX_ALIAS_EXPANSION`] (50): a zero or unset value
+    /// never widens the limit. Values above [`MAX_ALIAS_EXPANSION_CEILING`]
+    /// (10 000) are rejected by [`read_yaml_with`]. Note the
+    /// `(keys + 2) / 3` behaviour of merges: a mapping that merges an
+    /// `n`-key anchor and writes one key of its own has `E ~ (n + 2) / 3`, so
+    /// the default of 50 rejects merging a 150-key anchor into such a
+    /// mapping; raise this option for configurations that large.
+    pub max_alias_expansion: u32,
+}
+
+impl Default for YamlReadOptions {
+    fn default() -> Self {
+        YamlReadOptions {
+            max_alias_expansion: DEFAULT_MAX_ALIAS_EXPANSION,
+        }
+    }
+}
+
+impl YamlReadOptions {
+    /// These options with [`YamlReadOptions::max_alias_expansion`] set to `n`
+    /// (the struct is `#[non_exhaustive]`, so a downstream crate builds it
+    /// from [`Default`] with this).
+    #[must_use]
+    pub fn with_max_alias_expansion(mut self, n: u32) -> Self {
+        self.max_alias_expansion = n;
+        self
+    }
+
+    /// The maximum expansion factor these options select: the configured
+    /// value, or [`DEFAULT_MAX_ALIAS_EXPANSION`] when it is `0`.
+    pub fn effective_max_alias_expansion(&self) -> u32 {
+        if self.max_alias_expansion == 0 {
+            DEFAULT_MAX_ALIAS_EXPANSION
+        } else {
+            self.max_alias_expansion
+        }
+    }
+
+    /// Checks the options: [`YamlReadOptions::max_alias_expansion`] must not
+    /// exceed [`MAX_ALIAS_EXPANSION_CEILING`]. [`read_yaml_with`] calls this
+    /// first and returns its error unchanged.
+    pub fn validate(&self) -> Result<(), DocumentError> {
+        if self.max_alias_expansion > MAX_ALIAS_EXPANSION_CEILING {
+            return Err(DocumentError::new(
+                "$",
+                format!(
+                    "max_alias_expansion {} exceeds the ceiling {MAX_ALIAS_EXPANSION_CEILING} \
+                     (0 selects the default {DEFAULT_MAX_ALIAS_EXPANSION})",
+                    self.max_alias_expansion
+                ),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// What [`feed_events`] hands back: the buffered events, and the alias
+/// expansion rejection if the check found one.
+type CheckedEvents = (Vec<(Event, Marker)>, Option<DocumentError>);
+
+/// Drives `parser` to the end of the stream, running the alias expansion
+/// check (D-18/D-19/D-20) on every event and buffering the events, which are
+/// replayed into [`Builder`] only once the whole stream has passed -- so no
+/// alias is ever expanded before the check has accepted the input.
+///
+/// This is what `Parser::load(builder, true)` does, minus its recursion.
 /// `load` walks nested collections with mutually recursive `load_node` /
 /// `load_sequence` / `load_mapping` calls and no depth limit for BLOCK
 /// collections (its scanner only limits flow nesting): about 15 KB of `- - -
 /// ...` or one more indent per line overflowed the stack and aborted the
 /// process, before any of this crate's depth guards could run. The event
 /// stream itself ([`Parser::next_token`]) is a flat state machine, so pulling
-/// events directly is safe at any depth; [`Builder`] stops building once it
-/// trips, so a hostile nesting costs a scan, not a stack.
+/// events directly is safe at any depth; the checker keeps its frames on the
+/// heap, and once nesting runs far past the depth cap buffering stops (the
+/// replay reports the depth error from the events already kept), so a hostile
+/// nesting costs a scan, not a stack.
+///
+/// A scan error wins over an alias error found earlier in the same stream, as
+/// every earlier self-reference error did: the scan always runs to the end.
 ///
 /// One difference from `load`, which cleared the parser's anchor table
 /// between documents: this does not (that table is private), so a later
@@ -407,14 +507,25 @@ fn depth_error() -> DocumentError {
 /// afterwards either way, as `parse.codec-syntax`.
 fn feed_events(
     parser: &mut Parser<std::str::Chars<'_>>,
-    builder: &mut Builder,
-) -> Result<(), ScanError> {
+    check: &mut alias::AliasCheck,
+) -> Result<CheckedEvents, ScanError> {
+    let mut events = Vec::new();
+    let mut rejected = None;
+    let mut halted = false;
     loop {
         let (ev, mark) = parser.next_token()?;
         let done = ev == Event::StreamEnd;
-        builder.on_event(ev, mark);
+        if rejected.is_none() && !halted {
+            match check.event(&ev) {
+                Ok(()) => {
+                    events.push((ev, mark));
+                    halted = check.depth() > crate::document::MAX_DEPTH + 10;
+                }
+                Err(e) => rejected = Some(e),
+            }
+        }
         if done {
-            return Ok(());
+            return Ok((events, rejected));
         }
     }
 }
@@ -424,7 +535,7 @@ fn scan_error_to_parse_error(e: &ScanError) -> ParseError {
     ParseError::codec_syntax(mark.line(), mark.col() + 1, format!("invalid YAML: {e}"))
 }
 
-/// Parse YAML text into a [`Doc`].
+/// Parse YAML text into a [`Doc`], with the default [`YamlReadOptions`].
 ///
 /// Exactly one YAML document is accepted (matching Python's `yaml.safe_load`,
 /// which raises on a stream containing more than one `---`-separated
@@ -434,7 +545,23 @@ fn scan_error_to_parse_error(e: &ScanError) -> ParseError {
 /// [`crate::document::MAX_DEPTH`] all surface as
 /// [`crate::error::DocumentError`] (via [`Doc::of`]), matching `json.rs`'s
 /// identical `read_json` behavior.
+///
+/// Input whose alias expansion factor exceeds
+/// [`DEFAULT_MAX_ALIAS_EXPANSION`] (spec D-18), or that holds a
+/// self-referential anchor (D-20), is rejected with
+/// `document.limit.alias-expansion` at `$` before anything is materialized;
+/// see [`read_yaml_with`] to change the maximum.
 pub fn read_yaml(text: &str) -> Result<Doc, OmnistError> {
+    read_yaml_with(text, &YamlReadOptions::default())
+}
+
+/// Parse YAML text into a [`Doc`] with explicit [`YamlReadOptions`]; see
+/// [`read_yaml`] for everything else.
+///
+/// Returns the [`YamlReadOptions::validate`] error unchanged when the options
+/// are out of range.
+pub fn read_yaml_with(text: &str, options: &YamlReadOptions) -> Result<Doc, OmnistError> {
+    options.validate()?;
     // D-15/D-21: one leading BOM is stripped, a second is rejected at 1:1.
     // Without this pre-check yaml-rust2 would swallow (or keep) the second
     // mark silently; YAML 1.2 itself admits a leading BOM, so the library
@@ -442,8 +569,16 @@ pub fn read_yaml(text: &str) -> Result<Doc, OmnistError> {
     let text = crate::bom::strip_leading_bom(text)
         .map_err(|_| ParseError::codec_syntax(1, 1, crate::bom::DOUBLED_BOM_MESSAGE))?;
     let mut parser = Parser::new(text.chars());
+    let mut check = alias::AliasCheck::new(u64::from(options.effective_max_alias_expansion()));
+    let (events, rejected) =
+        feed_events(&mut parser, &mut check).map_err(|e| scan_error_to_parse_error(&e))?;
+    if let Some(e) = rejected {
+        return Err(e.into());
+    }
     let mut builder = Builder::new();
-    feed_events(&mut parser, &mut builder).map_err(|e| scan_error_to_parse_error(&e))?;
+    for (ev, mark) in events {
+        builder.on_event(ev, mark);
+    }
     if let Some(e) = builder.self_reference {
         return Err(e.into());
     }
@@ -1904,10 +2039,14 @@ mod tests {
         let err = read_yaml(&text).unwrap_err();
         let elapsed = start.elapsed();
 
+        // Since D-18/D-19 the bomb is refused by the alias expansion check
+        // before any expansion is built, with the expansion code (the node cap
+        // is the backstop for what passes that check; see `alias_tests`).
         assert!(
-            matches!(&err, OmnistError::Parse(e) if e.message.contains("materializes more than")
-                && e.message.contains("100000")),
-            "expected a materialized-node-limit ParseError, got {err:?}"
+            matches!(&err, OmnistError::Document(e)
+                if e.code.as_deref() == Some("document.limit.alias-expansion")
+                    && e.path == "$"),
+            "expected the alias expansion rejection, got {err:?}"
         );
         assert!(
             elapsed < std::time::Duration::from_secs(5),

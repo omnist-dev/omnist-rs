@@ -1,5 +1,57 @@
 # Changelog
 
+## 0.4.0-alpha
+
+Adopts omnist-spec **v0.25.0-beta** (was v0.22.0-beta, 312 vectors) and
+enforces its YAML alias expansion limit, **D-18/D-19/D-20** (section 2.4.1;
+ledger DIV-3, omnist-rs#180). This closes a denial-of-service gap: the old
+reader cloned an anchor's subtree at every alias and bounded only the total
+size (100,000 nodes), so a 24-line "billion laughs" or a 1.3 MB list of
+`{k: *b}` entries made the reader do large amounts of work before refusing.
+New public option, so a minor bump of the alpha.
+
+Added:
+
+- **The alias expansion limit.** For every candidate node (every anchored
+  node, every mapping and sequence anchored or not, the document root and
+  inline merge sources included; scalars are never checked) the reader
+  computes `E = W / S` in one memoized pass over `yaml_rust2`'s event stream,
+  with saturating `u64` arithmetic, and rejects input where any `E` exceeds the
+  maximum with `document.limit.alias-expansion` at `$`. The check runs before
+  anything is materialized: events are buffered and replayed into the tree
+  builder only after every candidate passed. Self-referential anchors (D-20)
+  are rejected under the same code. The reference default is 50.
+- **`omnist::formats::yaml::read_yaml_with` and `YamlReadOptions`**, with
+  `max_alias_expansion: u32` (`0` selects the default 50; above 10000,
+  `MAX_ALIAS_EXPANSION_CEILING`, is refused with an uncoded `DocumentError`)
+  and the constants `DEFAULT_MAX_ALIAS_EXPANSION` and
+  `MAX_ALIAS_EXPANSION_CEILING`. `read_yaml`, the registry codec and the CLI
+  read with the default; the CLI has no flag for it.
+- **E-32 `line:col` placeholder** in the Track 2 runner (4 vectors).
+- Note: an anchored literal merge sequence (`<<: &s [*p, *q]`) is currently counted as an ordinary merge value, which under-counts E for that spelling; omnist-spec PR #126 (D-18a, the merge carrier rule) will change this.
+
+Changed:
+
+- A YAML input that used to be refused as `document.limit.nodes` because of
+  alias expansion is now refused as `document.limit.alias-expansion` (the
+  node cap still applies below the expansion limit). Behaviour to know: a
+  mapping that merges an `n`-key anchor and writes one key of its own has
+  `E = (n + 2) / 3`, so merging a 150-key anchor reads `E ~ 50.67` and is
+  rejected at the default; raise `max_alias_expansion` (at most 10000).
+- The expansion factor bounds the ratio, not scalar-heavy size: whole-document
+  `W` is bounded by `max x S(root)`, and the node cap remains a separate limit.
+
+Conformance, Track 2 (JSON vectors), `(path, code)` set comparison:
+
+- v0.25.0-beta suite, this code before any change: 258 pass, 4 fail, 50 skip
+  of 312 (the 4 failures are the E-32 placeholder vectors; 16 alias vectors
+  skipped).
+- With the alias skip removed and nothing implemented: 266 pass, 12 fail, 34
+  skip (the 8 alias vectors that expect a rejection fail, and the 4
+  placeholders; the 8 that expect success pass with no check at all).
+- After: **278 pass, 0 fail, 34 skip of 312** (skips: 28 OSD-OML, 6 limits).
+  Track 1: 19 pass, 0 fail.
+
 ## 0.3.1-alpha
 
 Adopts omnist-spec **v0.22.0-beta** (was v0.21.0-beta). 0.3.0-alpha is

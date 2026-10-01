@@ -3,8 +3,8 @@
 This port has its own conformance-test harness (`tools/conformance/`)
 against [omnist-spec](https://github.com/omnist-dev/omnist-spec), the
 language-agnostic upstream specification. It vendors omnist-spec as a
-pinned git submodule (`vendor/omnist-spec`, currently commit `8b8a746`,
-the `v0.22.0-beta` tag) and
+pinned git submodule (`vendor/omnist-spec`, currently commit `3febae9`,
+the `v0.25.0-beta` tag) and
 runs entirely against this crate's own library code -- it does not depend
 on the Python or TypeScript ports' implementations.
 
@@ -17,7 +17,7 @@ reporting rule:
 - **Track 1** (`vendor/omnist-spec/conformance/fixtures/`, directory-per-fixture,
   11 operations): **19 passed, 0 failed, 0 skipped**.
 - **Track 2** (`vendor/omnist-spec/test-suite/`, JSON-vector suite, 14-operation
-  vocabulary): **247 passed, 0 failed, 40 skipped** (of 287 vectors),
+  vocabulary): **278 passed, 0 failed, 34 skipped** (of 312 vectors),
   **diagnostics compared as `(path, code)` sets** (section 8.5.2), not in
   code-agnostic mode. The runner exits non-zero on any failing vector and
   never on skips (E-22); it has no list of tolerated failures.
@@ -33,8 +33,16 @@ cargo run -p conformance --bin vector_runner
 
 ## Every Track 2 skip, and why
 
-All 40 skips are one spec category, E-20 "not yet implemented"; none is an
-E-21 documented divergence. (v0.22.0-beta added 14 vectors (287 in all): 10
+All 34 skips are one spec category, E-20 "not yet implemented"; none is an
+E-21 documented divergence. (v0.25.0-beta (312 vectors) added the 16 D-18
+`alias-expansion` vectors, which now all run and pass with the declared
+maximum passed through `YamlReadOptions::max_alias_expansion`, and the 4
+E-32 `line:col` placeholder vectors, which pass: a `parse.codec-syntax`
+expectation whose path is the placeholder is satisfied by the same code at a
+well-formed text position inside the input, and every other path is still
+compared byte for byte. Before this change, with the alias skip removed and
+nothing implemented, the baseline was 266 pass / 12 fail / 34 skip: the 8
+alias vectors that expect a rejection and the 4 placeholders. v0.22.0-beta added 14 vectors (287 in all): 10
 OML-26 with-a-separator vectors, the OML-25 scalar counterpart, OML-26's
 negative control and 2 E-28 code-point column vectors, all passing; before
 this port adopted OML-26 and E-28 the baseline was 238 pass / 9 fail / 40
@@ -58,17 +66,6 @@ a structured `code` or `path` FAILS; it is never skipped for lack of one.
   constants with no runtime configuration surface, so the boundary cannot be
   pinned; running them against the default would test nothing. Tracked in
   [omnist-rs#181](https://github.com/omnist-dev/omnist-rs/issues/181).
-- **6 `formats-yaml/alias-expansion.json` vectors.** Every one declares
-  `declared_max_alias_expansion` (added to the runner's allowlist), and D-18
-  (section 2.4.1, alias expansion bound) is not implemented -- **E-20** "not
-  yet implemented", the same rollout-gap shape as `DIV-4`'s rows, not an
-  `E-21` documented divergence (this reader has no structural reason it
-  could not enforce D-18). The spec's `DIV-3` (section 9.4) is cited in the
-  skip reason for tracking context, never as an E-21 citation; tracked in
-  [omnist-rs#180](https://github.com/omnist-dev/omnist-rs/issues/180). They
-  are skipped, never run against the port's own default: that would be a
-  false pass on `expansion-at-declared-limit-succeeds`. What this port's
-  reader does with them today: it accepts all six (see `formats/yaml.md`).
 - **28 `extensions-osd-oml/*` vectors.** The OSD-OML extension operations
   (`parse_schema_oml`, `schema_from_document`, `schema_to_document`,
   `write_schema_oml`) are not implemented; tracked in
