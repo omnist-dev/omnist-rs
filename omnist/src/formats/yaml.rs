@@ -403,6 +403,18 @@ pub const DEFAULT_MAX_ALIAS_EXPANSION: u32 = 50;
 /// without an upper end).
 pub const MAX_ALIAS_EXPANSION_CEILING: u32 = 10_000;
 
+/// The reference default for the maximum expanded size (spec §2.4.1, D-22):
+/// the reader rejects an input that contains an alias or a merge key and
+/// whose document root materializes more value slots (`W(root)`) than this,
+/// with `document.limit.expanded-size`. Documented per D-11.
+pub const DEFAULT_MAX_EXPANDED_SLOTS: u32 = 1_000_000;
+
+/// The largest maximum expanded size [`read_yaml_with`] accepts: the spec's
+/// recommended ceiling (D-22, "SHOULD NOT configure one above 10 000 000
+/// without measuring"). A larger value is refused rather than clamped, as for
+/// [`MAX_ALIAS_EXPANSION_CEILING`].
+pub const MAX_EXPANDED_SLOTS_CEILING: u32 = 10_000_000;
+
 /// Options for [`read_yaml_with`].
 ///
 /// ```
@@ -428,12 +440,28 @@ pub struct YamlReadOptions {
     /// the default of 50 rejects merging a 150-key anchor into such a
     /// mapping; raise this option for configurations that large.
     pub max_alias_expansion: u32,
+    /// The maximum expanded size `W(root)`, in value slots, an input that
+    /// contains at least one alias or merge key may reach before the reader
+    /// rejects it with `document.limit.expanded-size` (spec §2.4.1, D-22).
+    /// `W(root)` equal to the maximum is accepted; one past is rejected.
+    ///
+    /// This is independent of [`YamlReadOptions::max_alias_expansion`]: the
+    /// ratio limit bounds amplification, this one bounds absolute size, and
+    /// an input can pass one and fail the other (when both fail the ratio
+    /// code is reported). An input with neither an alias nor a merge key is
+    /// exempt however large: a plain file of two million slots passes, and
+    /// adding one alias subjects it to this cap. `0` selects
+    /// [`DEFAULT_MAX_EXPANDED_SLOTS`] (1 000 000); values above
+    /// [`MAX_EXPANDED_SLOTS_CEILING`] (10 000 000) are rejected by
+    /// [`read_yaml_with`].
+    pub max_expanded_slots: u32,
 }
 
 impl Default for YamlReadOptions {
     fn default() -> Self {
         YamlReadOptions {
             max_alias_expansion: DEFAULT_MAX_ALIAS_EXPANSION,
+            max_expanded_slots: DEFAULT_MAX_EXPANDED_SLOTS,
         }
     }
 }
@@ -448,6 +476,23 @@ impl YamlReadOptions {
         self
     }
 
+    /// These options with [`YamlReadOptions::max_expanded_slots`] set to `n`.
+    #[must_use]
+    pub fn with_max_expanded_slots(mut self, n: u32) -> Self {
+        self.max_expanded_slots = n;
+        self
+    }
+
+    /// The maximum expanded size these options select: the configured value,
+    /// or [`DEFAULT_MAX_EXPANDED_SLOTS`] when it is `0`.
+    pub fn effective_max_expanded_slots(&self) -> u32 {
+        if self.max_expanded_slots == 0 {
+            DEFAULT_MAX_EXPANDED_SLOTS
+        } else {
+            self.max_expanded_slots
+        }
+    }
+
     /// The maximum expansion factor these options select: the configured
     /// value, or [`DEFAULT_MAX_ALIAS_EXPANSION`] when it is `0`.
     pub fn effective_max_alias_expansion(&self) -> u32 {
@@ -459,7 +504,9 @@ impl YamlReadOptions {
     }
 
     /// Checks the options: [`YamlReadOptions::max_alias_expansion`] must not
-    /// exceed [`MAX_ALIAS_EXPANSION_CEILING`]. [`read_yaml_with`] calls this
+    /// exceed [`MAX_ALIAS_EXPANSION_CEILING`], nor
+    /// [`YamlReadOptions::max_expanded_slots`] [`MAX_EXPANDED_SLOTS_CEILING`].
+    /// [`read_yaml_with`] calls this
     /// first and returns its error unchanged.
     pub fn validate(&self) -> Result<(), DocumentError> {
         if self.max_alias_expansion > MAX_ALIAS_EXPANSION_CEILING {
@@ -472,18 +519,24 @@ impl YamlReadOptions {
                 ),
             ));
         }
+        if self.max_expanded_slots > MAX_EXPANDED_SLOTS_CEILING {
+            return Err(DocumentError::new(
+                "$",
+                format!(
+                    "max_expanded_slots {} exceeds the ceiling {MAX_EXPANDED_SLOTS_CEILING}                      (0 selects the default {DEFAULT_MAX_EXPANDED_SLOTS})",
+                    self.max_expanded_slots
+                ),
+            ));
+        }
         Ok(())
     }
 }
 
-/// What [`feed_events`] hands back: the buffered events, and the alias
-/// expansion rejection if the check found one.
-type CheckedEvents = (Vec<(Event, Marker)>, Option<DocumentError>);
-
 /// Drives `parser` to the end of the stream, running the alias expansion
-/// check (D-18/D-19/D-20) on every event and buffering the events, which are
-/// replayed into [`Builder`] only once the whole stream has passed -- so no
-/// alias is ever expanded before the check has accepted the input.
+/// and merge-shape check (D-18/D-18a/D-19/D-20/D-22) on every event and
+/// buffering the events, which are replayed into [`Builder`] only once the
+/// whole stream has passed -- so no alias is ever expanded before the check
+/// has accepted the input.
 ///
 /// This is what `Parser::load(builder, true)` does, minus its recursion.
 /// `load` walks nested collections with mutually recursive `load_node` /
@@ -497,8 +550,11 @@ type CheckedEvents = (Vec<(Event, Marker)>, Option<DocumentError>);
 /// replay reports the depth error from the events already kept), so a hostile
 /// nesting costs a scan, not a stack.
 ///
-/// A scan error wins over an alias error found earlier in the same stream, as
-/// every earlier self-reference error did: the scan always runs to the end.
+/// The checker keeps reading after a limit violation, because a malformed
+/// merge later in the stream is a syntax error that wins over every
+/// `document.limit.*` code (D-18a); it stops buffering, as nothing will be
+/// replayed. A scan error wins over both, as every earlier self-reference
+/// error did: the scan always runs to the end.
 ///
 /// One difference from `load`, which cleared the parser's anchor table
 /// between documents: this does not (that table is private), so a later
@@ -508,24 +564,19 @@ type CheckedEvents = (Vec<(Event, Marker)>, Option<DocumentError>);
 fn feed_events(
     parser: &mut Parser<std::str::Chars<'_>>,
     check: &mut alias::AliasCheck,
-) -> Result<CheckedEvents, ScanError> {
+) -> Result<Vec<(Event, Marker)>, ScanError> {
     let mut events = Vec::new();
-    let mut rejected = None;
     let mut halted = false;
     loop {
         let (ev, mark) = parser.next_token()?;
         let done = ev == Event::StreamEnd;
-        if rejected.is_none() && !halted {
-            match check.event(&ev) {
-                Ok(()) => {
-                    events.push((ev, mark));
-                    halted = check.depth() > crate::document::MAX_DEPTH + 10;
-                }
-                Err(e) => rejected = Some(e),
-            }
+        check.event(&ev, (mark.line(), mark.col() + 1));
+        if !check.failed() && !halted {
+            halted = check.depth() > crate::document::MAX_DEPTH + 10;
+            events.push((ev, mark));
         }
         if done {
-            return Ok((events, rejected));
+            return Ok(events);
         }
     }
 }
@@ -569,11 +620,13 @@ pub fn read_yaml_with(text: &str, options: &YamlReadOptions) -> Result<Doc, Omni
     let text = crate::bom::strip_leading_bom(text)
         .map_err(|_| ParseError::codec_syntax(1, 1, crate::bom::DOUBLED_BOM_MESSAGE))?;
     let mut parser = Parser::new(text.chars());
-    let mut check = alias::AliasCheck::new(u64::from(options.effective_max_alias_expansion()));
-    let (events, rejected) =
-        feed_events(&mut parser, &mut check).map_err(|e| scan_error_to_parse_error(&e))?;
-    if let Some(e) = rejected {
-        return Err(e.into());
+    let mut check = alias::AliasCheck::new(
+        u64::from(options.effective_max_alias_expansion()),
+        u64::from(options.effective_max_expanded_slots()),
+    );
+    let events = feed_events(&mut parser, &mut check).map_err(|e| scan_error_to_parse_error(&e))?;
+    if let Some(e) = check.into_error() {
+        return Err(e);
     }
     let mut builder = Builder::new();
     for (ev, mark) in events {
@@ -690,8 +743,9 @@ fn is_merge_key(k: &Raw) -> bool {
 
 /// The `(key, value)` pairs a merge key's value contributes: a mapping
 /// contributes its own entries directly; a sequence contributes every
-/// element's entries in order; anything else -- the omnist-ts#46 regression
-/// this reader guards against -- is a clean [`ParseError`], never a panic.
+/// member's entries in order. The alias check has already refused every other
+/// shape (a scalar, a scalar or sequence member, `parse.codec-syntax`, spec
+/// D-18a) before this runs, so only mappings reach here.
 fn merge_source_entries(v: &Raw, depth: usize) -> Result<Vec<(Raw, Raw)>, OmnistError> {
     match v {
         // A merged mapping is itself resolved first, so a nested `<<` inside
@@ -700,17 +754,14 @@ fn merge_source_entries(v: &Raw, depth: usize) -> Result<Vec<(Raw, Raw)>, Omnist
         Raw::Sequence(items) => {
             let mut out = Vec::new();
             for item in items {
-                out.extend(merge_source_entries(item, depth + 1)?);
+                let Raw::Mapping(entries) = item else {
+                    unreachable!("the alias check refused a non-mapping merge member")
+                };
+                out.extend(resolve_mapping(entries, depth + 2)?);
             }
             Ok(out)
         }
-        Raw::Scalar(..) => Err(ParseError::codec_syntax(
-            1,
-            1,
-            "invalid YAML: merge key '<<' requires a mapping or a sequence of mappings, \
-             found a scalar",
-        )
-        .into()),
+        Raw::Scalar(..) => unreachable!("the alias check refused a scalar merge value"),
     }
 }
 
@@ -2788,6 +2839,23 @@ mod tests {
         Parser::new("x".chars()).load(&mut cap, false).unwrap();
         cap.0
             .expect("a trivial scalar document always emits at least one event")
+    }
+
+    /// The alias check refuses every non-mapping merge shape before the
+    /// merge resolver runs (D-18a); these two arms are its backstop, proven
+    /// by calling the resolver directly, as for the other `unreachable!`s.
+    #[test]
+    #[should_panic(expected = "the alias check refused a scalar merge value")]
+    fn merge_source_entries_panics_on_a_scalar_the_check_refused() {
+        let scalar = Raw::Scalar("1".to_string(), TScalarStyle::Plain, None);
+        let _ = merge_source_entries(&scalar, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "the alias check refused a non-mapping merge member")]
+    fn merge_source_entries_panics_on_a_member_the_check_refused() {
+        let member = Raw::Scalar("1".to_string(), TScalarStyle::Plain, None);
+        let _ = merge_source_entries(&Raw::Sequence(vec![member]), 0);
     }
 
     #[test]

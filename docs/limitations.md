@@ -1,6 +1,6 @@
 # Limitations & stability
 
-## Alpha status: `0.4.0-alpha`, per this project's versioning rule
+## Alpha status: `0.5.0-alpha`, per this project's versioning rule
 
 The Rust port's first feature-complete milestone (issue #28) plus its own
 conformance-test harness against
@@ -34,6 +34,7 @@ Every limit below is finite, documented here, and reported with its
 | Maximum node count | 1,000,000 (documents), 100,000 (YAML materialization) | no |
 | Maximum integer digits | 4,300 | no |
 | Maximum alias expansion factor (YAML) | **50** | yes: `YamlReadOptions::max_alias_expansion` (`0` = default, at most 10000) |
+| Maximum expanded size (YAML, inputs with an alias or merge key) | **1,000,000** value slots | yes: `YamlReadOptions::max_expanded_slots` (`0` = default, at most 10,000,000) |
 
 The alias expansion factor bounds the materialized-to-written value-slot
 ratio of every anchored node, every other mapping and sequence, and the
@@ -45,7 +46,17 @@ replace the node cap: a scalar-heavy document is bounded as a whole only by
 `max x S(root)`, and size limits such as the YAML node cap stay in force.
 Only YAML has an anchor mechanism, so the factor binds no other codec.
 
-Note: an anchored literal merge sequence (`<<: &s [*p, *q]`) is currently counted as an ordinary merge value, which under-counts E for that spelling; omnist-spec PR #126 (D-18a, the merge carrier rule) will change this.
+The ratio does not bound absolute size, so the reader also enforces a maximum
+expanded size (D-22): an input that contains at least one alias or merge key
+and whose root materializes more than 1,000,000 value slots is refused with
+`document.limit.expanded-size`, after the ratio check (an input that fails
+both reports `document.limit.alias-expansion`). Ratio and size are separate
+options, and neither implies the other. An input with no alias and no merge
+key is exempt however large, which is a cliff by design: a plain file of two
+million slots passes, and adding one alias subjects it to the cap. See
+[YAML](formats/yaml.md#expanded-size-limit-d-22). A malformed merge (a scalar
+merge value, a scalar or sequence member of a merge sequence, an alias to a
+sequence of scalars) is `parse.codec-syntax` and wins over both limits.
 
 ## `Scalar::Int` is arbitrary-precision (issue #104)
 

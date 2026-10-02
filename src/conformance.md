@@ -3,8 +3,8 @@
 This port has its own conformance-test harness (`tools/conformance/`)
 against [omnist-spec](https://github.com/omnist-dev/omnist-spec), the
 language-agnostic upstream specification. It vendors omnist-spec as a
-pinned git submodule (`vendor/omnist-spec`, currently commit `3febae9`,
-the `v0.25.0-beta` tag) and
+pinned git submodule (`vendor/omnist-spec`, currently commit `7744a5c`,
+the `v0.26.0-beta` tag) and
 runs entirely against this crate's own library code -- it does not depend
 on the Python or TypeScript ports' implementations.
 
@@ -17,7 +17,7 @@ reporting rule:
 - **Track 1** (`vendor/omnist-spec/conformance/fixtures/`, directory-per-fixture,
   11 operations): **19 passed, 0 failed, 0 skipped**.
 - **Track 2** (`vendor/omnist-spec/test-suite/`, JSON-vector suite, 14-operation
-  vocabulary): **278 passed, 0 failed, 34 skipped** (of 312 vectors),
+  vocabulary): **297 passed, 0 failed, 34 skipped** (of 331 vectors),
   **diagnostics compared as `(path, code)` sets** (section 8.5.2), not in
   code-agnostic mode. The runner exits non-zero on any failing vector and
   never on skips (E-22); it has no list of tolerated failures.
@@ -34,7 +34,15 @@ cargo run -p conformance --bin vector_runner
 ## Every Track 2 skip, and why
 
 All 34 skips are one spec category, E-20 "not yet implemented"; none is an
-E-21 documented divergence. (v0.25.0-beta (312 vectors) added the 16 D-18
+E-21 documented divergence. (v0.26.0-beta (331 vectors) grew
+`alias-expansion.json` to 35 vectors (D-18a, D-22 and the malformed-merge
+syntax errors); all run and pass, with `declared_max_alias_expansion` and
+`declared_max_expanded_slots` passed through `YamlReadOptions` for the vectors
+that carry them. Before this port adopted it the baseline was 289 pass / 8
+fail / 34 skip: the anchored merge carrier and the alias to a merge sequence
+were wrongly rejected, 4 expanded-size vectors parsed OK, and a merge after a
+bomb and a merge sequence of sequences were not reported as syntax errors.
+v0.25.0-beta (312 vectors) added the 16 D-18
 `alias-expansion` vectors, which now all run and pass with the declared
 maximum passed through `YamlReadOptions::max_alias_expansion`, and the 4
 E-32 `line:col` placeholder vectors, which pass: a `parse.codec-syntax`

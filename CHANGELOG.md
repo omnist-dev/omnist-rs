@@ -1,5 +1,68 @@
 # Changelog
 
+## 0.5.0-alpha
+
+Adopts omnist-spec **v0.26.0-beta** (was v0.25.0-beta, 331 vectors): the
+merge-carrier rule **D-18a**, the expanded size limit **D-22**, and merge-shape
+syntax errors, all in section 2.4.1. New public option and constants, so a
+minor bump of the alpha. 0.4.0-alpha is untagged and unpublished.
+
+Added:
+
+- **The expanded size limit (D-22).** An input that contains at least one
+  alias or merge key and whose root materializes more than the maximum
+  (`W(root)`, default 1,000,000 value slots) is rejected with
+  `document.limit.expanded-size` at `$`; equal to the maximum is accepted. It
+  is checked at the root after every candidate's ratio check (an input that
+  fails both reports `document.limit.alias-expansion`), from the same single
+  pass with saturating counts, before anything is materialized. An input with
+  no alias and no merge key is exempt however large: a plain file of two
+  million slots passes, and one added alias subjects it to the cap.
+- **`YamlReadOptions::max_expanded_slots`** (`with_max_expanded_slots`,
+  `effective_max_expanded_slots`), `DEFAULT_MAX_EXPANDED_SLOTS` (1,000,000) and
+  `MAX_EXPANDED_SLOTS_CEILING` (10,000,000). Same convention as
+  `max_alias_expansion`: `0` selects the default, a larger value is refused by
+  `read_yaml_with`/`validate` with an uncoded `DocumentError`. The CLI has no
+  flag for it.
+- **Malformed merge shapes are `parse.codec-syntax`** (D-18a): a scalar merge
+  value, a scalar member of a merge sequence, a sequence inside a merge
+  sequence (written, or `<<: [*s]` with `s` a sequence), an alias to a scalar,
+  and `<<: *s` with `s` holding anything but mappings. The position is the
+  offending node's `line:col`. They are found in the checker's pass, win over
+  every `document.limit.*` code (the checker keeps reading after a limit
+  violation to find them) and need no counting. `<<: []` is accepted.
+
+Changed:
+
+- **Merge carriers (D-18a).** A sequence in merge-value position is a carrier
+  whether or not it is anchored: `<<: &s [*p, *q]` holds no slot in `W` or `S`
+  and is not a candidate (it used to be counted as an ordinary flattened
+  value, under-counting `E`). `<<: *s` contributes the sum over the members of
+  `W - 1` and one slot in `S`; a plain alias to a carrier materializes the
+  list. This removes the "anchored literal merge sequence" known edge. An
+  anchored carrier at the declared limit, and an alias to a merge sequence at
+  it, used to be rejected wrongly.
+- The tree builder's own merge checks are now unreachable (the checker refuses
+  every malformed shape first); a sequence of sequences used to be flattened
+  silently and is now a syntax error.
+- Runner: `declared_max_expanded_slots` is passed through
+  `YamlReadOptions::max_expanded_slots` for the vectors that carry it.
+
+Behaviour to know: the reader's own 100,000-node materialization cap
+(`document.limit.nodes`, keys included) is far below the default maximum
+expanded size, so an input the size limit accepts can still be refused for its
+node count. `W(root) <= max x S(root)` and the `(keys + 2) / 3` merge ratio
+are unchanged.
+
+Conformance, Track 2 (JSON vectors), `(path, code)` set comparison:
+
+- v0.26.0-beta suite, this code before any change (runner passing
+  `declared_max_expanded_slots`): 289 pass, 8 fail, 34 skip of 331 (the
+  anchored carrier and the alias to a merge sequence wrongly rejected; the 4
+  expanded-size vectors parsed OK; the malformed merge after a bomb reported
+  the limit; a merge sequence of sequences parsed OK).
+- After: **297 pass, 0 fail, 34 skip of 331** (skips: 28 OSD-OML, 6 limits).
+
 ## 0.4.0-alpha
 
 Adopts omnist-spec **v0.25.0-beta** (was v0.22.0-beta, 312 vectors) and
