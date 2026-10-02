@@ -424,7 +424,15 @@ machine-oriented form; `Some(n)` sets the pretty-printed indent width in
 spaces. Both forms round-trip through `parse_schema`. Labels are escaped per
 OSD-15 (a backslash is written `\\`, a double quote `\"`, nothing else);
 `to_osd` fails with `write.unsupported-value` (OSD-14) for a field label
-containing a C0 control character, which OSD text cannot spell.
+containing a C0 control character, which OSD text cannot spell, and
+(OSD-16, S-24) for a field with `max = 0` (`[0,0]`: representable in the model,
+rejected by every text reader) -- both at the record path. Run
+`omnist::ops::prune` first: it removes `max = 0` fields from every record it
+rebuilds (an unsatisfiable root is kept intact, spec 6.5).
+
+`Schema::new` enforces S-8: a record name or `Ref` target name (the root's and
+every field's) that is not `[A-Za-z_][A-Za-z0-9_]*` fails with
+`schema.invalid-name` at the path `$`, the offending name in the message only.
 
 ## Formats (`omnist::formats` and `omnist::oml`)
 

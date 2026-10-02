@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.6.0-alpha
+
+Adopts omnist-spec **v0.28.0-beta** (was v0.27.0-beta; still 338 vectors, none
+added: DIV-5). Minor bump of the alpha because validation is stricter and a
+writer now fails where it used to emit text: observable behavior changes on
+the public API, as at 0.5.0-alpha. Track 2 is **304 pass, 0 fail, 34 skip of
+338**; Track 1 19 / 19. The only pin for the rules below is
+`omnist/tests/spec_v028.rs`.
+
+Why a minor bump: previously accepted inputs are now rejected (`Schema::new`
+on a bad name), a writer refuses a schema it used to write (`to_osd` on
+`max = 0`), and `infer` derives record names differently. The spec's new codes
+`schema.invalid-label` and `schema.unknown-record` have no Rust surface (below);
+`schema.invalid-name` at `$` is new in practice.
+
+Changed:
+
+- **`infer` record names are ASCII (S-8).** A record name is derived from a
+  field key: every character outside `[A-Za-z0-9_]` becomes `_`, leading digits
+  and underscores are stripped, the first letter is capitalised, `Rec` is used
+  if nothing is left, and collisions get `2`, `3` suffixes. So `123`, `9`, `日本`
+  -> `Rec`; `éclair` -> `Clair`; `a b` -> `A_b`; ordinary ASCII names are
+  unchanged. Without this, `omnist infer` failed on such keys now that
+  `Schema::new` enforces S-8 (before, a non-identifier name was kept as is).
+  Identical to omnist-py's `_identifier` and omnist-ts.
+- **S-8 at construction.** `Schema::new` rejects a record name or `Ref` target
+  name (the root's and every field's) that is not `[A-Za-z_][A-Za-z0-9_]*` with
+  `schema.invalid-name` at `$`, the name in the message only. Previously such a
+  schema was accepted (a bad `Ref` target failed later as
+  `schema.unknown-type`, a bad record name not at all). OSD text cannot reach
+  this; the OSD parser is unchanged.
+- **OSD-16 / S-24.** `osd::to_osd` fails with `write.unsupported-value` at the
+  record path `R` for a field with `max = 0` (`[0,0]` stays representable).
+  `prune` already removed `max = 0` fields from every record it rebuilds and
+  keeps an unsatisfiable root intact, so prune before writing; `normalize`
+  never introduces `max = 0`. Both are tested.
+
+Not applicable, documented in `docs/limitations.md`:
+
+- **S-22 `schema.invalid-label`** is vacuous: labels are `String`, and no
+  public surface takes bytes.
+- **S-23 `schema.unknown-record`** has no surface: no function takes a
+  caller-supplied record ordering.
+- No OSD-OML schema writer exists, so its half of OSD-16/S-24 does not apply.
+
 ## 0.5.1-alpha
 
 Adopts omnist-spec **v0.27.0-beta** (was v0.26.0-beta, 338 vectors, +7). D-18a

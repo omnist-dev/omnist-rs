@@ -1327,7 +1327,7 @@ mod tests {
     /// `main`/`main_with_dir` is process-entry-point code). The counts are
     /// freshly measured, not computed by hand.
     ///
-    /// Spec v0.27.0-beta, diagnostics compared as (path, code) sets:
+    /// Spec v0.28.0-beta, diagnostics compared as (path, code) sets:
     /// 304 pass, 0 fail, 34 skip of 338.
     ///
     /// - the 34 skips are E-20 "not yet implemented", never a documented
@@ -1363,7 +1363,7 @@ mod tests {
     /// parsed OK (D-22), the malformed merge after a bomb reported the limit
     /// and a merge sequence of sequences parsed OK. Implementing D-18a, D-22
     /// and the merge-shape syntax errors brings it to (297, 0, 34). At v0.27.0-beta the 7 new empty-merge-sequence vectors
-    /// passed with no change: (304, 0, 34).
+    /// passed with no change: (304, 0, 34). v0.28.0-beta adds no vectors (DIV-5).
     #[test]
     fn full_suite_counts_match_the_measured_baseline() {
         let (passed, failed, skipped) = run_all(&suite_dir());

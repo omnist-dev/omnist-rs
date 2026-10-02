@@ -373,6 +373,15 @@ pub fn nullable(scalar: Scalar) -> Scalar {
 // Ref
 // ---------------------------------------------------------------------------
 
+/// S-8: `[A-Za-z_][A-Za-z0-9_]*`.
+fn is_valid_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
 /// A reference to a named record in a [`Schema`]'s environment.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Ref {
@@ -771,11 +780,47 @@ impl Schema {
     /// position always resolves to the builtin first and such a record could
     /// never be referenced. `osd.rs`'s parser already enforces this; this is
     /// the same check at the builder-API surface (omnist-rs#76).
+    ///
+    /// # Errors
+    ///
+    /// S-8 (spec v0.28.0-beta): a record name, or a `Ref` target name (the
+    /// root's or a field's), that is not `[A-Za-z_][A-Za-z0-9_]*` is
+    /// `schema.invalid-name` at the path `$`, the name in the message only.
+    /// S-22 (`schema.invalid-label`) cannot occur here: labels are `String`s
+    /// and cannot hold invalid UTF-8. A `max = 0` field is accepted (S-15); the
+    /// OSD writer refuses it ([`crate::osd::to_osd`]).
     pub fn new(root: Ref, env: IndexMap<String, Record>) -> Result<Self, SchemaError> {
+        Self::check_names(&root, &env)?;
         Self::check_reserved_names(&env)?;
         let schema = Schema { root, env };
         schema.check_refs()?;
         Ok(schema)
+    }
+
+    /// S-8 (omnist-spec v0.28.0-beta): every record name and every `Ref`
+    /// target name (the root's and each field's) must match
+    /// `[A-Za-z_][A-Za-z0-9_]*`. A violation on this direct-construction route
+    /// is `schema.invalid-name` at `$`, the offending name in the message only
+    /// (it may be malformed, and a field path would carry a label).
+    fn check_names(root: &Ref, env: &IndexMap<String, Record>) -> Result<(), SchemaError> {
+        let refs = env.values().flat_map(|rec| {
+            rec.fields().iter().filter_map(|f| match &f.ty {
+                FieldType::Ref(r) => Some(&r.name),
+                _ => None,
+            })
+        });
+        let bad = std::iter::once(&root.name)
+            .chain(env.keys())
+            .chain(refs)
+            .find(|n| !is_valid_name(n));
+        match bad {
+            Some(name) => Err(SchemaError::new(
+                "$",
+                "schema.invalid-name",
+                format!("{name:?} is not a valid name; expected [A-Za-z_][A-Za-z0-9_]* (S-8)"),
+            )),
+            None => Ok(()),
+        }
     }
 
     fn check_reserved_names(env: &IndexMap<String, Record>) -> Result<(), SchemaError> {
