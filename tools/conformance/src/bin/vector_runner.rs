@@ -1,4 +1,4 @@
-//! Track 2: runs vendor/omnist-spec's `test-suite/` JSON-vector suite (331
+//! Track 2: runs vendor/omnist-spec's `test-suite/` JSON-vector suite (338
 //! vectors, envelope `name`/`spec`/`operation`/`purpose`/`input`/`expect`
 //! -- see `vendor/omnist-spec/test-suite/README.md` and
 //! `docs/08-conformance-and-errors.md` §8.5) against omnist-rs's own
@@ -1303,7 +1303,7 @@ mod tests {
     }
 
     #[test]
-    fn vector_count_is_331() {
+    fn vector_count_is_338() {
         // 204 -> 249 via the submodule pin bump v0.9.1-beta -> v0.19.0-beta,
         // 249 -> 273 via v0.19.0-beta -> v0.21.0-beta (14 new bytes_hex D-14
         // vectors, 4 new OSD-15 canonical-output vectors, 5 new OML-26/27
@@ -1316,9 +1316,10 @@ mod tests {
         // v0.23.0-v0.25.0 additions), 312 -> 331 via v0.25.0-beta ->
         // v0.26.0-beta (19 new vectors: D-18a carrier, D-22 expanded size and
         // the malformed-merge syntax errors, all in alias-expansion.json, and
-        // the rest of the v0.26.0 additions).
+        // the rest of the v0.26.0 additions), 331 -> 338 via v0.26.0-beta ->
+        // v0.27.0-beta (7 new empty-merge-sequence vectors in alias-expansion.json).
         let vectors = iter_vectors(&suite_dir());
-        assert_eq!(vectors.len(), 331);
+        assert_eq!(vectors.len(), 338);
     }
 
     /// Full-suite regression guard: runs every real vector through every
@@ -1326,13 +1327,13 @@ mod tests {
     /// `main`/`main_with_dir` is process-entry-point code). The counts are
     /// freshly measured, not computed by hand.
     ///
-    /// Spec v0.26.0-beta, diagnostics compared as (path, code) sets:
-    /// 297 pass, 0 fail, 34 skip of 331.
+    /// Spec v0.27.0-beta, diagnostics compared as (path, code) sets:
+    /// 304 pass, 0 fail, 34 skip of 338.
     ///
     /// - the 34 skips are E-20 "not yet implemented", never a documented
     ///   divergence: 6 `document-model/limits` (no runtime-configurable
     ///   limits) and 28 `extensions-osd-oml` (extension not implemented,
-    ///   omnist-rs#175). The 35 `formats-yaml/alias-expansion` vectors (D-18,
+    ///   omnist-rs#175). The 42 `formats-yaml/alias-expansion` vectors (D-18,
     ///   D-18a, D-22) run, with each declared maximum passed through its
     ///   option.
     ///
@@ -1361,13 +1362,14 @@ mod tests {
     /// merge sequence were wrongly rejected (D-18a), 4 expanded-size vectors
     /// parsed OK (D-22), the malformed merge after a bomb reported the limit
     /// and a merge sequence of sequences parsed OK. Implementing D-18a, D-22
-    /// and the merge-shape syntax errors brings it to (297, 0, 34).
+    /// and the merge-shape syntax errors brings it to (297, 0, 34). At v0.27.0-beta the 7 new empty-merge-sequence vectors
+    /// passed with no change: (304, 0, 34).
     #[test]
     fn full_suite_counts_match_the_measured_baseline() {
         let (passed, failed, skipped) = run_all(&suite_dir());
         assert_eq!(
             (passed, failed, skipped),
-            (297, 0, 34),
+            (304, 0, 34),
             "vector pass/fail/skip counts changed -- if this is an intentional fix or a new \
              vector, update the pinned baseline; if not, something regressed"
         );
@@ -1809,7 +1811,7 @@ mod tests {
                 assert_ne!(r.status, Status::Skip, "{}: unexplained skip", v["name"]);
             }
         }
-        assert_eq!((limits, alias, ext), (6, 35, 28));
+        assert_eq!((limits, alias, ext), (6, 42, 28));
     }
 
     /// The declared maximum must reach the reader: the boundary vectors only

@@ -935,3 +935,51 @@ fn a_directly_written_inline_merge_source_adds_its_slots_minus_the_container_to_
     assert_accepted(&text, 4);
     assert_rejected(&text, 3);
 }
+
+// ============================================ D-18a empty merge sequence (v0.27)
+
+/// The lossless raw tree of `text` read with default options.
+fn raw_of(text: &str) -> RawNode {
+    read_yaml_with(text, &YamlReadOptions::default())
+        .unwrap_or_else(|e| panic!("{text:?} rejected: {e:?}"))
+        .to_raw()
+}
+
+#[test]
+fn an_empty_merge_sequence_merges_nothing_and_leaves_an_empty_mapping() {
+    assert_eq!(raw_of("config: {<<: []}\n"), raw_of("config: {}\n"));
+}
+
+#[test]
+fn an_empty_merge_sequence_keeps_the_mappings_own_keys() {
+    assert_eq!(raw_of("t: {<<: [], c: 3}\n"), raw_of("t: {c: 3}\n"));
+}
+
+#[test]
+fn an_aliased_empty_sequence_in_merge_position_merges_nothing() {
+    assert_eq!(
+        raw_of("s: &s []\nt: {<<: *s, c: 3}\n"),
+        raw_of("t: {c: 3}\n")
+    );
+}
+
+#[test]
+fn an_anchored_empty_carrier_in_merge_position_merges_nothing() {
+    assert_eq!(raw_of("t: {<<: &s [], c: 3}\n"), raw_of("t: {c: 3}\n"));
+}
+
+#[test]
+fn an_empty_sequence_outside_merge_position_yields_no_edge() {
+    assert_eq!(raw_of("a: 1\nk: []\n"), raw_of("a: 1\n"));
+    assert_eq!(raw_of("t: {<<: [], k: []}\n"), raw_of("t: {}\n"));
+}
+
+#[test]
+fn an_empty_carrier_counts_w_zero_and_one_slot_at_the_size_cap_boundary() {
+    // `t: {<<: []}`: W(root) = 2 (root, t), S(root) = 3 (root, t, `<<`).
+    let text = "t: {<<: []}\n";
+    assert!(read_size(text, 2).is_ok());
+    let err = read_size(text, 1).expect_err("rejected at cap 1");
+    assert!(is_size_rejection(&err), "got {err:?}");
+    assert_eq!(smallest_accepting_slots(text), 2);
+}
