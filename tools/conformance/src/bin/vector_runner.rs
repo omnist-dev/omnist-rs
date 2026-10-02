@@ -1,4 +1,4 @@
-//! Track 2: runs vendor/omnist-spec's `test-suite/` JSON-vector suite (312
+//! Track 2: runs vendor/omnist-spec's `test-suite/` JSON-vector suite (331
 //! vectors, envelope `name`/`spec`/`operation`/`purpose`/`input`/`expect`
 //! -- see `vendor/omnist-spec/test-suite/README.md` and
 //! `docs/08-conformance-and-errors.md` §8.5) against omnist-rs's own
@@ -51,11 +51,13 @@
 //!    (`parse_schema_oml`, `schema_from_document`, `schema_to_document`,
 //!    `write_schema_oml`) have no implementation in this port yet.
 //!
-//! **`formats-yaml/alias-expansion.json` (16) is not skipped.** Every vector
-//! there declares `declared_max_alias_expansion`, and the runner passes that
-//! value through `YamlReadOptions::max_alias_expansion` for those vectors and
-//! only those (D-18, section 2.4.1); every other YAML vector reads with the
-//! default. `(path, code)` is compared strictly, with no known-failing list.
+//! **`formats-yaml/alias-expansion.json` (35) is not skipped.** A vector there
+//! may declare `declared_max_alias_expansion` (D-18) and/or
+//! `declared_max_expanded_slots` (D-22, section 2.4.1); the runner passes each
+//! declared value through `YamlReadOptions::max_alias_expansion` /
+//! `max_expanded_slots` for the vectors that carry it and only those; every
+//! other YAML vector reads with the defaults. `(path, code)` is compared
+//! strictly, with no known-failing list.
 //!
 //! **E-32:** a `parse.codec-syntax` expectation whose path is the literal
 //! placeholder `line:col` (a lone diagnostic of a JSON/YAML/TOML/XML parse
@@ -409,6 +411,13 @@ fn run_parse(v: &Json) -> VResult {
                 match declared.as_u64().and_then(|n| u32::try_from(n).ok()) {
                     Some(n) => options = options.with_max_alias_expansion(n),
                     None => return fail("declared_max_alias_expansion is not a u32"),
+                }
+            }
+            // D-22: the declared expanded-size cap, same convention.
+            if let Some(declared) = input.get("declared_max_expanded_slots") {
+                match declared.as_u64().and_then(|n| u32::try_from(n).ok()) {
+                    Some(n) => options = options.with_max_expanded_slots(n),
+                    None => return fail("declared_max_expanded_slots is not a u32"),
                 }
             }
             read_yaml_with(&text, &options).map(|d| d.to_raw())
@@ -1294,7 +1303,7 @@ mod tests {
     }
 
     #[test]
-    fn vector_count_is_312() {
+    fn vector_count_is_331() {
         // 204 -> 249 via the submodule pin bump v0.9.1-beta -> v0.19.0-beta,
         // 249 -> 273 via v0.19.0-beta -> v0.21.0-beta (14 new bytes_hex D-14
         // vectors, 4 new OSD-15 canonical-output vectors, 5 new OML-26/27
@@ -1304,9 +1313,12 @@ mod tests {
         // control, and 2 E-28 code-point column vectors), 287 -> 312 via
         // v0.22.0-beta -> v0.25.0-beta (25 new vectors: 10 more D-18 alias
         // vectors, the 4 E-32 placeholder vectors, and the rest of the
-        // v0.23.0-v0.25.0 additions).
+        // v0.23.0-v0.25.0 additions), 312 -> 331 via v0.25.0-beta ->
+        // v0.26.0-beta (19 new vectors: D-18a carrier, D-22 expanded size and
+        // the malformed-merge syntax errors, all in alias-expansion.json, and
+        // the rest of the v0.26.0 additions).
         let vectors = iter_vectors(&suite_dir());
-        assert_eq!(vectors.len(), 312);
+        assert_eq!(vectors.len(), 331);
     }
 
     /// Full-suite regression guard: runs every real vector through every
@@ -1314,14 +1326,15 @@ mod tests {
     /// `main`/`main_with_dir` is process-entry-point code). The counts are
     /// freshly measured, not computed by hand.
     ///
-    /// Spec v0.25.0-beta, diagnostics compared as (path, code) sets:
-    /// 278 pass, 0 fail, 34 skip of 312.
+    /// Spec v0.26.0-beta, diagnostics compared as (path, code) sets:
+    /// 297 pass, 0 fail, 34 skip of 331.
     ///
     /// - the 34 skips are E-20 "not yet implemented", never a documented
     ///   divergence: 6 `document-model/limits` (no runtime-configurable
     ///   limits) and 28 `extensions-osd-oml` (extension not implemented,
-    ///   omnist-rs#175). The 16 `formats-yaml/alias-expansion` vectors (D-18)
-    ///   run, with the declared maximum passed through the option.
+    ///   omnist-rs#175). The 35 `formats-yaml/alias-expansion` vectors (D-18,
+    ///   D-18a, D-22) run, with each declared maximum passed through its
+    ///   option.
     ///
     /// History: (170, 0, 34) at v0.9.1-beta / 204 vectors, path-only mode.
     /// At v0.19.0-beta the same code, before any change, was (197, 18, 34)
@@ -1342,13 +1355,19 @@ mod tests {
     /// implemented it was (266, 12, 34): the 8 alias vectors that expect a
     /// rejection failed (the 8 that expect success pass with no check at
     /// all) plus the 4 placeholders. Implementing E-32 and D-18/D-19/D-20
-    /// brings it to (278, 0, 34).
+    /// brings it to (278, 0, 34). At v0.26.0-beta, before any change (the
+    /// runner passing `declared_max_expanded_slots` through), the baseline
+    /// was (289, 8, 34) of 331: the anchored merge carrier and the alias to a
+    /// merge sequence were wrongly rejected (D-18a), 4 expanded-size vectors
+    /// parsed OK (D-22), the malformed merge after a bomb reported the limit
+    /// and a merge sequence of sequences parsed OK. Implementing D-18a, D-22
+    /// and the merge-shape syntax errors brings it to (297, 0, 34).
     #[test]
     fn full_suite_counts_match_the_measured_baseline() {
         let (passed, failed, skipped) = run_all(&suite_dir());
         assert_eq!(
             (passed, failed, skipped),
-            (278, 0, 34),
+            (297, 0, 34),
             "vector pass/fail/skip counts changed -- if this is an intentional fix or a new \
              vector, update the pinned baseline; if not, something regressed"
         );
@@ -1752,15 +1771,13 @@ mod tests {
             let input = &v["input"];
             let op = v["operation"].as_str().unwrap();
             let carries_limit_key = LIMIT_KEYS.iter().any(|k| input.get(*k).is_some());
-            if input.get("declared_max_alias_expansion").is_some() {
+            if v["name"]
+                .as_str()
+                .unwrap()
+                .starts_with("formats-yaml/alias-expansion/")
+            {
                 alias += 1;
                 assert_eq!(r.status, Status::Pass, "{}: {}", v["name"], r.message);
-                assert!(
-                    v["name"]
-                        .as_str()
-                        .unwrap()
-                        .starts_with("formats-yaml/alias-expansion/")
-                );
             } else if carries_limit_key {
                 // Every declared-limit vector MUST skip -- never run against
                 // the port's own default.
@@ -1792,7 +1809,7 @@ mod tests {
                 assert_ne!(r.status, Status::Skip, "{}: unexplained skip", v["name"]);
             }
         }
-        assert_eq!((limits, alias, ext), (6, 16, 28));
+        assert_eq!((limits, alias, ext), (6, 35, 28));
     }
 
     /// The declared maximum must reach the reader: the boundary vectors only
@@ -1829,6 +1846,41 @@ mod tests {
             .vector
             .clone();
         bad["input"]["declared_max_alias_expansion"] = json!("three");
+        let r = dispatch(&bad);
+        assert_eq!(r.status, Status::Fail);
+        assert!(r.message.contains("not a u32"), "{}", r.message);
+    }
+
+    /// The declared expanded-size cap must reach the reader too, and only for
+    /// the vectors that carry it (D-22): without it the "one past" vector would
+    /// read at the 1 000 000 default and be accepted.
+    #[test]
+    fn the_declared_expanded_size_cap_reaches_the_reader() {
+        let vectors = iter_vectors(&suite_dir());
+        let get = |name: &str| {
+            vectors
+                .iter()
+                .find(|nv| nv.vector["name"] == name)
+                .expect("the named vector exists")
+        };
+        for name in [
+            "formats-yaml/alias-expansion/expanded-size-one-past-declared-cap-fails",
+            "formats-yaml/alias-expansion/expanded-size-at-declared-cap-succeeds",
+        ] {
+            assert_eq!(dispatch(&get(name).vector).status, Status::Pass, "{name}");
+        }
+        let mut v = get("formats-yaml/alias-expansion/expanded-size-one-past-declared-cap-fails")
+            .vector
+            .clone();
+        v["input"]
+            .as_object_mut()
+            .unwrap()
+            .remove("declared_max_expanded_slots");
+        assert_eq!(dispatch(&v).status, Status::Fail);
+        let mut bad = get("formats-yaml/alias-expansion/expanded-size-at-declared-cap-succeeds")
+            .vector
+            .clone();
+        bad["input"]["declared_max_expanded_slots"] = json!("many");
         let r = dispatch(&bad);
         assert_eq!(r.status, Status::Fail);
         assert!(r.message.contains("not a u32"), "{}", r.message);

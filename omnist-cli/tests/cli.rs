@@ -1745,6 +1745,46 @@ fn a_yaml_alias_bomb_on_stdin_is_refused_and_a_json_payload_carries_the_message(
     );
 }
 
+/// 40 000 containers each holding one alias of a 48-key block: every ratio is
+/// under the default 50, the whole is over the default expanded size.
+fn expanded_size_bomb() -> String {
+    let keys: Vec<String> = (1..=48).map(|i| format!("k{i}: {i}")).collect();
+    let mut text = format!("b: &b {{{}}}\n", keys.join(", "));
+    for i in 0..40_000 {
+        text.push_str(&format!("c{i}: {{x: *b}}\n"));
+    }
+    text
+}
+
+#[test]
+fn a_yaml_expanded_size_bomb_is_refused_on_every_command_that_reads_yaml() {
+    let input = fixture("size_bomb", &expanded_size_bomb());
+    let schema = fixture("size_bomb_schema", SCHEMA_OSD);
+    let refused = |what: &str, r: &Run| {
+        assert_eq!(r.code, 2, "{what}: stderr {}", r.stderr);
+        assert_eq!(r.stdout, "", "{what}: no output on refusal");
+        assert!(r.stderr.contains("expanded size"), "{what}: {}", r.stderr);
+        assert!(!r.stderr.contains("panicked"), "{what}: {}", r.stderr);
+    };
+    let r = run(&["convert", &input, "--from", "yaml", "--to", "json"]);
+    refused("convert", &r);
+    let r = run(&["check", &input, "--from", "yaml", "--to", "json"]);
+    refused("check", &r);
+    let r = run(&["validate", &input, "--from", "yaml", "--schema", &schema]);
+    refused("validate", &r);
+    let r = run(&["infer", &input, "--from", "yaml"]);
+    refused("infer", &r);
+}
+
+#[test]
+fn a_malformed_yaml_merge_is_a_syntax_error_through_the_cli() {
+    let input = fixture("bad_merge", "a: {<<: 5}\n");
+    let r = run(&["convert", &input, "--from", "yaml", "--to", "json"]);
+    assert_eq!(r.code, 2, "stderr {}", r.stderr);
+    assert_eq!(r.stdout, "");
+    assert!(r.stderr.contains("merge key"), "{}", r.stderr);
+}
+
 #[test]
 fn a_yaml_self_referential_anchor_is_refused_by_the_cli() {
     let input = fixture("alias_cycle", "a: &a {<<: *a, k: 1}\n");

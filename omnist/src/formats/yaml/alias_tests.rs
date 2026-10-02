@@ -20,9 +20,7 @@ fn edges_under(doc: &Doc, label: &str) -> usize {
 
 /// `read_yaml_with` at an explicit maximum.
 fn read_at(text: &str, max: u32) -> Result<Doc, OmnistError> {
-    let opts = YamlReadOptions {
-        max_alias_expansion: max,
-    };
+    let opts = YamlReadOptions::default().with_max_alias_expansion(max);
     read_yaml_with(text, &opts)
 }
 
@@ -149,9 +147,7 @@ fn option_default_is_50_and_zero_selects_it() {
         YamlReadOptions::default().effective_max_alias_expansion(),
         50
     );
-    let zero = YamlReadOptions {
-        max_alias_expansion: 0,
-    };
+    let zero = YamlReadOptions::default().with_max_alias_expansion(0);
     assert_eq!(zero.effective_max_alias_expansion(), 50);
     let text = format!("base: &base {}\nt: {{<<: *base, own: 1}}\n", flow_map(149));
     // Zero never widens the limit: it behaves exactly like the default.
@@ -164,9 +160,7 @@ fn option_default_is_50_and_zero_selects_it() {
 fn option_ceiling_is_10000_and_larger_is_refused_not_clamped() {
     assert_eq!(MAX_ALIAS_EXPANSION_CEILING, 10_000);
     assert_accepted("a: 1\n", 10_000);
-    let mut opts = YamlReadOptions {
-        max_alias_expansion: 10_001,
-    };
+    let mut opts = YamlReadOptions::default().with_max_alias_expansion(10_001);
     let e = opts.validate().unwrap_err();
     assert_eq!(e.code, None);
     assert!(e.message.contains("10001") && e.message.contains("10000"));
@@ -263,15 +257,6 @@ fn a_merge_sequence_may_mix_inline_mappings_and_aliases() {
     let text = "p: &p {k: 1}\nt: {<<: [{a: 1}, *p], z: 1}\n";
     assert_accepted(text, 2);
     let doc = read_at(text, 2).unwrap();
-    assert_eq!(edges_under(&doc, "t"), 3);
-}
-
-#[test]
-fn an_anchored_merge_sequence_is_an_ordinary_flattened_value() {
-    // The documented reading of the spec's edge: an anchored literal merge
-    // sequence is not the syntactic carrier. It must still read and merge.
-    let text = "p: &p {k: 1}\nq: &q {j: 2}\nt: {<<: &s [*p, *q], m: 3}\n";
-    let doc = read_at(text, 50).unwrap();
     assert_eq!(edges_under(&doc, "t"), 3);
 }
 
@@ -488,9 +473,7 @@ fn the_registry_codec_and_every_reader_path_apply_the_limit() {
     assert!(is_alias_rejection(
         &read_yaml_with(&text, &YamlReadOptions::default()).unwrap_err()
     ));
-    let wide = YamlReadOptions {
-        max_alias_expansion: 10_000,
-    };
+    let wide = YamlReadOptions::default().with_max_alias_expansion(10_000);
     // Even the widest maximum refuses this bomb as an expansion (E ~ 100000).
     assert!(is_alias_rejection(
         &read_yaml_with(&text, &wide).unwrap_err()
@@ -519,6 +502,17 @@ fn doc_example_raise_the_maximum() {
     assert_eq!(doc.root().get("b").len(), 2);
 }
 
+/// The example in `docs/formats/yaml.md` ("The maximum is configurable").
+#[test]
+fn doc_example_set_both_maximums() {
+    let options = YamlReadOptions::default()
+        .with_max_alias_expansion(100)
+        .with_max_expanded_slots(5_000_000);
+    assert!(options.validate().is_ok());
+    let doc = read_yaml_with("a: &x [1, 2]\nb: *x\n", &options).unwrap();
+    assert_eq!(doc.root().get("b").len(), 2);
+}
+
 #[test]
 fn inline_merge_sources_add_their_slots_minus_the_container_to_s() {
     // p: W = S = 9. Each inline {a: *p}: W = 10, S = 2 (E = 5). In r the
@@ -532,4 +526,412 @@ fn inline_merge_sources_add_their_slots_minus_the_container_to_s() {
     );
     assert_accepted(&text, 6);
     assert_rejected(&text, 5);
+}
+
+// ============================================================ D-18a, D-22 (v0.26)
+
+/// `read_yaml_with` at an explicit expanded-size cap, ratio at the ceiling so
+/// only D-22 (and shape errors) can reject.
+fn read_size(text: &str, cap: u32) -> Result<Doc, OmnistError> {
+    let opts = YamlReadOptions::default()
+        .with_max_alias_expansion(MAX_ALIAS_EXPANSION_CEILING)
+        .with_max_expanded_slots(cap);
+    read_yaml_with(text, &opts)
+}
+
+fn is_code(err: &OmnistError, code: &str) -> bool {
+    matches!(err, OmnistError::Document(e) if e.code.as_deref() == Some(code) && e.path == "$")
+}
+
+fn is_size_rejection(err: &OmnistError) -> bool {
+    is_code(err, "document.limit.expanded-size")
+}
+
+/// `W(root)` exactly: the smallest cap at which `text` is accepted.
+fn smallest_accepting_slots(text: &str) -> u32 {
+    let (mut lo, mut hi) = (1u32, MAX_EXPANDED_SLOTS_CEILING);
+    assert!(read_size(text, hi).is_ok(), "rejected even at the ceiling");
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        if read_size(text, mid).is_ok() {
+            hi = mid;
+        } else {
+            lo = mid + 1;
+        }
+    }
+    lo
+}
+
+/// A malformed merge: `parse.codec-syntax` with a well-formed `line:col`.
+fn syntax_position(err: &OmnistError) -> (usize, usize) {
+    match err {
+        OmnistError::Parse(e) if e.code == "parse.codec-syntax" => (e.line, e.col),
+        other => panic!("expected parse.codec-syntax, got {other:?}"),
+    }
+}
+
+const BASE3: &str = "base: &base {k1: 1, k2: 2, k3: 3}\n";
+
+// ----------------------------------------------------------------------- D-22
+
+#[test]
+fn d22_default_ceiling_and_zero() {
+    assert_eq!(DEFAULT_MAX_EXPANDED_SLOTS, 1_000_000);
+    assert_eq!(MAX_EXPANDED_SLOTS_CEILING, 10_000_000);
+    assert_eq!(YamlReadOptions::default().max_expanded_slots, 1_000_000);
+    assert_eq!(
+        YamlReadOptions::default().effective_max_expanded_slots(),
+        1_000_000
+    );
+    let zero = YamlReadOptions::default().with_max_expanded_slots(0);
+    assert_eq!(zero.effective_max_expanded_slots(), 1_000_000);
+    assert_eq!(
+        YamlReadOptions::default()
+            .with_max_expanded_slots(7)
+            .effective_max_expanded_slots(),
+        7
+    );
+}
+
+#[test]
+fn d22_option_validation_refuses_above_the_ceiling_and_never_clamps() {
+    let mut opts = YamlReadOptions::default().with_max_expanded_slots(10_000_000);
+    assert!(opts.validate().is_ok());
+    opts.max_expanded_slots = 10_000_001;
+    let e = opts.validate().unwrap_err();
+    assert_eq!(e.code, None);
+    assert_eq!(
+        e.message,
+        "max_expanded_slots 10000001 exceeds the ceiling 10000000 (0 selects the default 1000000)"
+    );
+    let err = read_yaml_with("a: 1\n", &opts).unwrap_err();
+    assert!(matches!(&err, OmnistError::Document(d) if d.code.is_none() && d.message == e.message));
+    opts.max_expanded_slots = u32::MAX;
+    assert!(opts.validate().is_err());
+    // The two options validate independently, either one alone refuses.
+    let both_ok = YamlReadOptions::default()
+        .with_max_alias_expansion(MAX_ALIAS_EXPANSION_CEILING)
+        .with_max_expanded_slots(MAX_EXPANDED_SLOTS_CEILING);
+    assert!(both_ok.validate().is_ok());
+    let alias_bad = YamlReadOptions::default().with_max_alias_expansion(10_001);
+    assert!(alias_bad.validate().is_err());
+}
+
+#[test]
+fn d22_boundary_at_the_cap_is_accepted_and_one_past_is_rejected() {
+    // base: W = 4. t: 1 + 4 * 4 = 17. Root: 1 + 4 + 17 = 22.
+    let text = format!("{BASE3}t: {{a: *base, b: *base, c: *base, d: *base}}\n");
+    assert!(read_size(&text, 22).is_ok());
+    let err = read_size(&text, 21).unwrap_err();
+    assert!(is_size_rejection(&err), "got {err:?}");
+    assert_eq!(smallest_accepting_slots(&text), 22);
+}
+
+#[test]
+fn d22_an_alias_free_document_is_exempt_however_large() {
+    let keys: Vec<String> = (0..2000).map(|i| format!("k{i}: {i}\n")).collect();
+    let plain = keys.concat();
+    assert!(read_size(&plain, 3).is_ok());
+    // An anchor that nothing refers to is not an alias.
+    assert!(read_size(&format!("x: &x 1\n{plain}"), 3).is_ok());
+    // The cliff: one added alias subjects the whole document to the cap.
+    let one_alias = format!("x: &x 1\ny: *x\n{plain}");
+    let err = read_size(&one_alias, 3).unwrap_err();
+    assert!(is_size_rejection(&err), "got {err:?}");
+    // ... and a merge key without any alias does too.
+    let err = read_size(&format!("m: {{<<: {{a: 1}}}}\n{plain}"), 3).unwrap_err();
+    assert!(is_size_rejection(&err), "got {err:?}");
+    assert!(read_yaml(&plain).is_ok());
+}
+
+#[test]
+fn d22_a_merge_key_with_no_alias_is_subject_to_the_cap() {
+    // t: {<<: {a: 1}}: W(t) = 1 + (2 - 1) = 2, root 1 + 2 = 3.
+    let text = "t: {<<: {a: 1}}\n";
+    assert_eq!(smallest_accepting_slots(text), 3);
+    assert!(is_size_rejection(&read_size(text, 2).unwrap_err()));
+}
+
+#[test]
+fn d22_ratio_is_reported_when_both_limits_fail() {
+    let text = format!("{BASE3}t: {{a: *base, b: *base, c: *base, d: *base}}\n");
+    // Ratio 3 fails (t: 17 / 5 = 3.4) and so does the cap 21.
+    let opts = YamlReadOptions::default()
+        .with_max_alias_expansion(3)
+        .with_max_expanded_slots(21);
+    assert!(is_alias_rejection(
+        &read_yaml_with(&text, &opts).unwrap_err()
+    ));
+    // Ratio alone.
+    let opts = opts.with_max_expanded_slots(22);
+    assert!(is_alias_rejection(
+        &read_yaml_with(&text, &opts).unwrap_err()
+    ));
+    // Size alone: ratio 4 passes (3.4).
+    let opts = opts.with_max_alias_expansion(4).with_max_expanded_slots(21);
+    assert!(is_size_rejection(
+        &read_yaml_with(&text, &opts).unwrap_err()
+    ));
+    // A cycle is an alias-expansion rejection and wins over the size too.
+    let cyc = "a: &a {<<: *a}\nb: *a\n";
+    let opts = YamlReadOptions::default().with_max_expanded_slots(1);
+    assert!(is_alias_rejection(&read_yaml_with(cyc, &opts).unwrap_err()));
+}
+
+#[test]
+fn d22_saturation_two_branches_70_levels_is_an_alias_rejection_not_a_wrap() {
+    // W doubles 70 times, past u64; a wrapping count would land near zero
+    // and accept the bomb.
+    for text in [bomb(2, 70), bomb(2, 200)] {
+        let err = read_yaml(&text).unwrap_err();
+        assert!(is_alias_rejection(&err), "got {err:?}");
+        let opts = YamlReadOptions::default()
+            .with_max_alias_expansion(MAX_ALIAS_EXPANSION_CEILING)
+            .with_max_expanded_slots(MAX_EXPANDED_SLOTS_CEILING);
+        let err = read_yaml_with(&text, &opts).unwrap_err();
+        assert!(is_alias_rejection(&err), "got {err:?}");
+    }
+}
+
+#[test]
+fn d22_the_memory_bomb_is_refused_by_size_at_the_default_without_being_built() {
+    // 40 000 containers each holding one alias of a 49-slot block: every E is
+    // 25.5 (under 50), W(root) is about 2 million (over 1 million). The
+    // replay would trip the materialized-node cap first, so seeing
+    // expanded-size here also pins that the check runs before any tree is
+    // built.
+    let keys: Vec<String> = (1..=48).map(|i| format!("k{i}: {i}")).collect();
+    let mut text = format!("b: &b {{{}}}\n", keys.join(", "));
+    for i in 0..40_000 {
+        text.push_str(&format!("c{i}: {{x: *b}}\n"));
+    }
+    let start = Instant::now();
+    let err = read_yaml(&text).unwrap_err();
+    let took = start.elapsed();
+    assert!(is_size_rejection(&err), "got {err:?}");
+    assert!(took < Duration::from_secs(20), "took {took:?}");
+    // Raising the cap past it lets the ratio-clean input reach the node cap.
+    let wide = YamlReadOptions::default().with_max_expanded_slots(MAX_EXPANDED_SLOTS_CEILING);
+    assert!(matches!(
+        read_yaml_with(&text, &wide).unwrap_err(),
+        OmnistError::Parse(e) if e.code == "document.limit.nodes"
+    ));
+}
+
+#[test]
+fn d22_compose_style_documents_stay_far_under_the_default() {
+    // The spec's measured W(root): 100 services merging a 20-key block are
+    // 2 223 slots, merging a 60-key block 6 263 (the materialized-node cap
+    // bounds this reader before the 1 000 000 default ever could).
+    let build = |block: usize| {
+        let keys: String = (1..=block).map(|i| format!("  d{i}: {i}\n")).collect();
+        let mut text = format!("x-defaults: &d\n{keys}services:\n");
+        for i in 0..100 {
+            text.push_str(&format!("  svc{i}:\n    <<: *d\n    image: img{i}\n"));
+        }
+        text
+    };
+    for (block, slots) in [(20, 2_223), (60, 6_263)] {
+        let text = build(block);
+        assert!(read_yaml(&text).is_ok());
+        assert_eq!(smallest_accepting_slots(&text), slots);
+    }
+}
+
+#[test]
+fn d22_the_registry_and_the_default_reader_apply_the_size_cap() {
+    let text = format!("{BASE3}t: {{a: *base, b: *base}}\n");
+    let opts = YamlReadOptions::default().with_max_expanded_slots(5);
+    assert!(is_size_rejection(
+        &read_yaml_with(&text, &opts).unwrap_err()
+    ));
+    // At the default 1M the same text is fine through every route.
+    let fmt = crate::registry::get_format("yaml").unwrap();
+    assert!((fmt.read)(&text).is_ok());
+    assert!(read_yaml(&text).is_ok());
+}
+
+// ---------------------------------------------------------------------- D-18a
+
+#[test]
+fn d18a_an_anchored_carrier_is_the_unanchored_carrier_with_a_name() {
+    let un = "p: &p {k: 1}\nq: &q {j: 2}\nz: {<<: [*p, *q], m: 3}\n";
+    let an = "p: &p {k: 1}\nq: &q {j: 2}\nz: {<<: &s [*p, *q], m: 3}\n";
+    // E(z) = 4 / 3 = 1.33 either way.
+    assert_eq!(smallest_accepting_max(un), 2);
+    assert_eq!(smallest_accepting_max(an), 2);
+    // W(root) = 1 + 2 + 2 + 4: the carrier holds no slot.
+    assert_eq!(smallest_accepting_slots(un), 9);
+    assert_eq!(smallest_accepting_slots(an), 9);
+    // The carrier is not a candidate: were it one, S(s) = 2 and W(s) = 14
+    // would give E = 7; the mapping's own E(t) is 14 / 3 = 4.67.
+    let text = format!("b: &b {}\nt: {{<<: &s [*b], z: 1}}\n", flow_map(12));
+    assert_eq!(smallest_accepting_max(&text), 5);
+    assert_eq!(
+        smallest_accepting_max(&text.replace("&s ", "")),
+        5,
+        "adding the anchor changes no verdict"
+    );
+    // The merged value is right.
+    let doc = read_at(an, 2).unwrap();
+    assert_eq!(edges_under(&doc, "z"), 3);
+}
+
+#[test]
+fn d18a_an_alias_to_a_sequence_in_merge_position_flattens_its_members() {
+    // s: W = 1 + 2 + 2 = 5, S = 3. y: W = 1 + (2-1) + (2-1) + 1 = 4, S = 3.
+    let text = "p: &p {k: 1}\nq: &q {j: 2}\ns: &s [*p, *q]\ny: {<<: *s, m: 3}\n";
+    // W(root) = 1 + 2 + 2 + 5 + 4 = 14; W(s) - 1 for y would make it 16.
+    assert_eq!(smallest_accepting_slots(text), 14);
+    assert_eq!(smallest_accepting_max(text), 2);
+    let doc = read_at(text, 2).unwrap();
+    assert_eq!(edges_under(&doc, "y"), 3);
+    // The same through an anchored carrier written in merge position.
+    let carrier = "p: &p {k: 1}\nq: &q {j: 2}\nz: {<<: &s [*p, *q]}\ny: {<<: *s, m: 3}\n";
+    // 1 + 2 + 2 + z (1 + 1 + 1 = 3) + y 4.
+    assert_eq!(smallest_accepting_slots(carrier), 12);
+}
+
+#[test]
+fn d18a_an_alias_to_a_sequence_adds_one_slot_to_s_only() {
+    let text = "p: &p {k: 1}\nq: &q {j: 2}\ns: &s [*p, *q]\ny: {<<: *s, m: 3}\n";
+    assert_rejected(text, 1);
+    // Sum over the members: 3 members of a 12-key block.
+    let big = format!(
+        "b: &b {}\ns: &s [*b, *b, *b]\ny: {{<<: *s}}\n",
+        flow_map(12)
+    );
+    // y: W = 1 + 3 * 12 = 37, S = 2: 18.5.
+    assert_eq!(smallest_accepting_max(&big), 19);
+}
+
+#[test]
+fn d18a_an_ordinary_anchored_sequence_stays_a_candidate() {
+    let text = "b: &b {k1: 1, k2: 2, k3: 3, k4: 4, k5: 5, k6: 6, k7: 7, k8: 8}\n\
+                s: &s [*b, *b, *b, *b, *b, *b, *b, *b, *b, *b]\n";
+    // W(s) = 1 + 10 * 9 = 91, S = 11: 8.27.
+    assert_rejected(text, 8);
+    assert_accepted(text, 9);
+}
+
+#[test]
+fn d18a_a_plain_alias_to_a_carrier_materializes_the_list() {
+    let text = "p: &p {k: 1}\nq: &q {j: 2}\ns0: {<<: &s [*p, *q]}\nt: *s\n";
+    // t: 1 + 2 + 2 = 5; s0: 1 + 1 + 1 = 3; root 1 + 2 + 2 + 3 + 5 = 13.
+    assert_eq!(smallest_accepting_slots(text), 13);
+}
+
+#[test]
+fn d18a_a_carrier_may_mix_inline_and_newly_anchored_mappings() {
+    let text = "z: {<<: [{x: 1}, &m {y: 2}, *m], k: 3}\n";
+    // W(z) = S(z) = 5: E = 1.00; root W = 1 + 5.
+    assert_eq!(smallest_accepting_max(text), 1);
+    assert_eq!(smallest_accepting_slots(text), 6);
+    let doc = read_at(text, 1).unwrap();
+    assert_eq!(edges_under(&doc, "z"), 3);
+}
+
+#[test]
+fn d18a_an_empty_merge_sequence_is_not_malformed() {
+    assert_accepted("z: {<<: [], k: 3}\n", 1);
+    assert_accepted("s: &s []\nz: {<<: *s, k: 3}\n", 1);
+}
+
+// ------------------------------------------------------------ malformed merges
+
+#[test]
+fn malformed_merge_shapes_are_codec_syntax_with_a_position() {
+    for (text, pos) in [
+        // A scalar merge value (and an empty one).
+        ("a: 1\nb: {<<: 5}\n", (2, 9)),
+        ("b: {<<: }\n", (1, 7)),
+        ("b: {<<: &x 5}\n", (1, 12)),
+        // A scalar member of a carrier.
+        ("b: {<<: [1]}\n", (1, 10)),
+        ("p: &p {a: 1}\nb: {<<: [*p, 2]}\n", (2, 14)),
+        // A sequence inside a merge sequence, written or by alias.
+        ("b: {<<: [[{a: 1}]]}\n", (1, 10)),
+        ("s: &s [{a: 1}]\nb: {<<: [*s]}\n", (2, 10)),
+        // An alias to a scalar, to a sequence of scalars, to a nested list.
+        ("x: &x 5\nb: {<<: *x}\n", (2, 9)),
+        ("s: &s [1, 2]\nb: {<<: *s}\n", (2, 9)),
+        ("s: &s [[{a: 1}]]\nb: {<<: *s}\n", (2, 9)),
+        ("p: &p {a: 1}\ns: &s [*p, 3]\nb: {<<: *s}\n", (3, 9)),
+        // Block spelling.
+        ("b:\n  <<: 5\n", (2, 7)),
+        ("b:\n  <<:\n    - 1\n", (3, 7)),
+    ] {
+        let err = read_yaml(text).unwrap_err();
+        assert_eq!(syntax_position(&err), pos, "{text:?}");
+    }
+}
+
+#[test]
+fn a_malformed_merge_wins_over_every_limit_whichever_comes_first() {
+    let bad = "z: {<<: [1]}\n";
+    // After a ratio bomb, before it, and with the cap and a cycle present.
+    for text in [
+        format!("{}{bad}", bomb(4, 10)),
+        format!("{bad}{}", bomb(4, 10)),
+        format!("a: &a {{<<: *a}}\n{bad}"),
+        format!("{BASE3}t: {{a: *base, b: *base, c: *base, d: *base}}\n{bad}"),
+    ] {
+        let opts = YamlReadOptions::default()
+            .with_max_alias_expansion(2)
+            .with_max_expanded_slots(5);
+        let err = read_yaml_with(&text, &opts).unwrap_err();
+        assert!(matches!(&err, OmnistError::Parse(_)), "got {err:?}");
+        syntax_position(&err);
+    }
+    // And over a depth limit that the check stops buffering for.
+    let deep: String = (0..200).map(|i| format!("{}a:\n", " ".repeat(i))).collect();
+    let err = read_yaml(&format!("{deep}{}z: {{<<: 5}}\n", " ".repeat(200))).unwrap_err();
+    syntax_position(&err);
+}
+
+#[test]
+fn the_first_malformed_merge_in_document_order_is_the_one_reported() {
+    let err = read_yaml("a: {<<: 1}\nb: {<<: [2]}\n").unwrap_err();
+    assert_eq!(syntax_position(&err).0, 1);
+}
+
+#[test]
+fn a_well_formed_merge_still_reads_after_the_shape_check() {
+    let text = "p: &p {a: 1}\nq: &q {<<: *p, b: 2}\ns: &s [*p, *q]\n\
+                t: {<<: [*p, *q], c: 3}\nu: {<<: *s, d: 4}\n";
+    let doc = read_yaml(text).unwrap();
+    assert_eq!(edges_under(&doc, "t"), 3);
+    assert_eq!(edges_under(&doc, "u"), 3);
+}
+
+#[test]
+fn d22_root_only_both_fail_reports_the_ratio() {
+    // Only the root violates the ratio (every alias is a plain value, b has
+    // E = 1); the cap is exceeded too. Ratio first.
+    let mut text = format!("b: &b {}\n", flow_map(12));
+    for i in 0..14 {
+        text.push_str(&format!("r{i}: *b\n"));
+    }
+    // W(root) = 1 + 13 + 14 * 13 = 196, S = 28: E = 7.
+    let opts = YamlReadOptions::default()
+        .with_max_alias_expansion(6)
+        .with_max_expanded_slots(10);
+    assert!(is_alias_rejection(
+        &read_yaml_with(&text, &opts).unwrap_err()
+    ));
+    let opts = opts.with_max_alias_expansion(7);
+    assert!(is_size_rejection(
+        &read_yaml_with(&text, &opts).unwrap_err()
+    ));
+}
+
+#[test]
+fn a_directly_written_inline_merge_source_adds_its_slots_minus_the_container_to_s() {
+    // q: W = 13. r: {<<: {a: 1}, x: *q}: S = r, `<<`, a, x = 4 (the inline
+    // container is not a second slot), W = 1 + (2 - 1) + 13 = 15: E = 3.75,
+    // so 4 is the smallest accepting maximum. Counting the container (S = 5)
+    // would give 3.
+    let text = format!("q: &q {}\nr: {{<<: {{a: 1}}, x: *q}}\n", flow_map(12));
+    assert_accepted(&text, 4);
+    assert_rejected(&text, 3);
 }
