@@ -924,3 +924,14 @@ fn d22_root_only_both_fail_reports_the_ratio() {
         &read_yaml_with(&text, &opts).unwrap_err()
     ));
 }
+
+#[test]
+fn a_directly_written_inline_merge_source_adds_its_slots_minus_the_container_to_s() {
+    // q: W = 13. r: {<<: {a: 1}, x: *q}: S = r, `<<`, a, x = 4 (the inline
+    // container is not a second slot), W = 1 + (2 - 1) + 13 = 15: E = 3.75,
+    // so 4 is the smallest accepting maximum. Counting the container (S = 5)
+    // would give 3.
+    let text = format!("q: &q {}\nr: {{<<: {{a: 1}}, x: *q}}\n", flow_map(12));
+    assert_accepted(&text, 4);
+    assert_rejected(&text, 3);
+}
