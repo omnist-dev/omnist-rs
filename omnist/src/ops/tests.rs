@@ -767,8 +767,8 @@ fn lint_is_sorted_by_code_then_location() {
 
 /// omnist-ts#56 regression: lint's ordering must be codepoint order (byte-
 /// wise on UTF-8), not locale-aware (`localeCompare`-style) order, which
-/// would sort e.g. accented/mixed-case labels differently. This mixes case
-/// and a non-ASCII (accented) record name where codepoint and locale order
+/// would sort e.g. mixed-case and punctuation-led names differently. This mixes case
+/// and an underscore-led record name where codepoint and locale order
 /// diverge for common locales.
 #[test]
 fn lint_ordering_is_codepoint_not_locale_non_ascii_mixed_case() {
@@ -778,15 +778,12 @@ fn lint_ordering_is_codepoint_not_locale_non_ascii_mixed_case() {
             rec(vec![
                 req("a", Ref::new("aardvark")),
                 req("b", Ref::new("Zebra")),
-                req("c", Ref::new("\u{e9}clair")), // "éclair" -- unreachable/unsatisfiable-record location
+                req("c", Ref::new("_clair")), // "_clair" -- unsatisfiable-record location
             ]),
         ),
         ("aardvark", rec(vec![req("self", Ref::new("aardvark"))])), // unsatisfiable
         ("Zebra", rec(vec![req("self", Ref::new("Zebra"))])),       // unsatisfiable
-        (
-            "\u{e9}clair",
-            rec(vec![req("self", Ref::new("\u{e9}clair"))]),
-        ), // unsatisfiable
+        ("_clair", rec(vec![req("self", Ref::new("_clair"))])),     // unsatisfiable
         ("Orphan", rec(vec![req("x", STRING)])),
         ("aOrphan", rec(vec![req("x", STRING)])),
     ]);
@@ -797,15 +794,12 @@ fn lint_ordering_is_codepoint_not_locale_non_ascii_mixed_case() {
         .filter(|f| f.code == "lint.unsatisfiable-record")
         .map(|f| f.location.as_str())
         .collect();
-    // Codepoint order: 'R' (0x52) < 'Z' (0x5A) < 'a' (0x61) < 'é' (0xE9) --
+    // Codepoint order: R (0x52) < Z (0x5A) < _ (0x5F) < a (0x61) --
     // "Root" itself is unsatisfiable too (its mandatory fields all point at
     // unsatisfiable records) and sorts first; a locale-aware sort would
     // instead place "Zebra" after "aardvark" (case-insensitive) and
-    // "éclair" among the "e"s.
-    assert_eq!(
-        unsat_locations,
-        vec!["Root", "Zebra", "aardvark", "\u{e9}clair"]
-    );
+    // "_clair" among the "c"s. ASCII only: S-8 rejects non-ASCII record names.
+    assert_eq!(unsat_locations, vec!["Root", "Zebra", "_clair", "aardvark"]);
 
     let unreachable_locations: Vec<&str> = findings
         .iter()

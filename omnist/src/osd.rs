@@ -616,6 +616,13 @@ pub fn parse_schema(text: &str) -> Result<Schema, SchemaError> {
 /// section 8.4 has no way to quote a label in a path). The first offending
 /// record in declaration order is reported. Such a schema still travels as
 /// OSD-OML, whose `\u00XX` escape is real.
+///
+/// OSD-16 / S-24: a field with `max = 0` (`[0,0]`, representable in the model
+/// but rejected by every text reader) likewise fails with
+/// `write.unsupported-value` at the record path `R`. [`crate::ops::prune`]
+/// removes such fields from every record it rebuilds (it keeps an
+/// unsatisfiable root intact), so prune before writing. When both a C0 label
+/// and a `max = 0` field are present, which is reported is unspecified.
 pub fn to_osd(schema: &Schema, indent: Option<usize>) -> Result<String, WriteError> {
     if let Some((name, _)) = schema
         .env()
@@ -625,6 +632,16 @@ pub fn to_osd(schema: &Schema, indent: Option<usize>) -> Result<String, WriteErr
         return Err(unsupported_value_error(
             name,
             "a field label contains a C0 control character, which OSD text cannot spell (OSD-14)",
+        ));
+    }
+    if let Some((name, _)) = schema
+        .env()
+        .iter()
+        .find(|(_, rec)| rec.fields().iter().any(|f| f.max == Some(0)))
+    {
+        return Err(unsupported_value_error(
+            name,
+            "a field has max = 0 ([0,0]), which OSD text cannot spell (OSD-16, S-24)",
         ));
     }
     let mut parts: Vec<String> = schema

@@ -3,8 +3,8 @@
 This port has its own conformance-test harness (`tools/conformance/`)
 against [omnist-spec](https://github.com/omnist-dev/omnist-spec), the
 language-agnostic upstream specification. It vendors omnist-spec as a
-pinned git submodule (`vendor/omnist-spec`, currently commit `a6a6090`,
-the `v0.27.0-beta` tag) and
+pinned git submodule (`vendor/omnist-spec`, currently commit `1a7d0de`,
+the `v0.28.0-beta` tag) and
 runs entirely against this crate's own library code -- it does not depend
 on the Python or TypeScript ports' implementations.
 
@@ -34,7 +34,10 @@ cargo run -p conformance --bin vector_runner
 ## Every Track 2 skip, and why
 
 All 34 skips are one spec category, E-20 "not yet implemented"; none is an
-E-21 documented divergence. (v0.27.0-beta (338 vectors) added 7 `alias-expansion` vectors for the empty merge
+E-21 documented divergence. (v0.28.0-beta adds no vectors (still 338): its four programmatic-schema
+rules, S-8's `$` path, S-22, S-23 and OSD-16/S-24, are pinned by no vector
+(DIV-5), only by `omnist/tests/spec_v028.rs`; Track 2 stays 304 / 0 / 34.
+v0.27.0-beta (338 vectors) added 7 `alias-expansion` vectors for the empty merge
 sequence `<<: []` (D-18a); the port already merged nothing for it, so all 7
 passed with no code change. v0.26.0-beta (331 vectors) grew
 `alias-expansion.json` to 35 vectors (D-18a, D-22 and the malformed-merge

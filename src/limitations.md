@@ -1,6 +1,6 @@
 # Limitations & stability
 
-## Alpha status: `0.5.1-alpha`, per this project's versioning rule
+## Alpha status: `0.6.0-alpha`, per this project's versioning rule
 
 The Rust port's first feature-complete milestone (issue #28) plus its own
 conformance-test harness against
@@ -13,6 +13,30 @@ signs off on the scoping decisions below (the `any`-type gap chief among
 them); accumulating further features or fixes alone never moves it past
 `-alpha` on its own. Treat every public API in this crate as subject to
 change without a deprecation cycle until that further sign-off happens.
+
+## Programmatic-schema rules from spec v0.28.0-beta (S-8, S-22, S-23, S-24)
+
+These four rules take a schema built through the API, which no conformance
+vector can supply (DIV-5), so the unit tests in `omnist/tests/spec_v028.rs` are
+the only pin.
+
+- **S-8 and S-24/OSD-16 are implemented.** `Schema::new` reports a bad record
+  or `Ref` target name as `schema.invalid-name` at `$`; `osd::to_osd` fails
+  with `write.unsupported-value` at the record path on a `max = 0` field. Which
+  violation is reported when several exist is unspecified.
+- **S-22 (`schema.invalid-label`) is vacuous in Rust.** A field label is a
+  `String`, so it cannot hold invalid UTF-8. Every public way to give a label
+  takes `impl Into<String>` (`Field::new`, `Field::required`, ...); there is no
+  `OsString`, `Vec<u8>` or `Cow<[u8]>` route into a schema, so there is nothing
+  to check and no code path emits `schema.invalid-label`. Input bytes are a
+  different rule (D-14, `parse.invalid-encoding`).
+- **S-23 (`schema.unknown-record`) has no Rust surface.** No public function
+  takes a caller-supplied ordering of records: `to_osd` and the other writers
+  emit `Schema::env()` in its own order, and `extract`'s `keep` argument is a
+  set of field labels, not records. `schema.unknown-record` is therefore never
+  emitted.
+- **No OSD-OML schema writer.** The port has no OSD-OML schema reader or
+  writer, so the OSD-OML half of OSD-16/S-24 does not apply.
 
 ## The `any`-type support (landed)
 
