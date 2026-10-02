@@ -523,7 +523,8 @@ impl YamlReadOptions {
             return Err(DocumentError::new(
                 "$",
                 format!(
-                    "max_expanded_slots {} exceeds the ceiling {MAX_EXPANDED_SLOTS_CEILING}                      (0 selects the default {DEFAULT_MAX_EXPANDED_SLOTS})",
+                    "max_expanded_slots {} exceeds the ceiling {MAX_EXPANDED_SLOTS_CEILING} \
+                     (0 selects the default {DEFAULT_MAX_EXPANDED_SLOTS})",
                     self.max_expanded_slots
                 ),
             ));

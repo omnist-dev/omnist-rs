@@ -54,7 +54,10 @@ both reports `document.limit.alias-expansion`). Ratio and size are separate
 options, and neither implies the other. An input with no alias and no merge
 key is exempt however large, which is a cliff by design: a plain file of two
 million slots passes, and adding one alias subjects it to the cap. See
-[YAML](formats/yaml.md#expanded-size-limit-d-22). A malformed merge (a scalar
+[YAML](formats/yaml.md#expanded-size-limit-d-22). Rust's node cap (100,000,
+keys included) is lower than D-22's default, so for example the spec's own
+1,000-service x 60-key compose example (`W` = 62,063) is refused with
+`document.limit.nodes`; this is pre-existing and the node cap is unchanged. A malformed merge (a scalar
 merge value, a scalar or sequence member of a merge sequence, an alias to a
 sequence of scalars) is `parse.codec-syntax` and wins over both limits.
 

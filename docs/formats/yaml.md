@@ -200,11 +200,13 @@ refused).
 - **`W` is the structural count**, blind to key collisions, so a document whose
   merged keys are overridden can be refused though it materializes fewer
   slots.
-- **The node cap still applies.** The reader's own 100,000-node materialization
-  cap (`document.limit.nodes`, keys included) is far below the default maximum
-  expanded size, so an input the size limit accepts can still be refused for
-  its node count; the size limit is what rejects the over-large input first,
-  before any of it is built.
+- **The node cap is lower than the default.** This port's own materialization
+  cap is 100,000 nodes (`document.limit.nodes`; it counts keys and values),
+  against 1,000,000 value slots for D-22. An input whose `W(root)` is between
+  the two passes the size limit, and it is the node cap that refuses it. Only
+  above 1,000,000 slots does `document.limit.expanded-size` refuse first, before
+  any of it is built.
+
 ## Native temporal type on read, but no bare-time literal, and a looser input grammar than JSON
 
 A bare YAML timestamp reads as a genuine `Scalar::Date` (no `T`) or

@@ -600,10 +600,9 @@ fn d22_option_validation_refuses_above_the_ceiling_and_never_clamps() {
     opts.max_expanded_slots = 10_000_001;
     let e = opts.validate().unwrap_err();
     assert_eq!(e.code, None);
-    assert!(
-        e.message.contains("10000001") && e.message.contains("10000000"),
-        "{}",
-        e.message
+    assert_eq!(
+        e.message,
+        "max_expanded_slots 10000001 exceeds the ceiling 10000000 (0 selects the default 1000000)"
     );
     let err = read_yaml_with("a: 1\n", &opts).unwrap_err();
     assert!(matches!(&err, OmnistError::Document(d) if d.code.is_none() && d.message == e.message));
@@ -903,4 +902,25 @@ fn a_well_formed_merge_still_reads_after_the_shape_check() {
     let doc = read_yaml(text).unwrap();
     assert_eq!(edges_under(&doc, "t"), 3);
     assert_eq!(edges_under(&doc, "u"), 3);
+}
+
+#[test]
+fn d22_root_only_both_fail_reports_the_ratio() {
+    // Only the root violates the ratio (every alias is a plain value, b has
+    // E = 1); the cap is exceeded too. Ratio first.
+    let mut text = format!("b: &b {}\n", flow_map(12));
+    for i in 0..14 {
+        text.push_str(&format!("r{i}: *b\n"));
+    }
+    // W(root) = 1 + 13 + 14 * 13 = 196, S = 28: E = 7.
+    let opts = YamlReadOptions::default()
+        .with_max_alias_expansion(6)
+        .with_max_expanded_slots(10);
+    assert!(is_alias_rejection(
+        &read_yaml_with(&text, &opts).unwrap_err()
+    ));
+    let opts = opts.with_max_alias_expansion(7);
+    assert!(is_size_rejection(
+        &read_yaml_with(&text, &opts).unwrap_err()
+    ));
 }
