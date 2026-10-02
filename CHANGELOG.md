@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.1-alpha
+
+Adopts omnist-spec **v0.27.0-beta** (was v0.26.0-beta, 338 vectors, +7). D-18a
+now says an empty merge sequence `<<: []` is a well-formed carrier that merges
+nothing (W 0, S one slot for the `<<` entry); the same for `s: &s []` then
+`<<: *s`. An empty sequence outside merge position is an ordinary node. No
+library change: the reader already behaved this way. Track 2 is **304 pass, 0
+fail, 34 skip of 338**; Track 1 19 / 19. New tests in `alias_tests.rs` pin the
+contract, including the size-cap boundary (W(root) 2, S(root) 3).
+
 ## 0.5.0-alpha
 
 Adopts omnist-spec **v0.26.0-beta** (was v0.25.0-beta, 331 vectors): the

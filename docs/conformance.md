@@ -3,8 +3,8 @@
 This port has its own conformance-test harness (`tools/conformance/`)
 against [omnist-spec](https://github.com/omnist-dev/omnist-spec), the
 language-agnostic upstream specification. It vendors omnist-spec as a
-pinned git submodule (`vendor/omnist-spec`, currently commit `7744a5c`,
-the `v0.26.0-beta` tag) and
+pinned git submodule (`vendor/omnist-spec`, currently commit `a6a6090`,
+the `v0.27.0-beta` tag) and
 runs entirely against this crate's own library code -- it does not depend
 on the Python or TypeScript ports' implementations.
 
@@ -17,7 +17,7 @@ reporting rule:
 - **Track 1** (`vendor/omnist-spec/conformance/fixtures/`, directory-per-fixture,
   11 operations): **19 passed, 0 failed, 0 skipped**.
 - **Track 2** (`vendor/omnist-spec/test-suite/`, JSON-vector suite, 14-operation
-  vocabulary): **297 passed, 0 failed, 34 skipped** (of 331 vectors),
+  vocabulary): **304 passed, 0 failed, 34 skipped** (of 338 vectors),
   **diagnostics compared as `(path, code)` sets** (section 8.5.2), not in
   code-agnostic mode. The runner exits non-zero on any failing vector and
   never on skips (E-22); it has no list of tolerated failures.
@@ -34,7 +34,9 @@ cargo run -p conformance --bin vector_runner
 ## Every Track 2 skip, and why
 
 All 34 skips are one spec category, E-20 "not yet implemented"; none is an
-E-21 documented divergence. (v0.26.0-beta (331 vectors) grew
+E-21 documented divergence. (v0.27.0-beta (338 vectors) added 7 `alias-expansion` vectors for the empty merge
+sequence `<<: []` (D-18a); the port already merged nothing for it, so all 7
+passed with no code change. v0.26.0-beta (331 vectors) grew
 `alias-expansion.json` to 35 vectors (D-18a, D-22 and the malformed-merge
 syntax errors); all run and pass, with `declared_max_alias_expansion` and
 `declared_max_expanded_slots` passed through `YamlReadOptions` for the vectors
