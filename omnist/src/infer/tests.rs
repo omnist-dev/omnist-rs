@@ -394,8 +394,81 @@ fn identifier_strips_leading_digits_and_underscores() {
 }
 
 #[test]
-fn identifier_falls_back_to_unstripped_when_all_digits() {
-    assert_eq!(identifier("123"), "123");
+fn identifier_is_ascii_only_and_empty_when_nothing_usable() {
+    for (input, want) in [
+        ("123", ""),
+        ("9", ""),
+        ("\u{65e5}\u{672c}", ""),
+        ("\u{661}", ""),
+        ("__", ""),
+        ("\u{e9}clair", "clair"),
+        ("a b", "a_b"),
+        ("a\u{e9}b", "a_b"),
+    ] {
+        assert_eq!(identifier(input), want, "input {input:?}");
+    }
+}
+
+#[test]
+fn unique_name_derivations_match_python_and_ts() {
+    for (input, want) in [
+        ("123", "Rec"),
+        ("9", "Rec"),
+        ("\u{65e5}\u{672c}", "Rec"),
+        ("\u{661}", "Rec"),
+        ("\u{e9}clair", "Clair"),
+        ("a b", "A_b"),
+        ("", "Rec"),
+        ("address", "Address"),
+    ] {
+        assert_eq!(unique_name(input, &mut IndexSet::new()), want, "{input:?}");
+    }
+}
+
+#[test]
+fn unique_name_collisions_get_numeric_suffixes() {
+    let mut used = IndexSet::new();
+    let got: Vec<String> = ["1", "2", "\u{65e5}", "rec", "Rec"]
+        .iter()
+        .map(|k| unique_name(k, &mut used))
+        .collect();
+    assert_eq!(got, ["Rec", "Rec2", "Rec3", "Rec4", "Rec5"]);
+}
+
+#[test]
+fn infer_over_awkward_keys_builds_a_schema_that_writes_and_reparses() {
+    for key in [
+        "123",
+        "9",
+        "\u{e9}clair",
+        "\u{65e5}\u{672c}",
+        "\u{661}",
+        "",
+        "a b",
+    ] {
+        let d = doc(obj(&[(key, obj(&[("a", Value::Int(1.into()))]))]));
+        let s = infer(&[d], "Root").unwrap_or_else(|e| panic!("{key:?}: {e}"));
+        let text = crate::osd::to_osd(&s, None).unwrap();
+        if !key.is_empty() {
+            crate::osd::parse_schema(&text).unwrap();
+        }
+    }
+}
+
+proptest::proptest! {
+    #[test]
+    fn every_inferred_schema_constructs_writes_and_reparses(
+        keys in proptest::collection::vec(r"[^\[\]\x00-\x1f]{1,6}", 1..5)
+    ) {
+        let mut inner = Vec::new();
+        for k in &keys {
+            inner.push((k.as_str(), obj(&[("a", Value::Int(1.into()))])));
+        }
+        let d = doc(obj(&inner));
+        let s = infer(&[d], "Root").unwrap();
+        let text = crate::osd::to_osd(&s, None).unwrap();
+        proptest::prop_assert!(crate::osd::parse_schema(&text).is_ok());
+    }
 }
 
 #[test]

@@ -453,6 +453,36 @@ fn infer_golden_path_emits_osd() {
 }
 
 #[test]
+fn infer_exits_zero_on_keys_that_are_not_identifiers_in_every_format() {
+    let cases: [(&str, &str, &str); 6] = [
+        (
+            "json",
+            r#"{"123":{"a":1},"\u00e9clair":{"a":1},"\u65e5\u672c":{"a":1}}"#,
+            "json",
+        ),
+        (
+            "yaml",
+            "\"123\":\n  a: 1\n\u{e9}clair:\n  a: 1\n\u{65e5}\u{672c}:\n  a: 1\n",
+            "yaml",
+        ),
+        (
+            "toml",
+            "[\"123\"]\na = 1\n[\"\u{e9}clair\"]\na = 1\n[\"\u{65e5}\u{672c}\"]\na = 1\n",
+            "toml",
+        ),
+        ("xml", "<r><\u{e9}clair><a>1</a></\u{e9}clair></r>", "xml"),
+        ("json", r#"{"9":{"a":1},"a b":{"a":1}}"#, "json"),
+        ("json", r#"{"":{"a":1}}"#, "json"),
+    ];
+    for (i, (from, text, ext)) in cases.iter().enumerate() {
+        let input = fixture(&format!("infer_ident_{i}.{ext}"), text);
+        let r = run(&["infer", &input, "--from", from]);
+        assert_eq!(r.code, 0, "{from} {text:?}: {}", r.stderr);
+        assert!(r.stdout.contains("root Root"), "{}", r.stdout);
+    }
+}
+
+#[test]
 fn infer_compact_single_line() {
     let input = fixture("infer_compact_in", DOC_JSON);
     let r = run(&["infer", &input, "--from", "json", "--compact"]);

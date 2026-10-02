@@ -332,27 +332,18 @@ fn unique_name(base: &str, used: &mut IndexSet<String>) -> String {
     cand
 }
 
-/// Substitutes every non-alnum/underscore char with `_`, then strips
-/// leading digits/underscores -- falling back to the substituted-but-
-/// unstripped string if that would leave nothing. Mirrors the Python
-/// reference's `_identifier`.
+/// Substitutes every character outside ASCII `[A-Za-z0-9_]` with `_`, then
+/// strips leading digits/underscores. The result is `""` when nothing is left
+/// (`123`, `日本`, `__`), and `unique_name` then uses `Rec`. S-8 (spec
+/// v0.28.0-beta) requires a record name to match `[A-Za-z_][A-Za-z0-9_]*`;
+/// this is omnist-py's `_identifier` (`éclair` -> `clair`, `a b` -> `a_b`).
 fn identifier(s: &str) -> String {
     let out: String = s
         .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
         .collect();
-    let trimmed = out.trim_start_matches(|c: char| c.is_ascii_digit() || c == '_');
-    if trimmed.is_empty() {
-        out
-    } else {
-        trimmed.to_string()
-    }
+    out.trim_start_matches(|c: char| c.is_ascii_digit() || c == '_')
+        .to_string()
 }
 
 #[cfg(test)]

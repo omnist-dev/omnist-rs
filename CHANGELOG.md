@@ -9,8 +9,22 @@ the public API, as at 0.5.0-alpha. Track 2 is **304 pass, 0 fail, 34 skip of
 338**; Track 1 19 / 19. The only pin for the rules below is
 `omnist/tests/spec_v028.rs`.
 
+Why a minor bump: previously accepted inputs are now rejected (`Schema::new`
+on a bad name), a writer refuses a schema it used to write (`to_osd` on
+`max = 0`), and `infer` derives record names differently. The spec's new codes
+`schema.invalid-label` and `schema.unknown-record` have no Rust surface (below);
+`schema.invalid-name` at `$` is new in practice.
+
 Changed:
 
+- **`infer` record names are ASCII (S-8).** A record name is derived from a
+  field key: every character outside `[A-Za-z0-9_]` becomes `_`, leading digits
+  and underscores are stripped, the first letter is capitalised, `Rec` is used
+  if nothing is left, and collisions get `2`, `3` suffixes. So `123`, `9`, `日本`
+  -> `Rec`; `éclair` -> `Clair`; `a b` -> `A_b`; ordinary ASCII names are
+  unchanged. Without this, `omnist infer` failed on such keys now that
+  `Schema::new` enforces S-8 (before, a non-identifier name was kept as is).
+  Identical to omnist-py's `_identifier` and omnist-ts.
 - **S-8 at construction.** `Schema::new` rejects a record name or `Ref` target
   name (the root's and every field's) that is not `[A-Za-z_][A-Za-z0-9_]*` with
   `schema.invalid-name` at `$`, the name in the message only. Previously such a
