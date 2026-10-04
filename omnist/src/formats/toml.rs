@@ -322,7 +322,7 @@ fn over_cap_integer_error(text: &str, at: usize, limits: &Resolved) -> OmnistErr
     loop {
         match toml_edit::Document::parse(blank_integer(&mut patched, start)) {
             Ok(doc) => {
-                let path = find_integer(doc.as_table(), at, "$").unwrap_or_else(|| "$".to_string());
+                let path = find_integer(doc.as_table(), at, "$").unwrap_or("$".to_string());
                 return limits.int_digits_error(&path).into();
             }
             Err(e) => {

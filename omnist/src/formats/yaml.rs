@@ -616,7 +616,7 @@ pub fn read_yaml_with(text: &str, options: &YamlReadOptions) -> Result<Doc, Omni
         u64::from(options.effective_max_alias_expansion()),
         u64::from(options.effective_max_expanded_slots()),
     );
-    let limits = options.limits.resolve()?;
+    let limits = options.limits.resolve_validated();
     let events = feed_events(&mut parser, &mut check, limits.max_depth)
         .map_err(|e| scan_error_to_parse_error(&e))?;
     if let Some(e) = check.into_error() {

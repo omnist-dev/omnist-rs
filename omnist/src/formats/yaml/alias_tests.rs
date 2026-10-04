@@ -1043,3 +1043,19 @@ fn a_flat_mapping_of_scalar_entries_is_one_node() {
         other => panic!("not a mapping: {other:?}"),
     }
 }
+
+#[test]
+fn read_options_compare_and_print_their_limits() {
+    let a = YamlReadOptions::default();
+    assert_eq!(
+        a,
+        YamlReadOptions::default().with_limits(crate::limits::Limits::default())
+    );
+    assert_ne!(
+        a,
+        a.with_limits(crate::limits::Limits::default().with_max_depth(3))
+    );
+    assert_ne!(a, a.with_max_alias_expansion(7));
+    assert_ne!(a, a.with_max_expanded_slots(7));
+    assert!(format!("{a:?}").contains("max_depth: 200"));
+}

@@ -204,7 +204,13 @@ impl Limits {
     /// Validated, widened form the readers carry around.
     pub(crate) fn resolve(&self) -> Result<Resolved, DocumentError> {
         self.validate()?;
-        Ok(Resolved::from_limits(self))
+        Ok(self.resolve_validated())
+    }
+
+    /// [`Limits::resolve`] for limits already checked by [`Limits::validate`]
+    /// (the YAML options validate everything up front).
+    pub(crate) fn resolve_validated(&self) -> Resolved {
+        Resolved::from_limits(self)
     }
 }
 

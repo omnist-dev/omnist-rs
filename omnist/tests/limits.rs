@@ -585,6 +585,54 @@ fn yaml_integer_digits_at_limit_accepted_one_past_refused_at_the_integer() {
 }
 
 #[test]
+fn yaml_depth_error_surfaces_from_every_stage_that_walks_the_tree() {
+    // Nesting a little past the limit (within the reader's stack margin) is
+    // refused while the merge keys are resolved, at `$`, whichever shape the
+    // excess nesting has.
+    let l = depth3();
+    // Sequences.
+    assert_eq!(yaml_err("a: [[[[1]]]]\n", &l), want(DEPTH, "$"));
+    // A mapping merged in through a merge key, alone and in a merge sequence.
+    let anchor = "x: &x {b: {c: {d: 1}}}\n";
+    assert_eq!(
+        yaml_err(&format!("{anchor}m: {{<<: *x}}\n"), &l),
+        want(DEPTH, "$")
+    );
+    assert_eq!(
+        yaml_err(&format!("{anchor}m: {{<<: [*x]}}\n"), &l),
+        want(DEPTH, "$")
+    );
+}
+
+#[test]
+fn yaml_read_options_compare_and_print_their_limits() {
+    let a = YamlReadOptions::default();
+    assert_eq!(a, YamlReadOptions::default().with_limits(Limits::default()));
+    assert_ne!(a, a.with_limits(depth3()));
+    assert_ne!(a, a.with_max_alias_expansion(7));
+    assert!(format!("{a:?}").contains("max_depth: 200"));
+    assert_eq!(a.with_limits(depth3()).limits, depth3());
+    // Limits itself: copy, compare, print.
+    let l = depth3();
+    let copy = l;
+    assert_eq!(l, copy);
+    assert_ne!(l, nodes1());
+    assert!(format!("{l:?}").contains("max_depth: 3"));
+}
+
+#[test]
+fn yaml_scalar_errors_surface_from_sequence_items_and_keys() {
+    let l = Limits::default();
+    let seq = read_yaml_with(
+        "a: [ !!int x ]\n",
+        &YamlReadOptions::default().with_limits(l),
+    );
+    assert!(matches!(seq.unwrap_err(), OmnistError::Parse(_)));
+    let key = read_yaml_with("!!int x: 1\n", &YamlReadOptions::default().with_limits(l));
+    assert!(matches!(key.unwrap_err(), OmnistError::Parse(_)));
+}
+
+#[test]
 fn yaml_over_cap_integer_dropped_by_a_duplicate_key_is_still_refused() {
     assert_eq!(yaml_err("n: 1000\nn: 1\n", &digits3()), want(DIGITS, "$"));
 }
