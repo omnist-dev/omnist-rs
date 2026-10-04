@@ -158,7 +158,7 @@ Raise `max_alias_expansion` (up to 10000) for configurations that large.
 `E` bounds the expansion of each node relative to what that node writes. It
 bounds the whole document too: `W(root) <= max x S(root)`. It does **not**
 bound a scalar-heavy document that is large without any aliasing, and the
-node cap below (`MAX_MATERIALIZED_NODES`, 100,000, reported as
+node cap below (`MAX_MATERIALIZED_NODES`, 1,000,000 containers, reported as
 `document.limit.nodes`) is a separate, absolute size limit that the reader
 still applies after the check has accepted the input. Neither limit stands in
 for the other: a document can sit far under the node cap and still be refused
@@ -200,12 +200,14 @@ refused).
 - **`W` is the structural count**, blind to key collisions, so a document whose
   merged keys are overridden can be refused though it materializes fewer
   slots.
-- **The node cap is lower than the default.** This port's own materialization
-  cap is 100,000 nodes (`document.limit.nodes`; it counts keys and values),
-  against 1,000,000 value slots for D-22. An input whose `W(root)` is between
-  the two passes the size limit, and it is the node cap that refuses it. Only
-  above 1,000,000 slots does `document.limit.expanded-size` refuse first, before
-  any of it is built.
+- **The node cap counts containers.** This port's materialization cap is
+  1,000,000 nodes (`document.limit.nodes`), the spec's reference default, and a
+  node is what D-9 counts: a mapping or a sequence. Keys and scalar values are
+  not nodes, so a flat mapping of any number of scalar entries is one node, and
+  the spec's 1,000-service x 60-key compose example (`W` = 62,063) is accepted.
+  An alias is charged for the containers it clones. The cap is not configurable.
+  Through 0.6.0-alpha it was 100,000 and counted keys and values (DIV-11,
+  omnist-rs#189).
 
 ## Native temporal type on read, but no bare-time literal, and a looser input grammar than JSON
 

@@ -112,41 +112,27 @@ use num_bigint::BigInt;
 // module's doc comment. Constant and message constructors now live in
 // [`crate::formats::int_cap`] (issue #49).
 
-/// Bound on the total number of [`Raw`] tree nodes materialized while
-/// rebuilding the event stream (issue #42, "YAML alias/anchor expansion
-/// amplification"): every ordinary node counts once, but a `*alias`
-/// reference counts the *entire size* of the subtree it clones, so a chain
-/// of anchors each referencing the previous generation's alias multiple
-/// times ("billion laughs") is rejected by total materialized size long
-/// before `resolve_merges`'s depth guard (`crate::document::MAX_DEPTH`,
-/// which bounds nesting *depth*, not fan-out) would ever see it -- this
-/// attack reaches enormous size at *shallow*, constant-per-generation
-/// depth, which is exactly what the depth guard cannot catch.
+/// Bound on the total number of nodes materialized while rebuilding the
+/// event stream (issue #42, "YAML alias/anchor expansion amplification").
+/// A node is what the spec's D-9 counts: a **container**, a mapping or a
+/// sequence (an edge list). Keys and scalar values are not nodes, so a flat
+/// mapping of any number of scalar entries is one node (omnist-rs#189).
+/// The number is the spec's reference default, 1 000 000
+/// (docs/02-document-model.md §2.4); it is not configurable.
 ///
-/// Python's reference implementation (`~/dev/omnist/omnist/formats.py`'s
-/// `read_yaml`) calls PyYAML's `yaml.safe_load` directly with no such
-/// guard -- live-confirmed vulnerable to the identical pattern (see the
-/// upstream issue filed against `omnist-dev/omnist` for the Python side),
-/// so there is no existing Python limit to port here. 100,000 nodes is
-/// generous for any legitimate document (even a large real-world config
-/// easily fits in a few thousand nodes) while still keeping the *cost of
-/// detecting an attack* small: this guard's charge-before-clone still has
-/// to walk (and, once approved, clone) whatever it charges, so the ceiling
-/// itself bounds the worst-case rejection cost, not just the worst-case
-/// accepted-document size -- a 1,000,000 ceiling let a debug build's
-/// unoptimized recursive clone of the final, still-materialized generation
-/// take upwards of ten seconds; 100,000 is a round, documented ceiling
-/// with the same generous headroom over real documents while keeping that
-/// worst-case rejection well under a second even in a debug build.
-const MAX_MATERIALIZED_NODES: usize = 100_000;
+/// An `*alias` reference counts every container of the subtree it clones,
+/// so a chain of anchors each referencing the previous generation's alias
+/// multiple times ("billion laughs") is still charged its real, amplified
+/// size. The value-slot amplification of aliases and merges is bounded
+/// separately and first, by D-18 and D-22, before any tree is built.
+const MAX_MATERIALIZED_NODES: usize = 1_000_000;
 
-/// Counts every [`Raw`] node in `node`'s subtree, including `node` itself --
-/// used to charge an alias reference for the full size of the subtree it
-/// clones, not just "one node", so repeated aliasing of a large anchor is
-/// charged its real, amplified cost.
+/// Counts the containers (mappings and sequences) in `node`'s subtree,
+/// including `node` itself when it is one. Used to charge an alias reference
+/// for the containers it clones, not just "one node". Scalars are not nodes.
 fn count_nodes(node: &Raw) -> usize {
     match node {
-        Raw::Scalar(..) => 1,
+        Raw::Scalar(..) => 0,
         Raw::Sequence(items) => 1 + items.iter().map(count_nodes).sum::<usize>(),
         Raw::Mapping(entries) => {
             1 + entries
@@ -330,9 +316,7 @@ impl Builder {
                 self.insert(node, aid, mark);
             }
             Event::Scalar(v, style, aid, tag) => {
-                if !self.charge(1, mark) {
-                    return;
-                }
+                // A scalar is not a node (D-9): it is not charged.
                 self.insert(Raw::Scalar(v, style, tag), aid, mark);
             }
             Event::Alias(id) => {
@@ -2061,7 +2045,7 @@ mod tests {
     /// materialized from a source document only `n` lines long and only
     /// `n` levels deep (well under `crate::document::MAX_DEPTH == 200`).
     /// 24 generations reaches `2^24` (16,777,216) nodes -- comfortably over
-    /// `MAX_MATERIALIZED_NODES` (100,000) so the guard trips partway
+    /// `MAX_MATERIALIZED_NODES` (1,000,000 containers) so the guard trips partway
     /// through, and small enough that even the *unguarded* clone-everything
     /// behavior finishes (rather than hanging or exhausting memory) within
     /// this test's patience, which is what let this be captured red before
@@ -3008,22 +2992,67 @@ mod tests {
         assert!(b.key_stack.is_empty());
     }
 
-    /// Same as above, for `Event::Scalar`.
     #[test]
-    fn scalar_can_itself_trip_the_node_count_guard() {
+    fn n189_the_cap_counts_containers_not_keys_or_scalar_values() {
         let mut b = Builder::new();
-        b.node_count = MAX_MATERIALIZED_NODES;
-        b.on_event_impl(
-            Event::Scalar("x".to_string(), TScalarStyle::Plain, 0, None),
-            test_marker(),
-        );
+        let mark = test_marker();
+        b.on_event_impl(Event::MappingStart(0, None), mark);
+        for i in 0..10 {
+            b.on_event_impl(
+                Event::Scalar(format!("k{i}"), TScalarStyle::Plain, 0, None),
+                mark,
+            );
+            b.on_event_impl(
+                Event::Scalar(format!("v{i}"), TScalarStyle::Plain, 0, None),
+                mark,
+            );
+        }
+        assert_eq!(b.node_count, 1, "one mapping, twenty scalars: one node");
+    }
+
+    #[test]
+    fn n189_the_node_cap_boundary_is_exact() {
+        let mark = test_marker();
+        let mut b = Builder::new();
+        b.node_count = MAX_MATERIALIZED_NODES - 1;
+        b.on_event_impl(Event::MappingStart(0, None), mark);
+        assert!(b.error.is_none(), "exactly the cap is accepted");
+        assert_eq!(b.node_count, MAX_MATERIALIZED_NODES);
+        b.on_event_impl(Event::SequenceStart(0, None), mark);
         assert!(
-            matches!(&b.error, Some(e) if e.message.contains("materializes more than")),
-            "got {:?}",
+            matches!(&b.error, Some(e) if e.code == "document.limit.nodes"),
+            "one past the cap is refused: {:?}",
             b.error
         );
-        // The insert it guards must not have happened.
-        assert!(b.doc_stack.is_empty());
+    }
+
+    #[test]
+    fn n189_the_default_node_cap_is_the_spec_reference_default() {
+        assert_eq!(MAX_MATERIALIZED_NODES, 1_000_000);
+    }
+
+    #[test]
+    fn n189_an_alias_is_charged_for_the_containers_it_clones() {
+        let mut b = Builder::new();
+        let mark = test_marker();
+        // &1 [x, {a: b}] holds a sequence and a mapping: two containers.
+        b.on_event_impl(Event::SequenceStart(1, None), mark);
+        b.on_event_impl(
+            Event::Scalar("x".into(), TScalarStyle::Plain, 0, None),
+            mark,
+        );
+        b.on_event_impl(Event::MappingStart(0, None), mark);
+        b.on_event_impl(
+            Event::Scalar("a".into(), TScalarStyle::Plain, 0, None),
+            mark,
+        );
+        b.on_event_impl(
+            Event::Scalar("b".into(), TScalarStyle::Plain, 0, None),
+            mark,
+        );
+        b.on_event_impl(Event::MappingEnd, mark);
+        b.on_event_impl(Event::SequenceEnd, mark);
+        assert_eq!(b.node_count, 2);
     }
 
     // ---------------------------------------------------------- coverage: writer edge cases
