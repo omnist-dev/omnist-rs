@@ -322,26 +322,38 @@ fn a_scan_error_wins_over_an_earlier_alias_rejection() {
     assert!(matches!(err, OmnistError::Parse(_)), "got {err:?}");
 }
 
-/// 20 scalars; 100 of them; 100 of those: 210101 nodes at E = 2080, so only a
-/// raised maximum lets it past D-18, and the node cap then refuses it.
+/// An empty mapping, 70 of them, 70 of those, 210 of those: 1 043 911
+/// containers. Slot counts stay modest (E about 5 000, under the raised
+/// ceiling), so only the node cap refuses it once D-18 and D-22 are raised.
 fn node_cap_text() -> String {
-    let leaves: Vec<&str> = vec!["x"; 20];
-    let mut text = format!("a0: &a0 [{}]\n", leaves.join(", "));
-    text.push_str(&format!("a1: &a1 [{}]\n", vec!["*a0"; 100].join(", ")));
-    text.push_str(&format!("a2: &a2 [{}]\n", vec!["*a1"; 100].join(", ")));
+    let mut text = String::from(
+        "a0: &a0 {}
+",
+    );
+    for (g, n) in [(1, 70), (2, 70), (3, 210)] {
+        text.push_str(&format!(
+            "a{g}: &a{g} [{}]
+",
+            vec![format!("*a{}", g - 1); n].join(", ")
+        ));
+    }
     text
+}
+
+fn wide_options() -> YamlReadOptions {
+    YamlReadOptions::default()
+        .with_max_alias_expansion(MAX_ALIAS_EXPANSION_CEILING)
+        .with_max_expanded_slots(MAX_EXPANDED_SLOTS_CEILING)
 }
 
 #[test]
 fn the_materialized_node_cap_still_applies_below_the_expansion_limit() {
     let text = node_cap_text();
-    let err = read_at(&text, 10_000).unwrap_err();
+    let err = read_yaml_with(&text, &wide_options()).unwrap_err();
     assert!(
         matches!(&err, OmnistError::Parse(e) if e.code == "document.limit.nodes"),
         "got {err:?}"
     );
-    // At the default it is the expansion limit, and the code says so.
-    assert!(is_alias_rejection(&read_yaml(&text).unwrap_err()));
 }
 
 #[test]
@@ -480,7 +492,7 @@ fn the_registry_codec_and_every_reader_path_apply_the_limit() {
     ));
     // The node cap is reached only below the ceiling.
     assert!(matches!(
-        read_yaml_with(&node_cap_text(), &wide).unwrap_err(),
+        read_yaml_with(&node_cap_text(), &wide_options()).unwrap_err(),
         OmnistError::Parse(e) if e.code == "document.limit.nodes"
     ));
 }
@@ -697,9 +709,8 @@ fn d22_saturation_two_branches_70_levels_is_an_alias_rejection_not_a_wrap() {
 fn d22_the_memory_bomb_is_refused_by_size_at_the_default_without_being_built() {
     // 40 000 containers each holding one alias of a 49-slot block: every E is
     // 25.5 (under 50), W(root) is about 2 million (over 1 million). The
-    // replay would trip the materialized-node cap first, so seeing
-    // expanded-size here also pins that the check runs before any tree is
-    // built.
+    // check runs before any tree is built: seeing expanded-size here pins
+    // that.
     let keys: Vec<String> = (1..=48).map(|i| format!("k{i}: {i}")).collect();
     let mut text = format!("b: &b {{{}}}\n", keys.join(", "));
     for i in 0..40_000 {
@@ -710,19 +721,13 @@ fn d22_the_memory_bomb_is_refused_by_size_at_the_default_without_being_built() {
     let took = start.elapsed();
     assert!(is_size_rejection(&err), "got {err:?}");
     assert!(took < Duration::from_secs(20), "took {took:?}");
-    // Raising the cap past it lets the ratio-clean input reach the node cap.
-    let wide = YamlReadOptions::default().with_max_expanded_slots(MAX_EXPANDED_SLOTS_CEILING);
-    assert!(matches!(
-        read_yaml_with(&text, &wide).unwrap_err(),
-        OmnistError::Parse(e) if e.code == "document.limit.nodes"
-    ));
 }
 
 #[test]
 fn d22_compose_style_documents_stay_far_under_the_default() {
     // The spec's measured W(root): 100 services merging a 20-key block are
-    // 2 223 slots, merging a 60-key block 6 263 (the materialized-node cap
-    // bounds this reader before the 1 000 000 default ever could).
+    // 2 223 slots, merging a 60-key block 6 263 (far under the 1 000 000
+    // default, and the node cap counts only the 101 containers).
     let build = |block: usize| {
         let keys: String = (1..=block).map(|i| format!("  d{i}: {i}\n")).collect();
         let mut text = format!("x-defaults: &d\n{keys}services:\n");
@@ -982,4 +987,58 @@ fn an_empty_carrier_counts_w_zero_and_one_slot_at_the_size_cap_boundary() {
     let err = read_size(text, 1).expect_err("rejected at cap 1");
     assert!(is_size_rejection(&err), "got {err:?}");
     assert_eq!(smallest_accepting_slots(text), 2);
+}
+
+// ----------------------------------------------- node cap counts containers (#189)
+
+/// The spec's D-22 compose example: 1 000 services each merging a 60-key
+/// defaults block (W(root) = 62 063), built programmatically.
+fn compose_text(services: usize, block: usize) -> String {
+    let keys: String = (1..=block)
+        .map(|i| {
+            format!(
+                "  d{i}: {i}
+"
+            )
+        })
+        .collect();
+    let mut text = format!(
+        "x-defaults: &d
+{keys}services:
+"
+    );
+    for i in 0..services {
+        text.push_str(&format!(
+            "  svc{i}:
+    <<: *d
+    image: img{i}
+"
+        ));
+    }
+    text
+}
+
+#[test]
+fn the_spec_compose_example_is_accepted_at_default_limits() {
+    let text = compose_text(1_000, 60);
+    assert_eq!(smallest_accepting_slots(&text), 62_063);
+    let doc = read_yaml(&text).unwrap_or_else(|e| panic!("refused: {e:?}"));
+    assert_eq!(edges_under(&doc, "services"), 1_000);
+}
+
+#[test]
+fn a_flat_mapping_of_scalar_entries_is_one_node() {
+    let text: String = (0..160_000)
+        .map(|i| {
+            format!(
+                "k{i}: v{i}
+"
+            )
+        })
+        .collect();
+    let doc = read_yaml(&text).unwrap_or_else(|e| panic!("refused: {e:?}"));
+    match doc.to_raw() {
+        RawNode::Edges(es) => assert_eq!(es.len(), 160_000),
+        other => panic!("not a mapping: {other:?}"),
+    }
 }

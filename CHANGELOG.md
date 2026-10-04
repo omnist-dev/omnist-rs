@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.6.1-alpha
+
+Fixes the YAML materialization node cap (omnist-rs#189, DIV-11 in the spec's
+divergence ledger). Spec pin unchanged (v0.28.0-beta); vectors unchanged
+(304 pass, 0 fail, 34 skip of 338; fixtures 19 / 19).
+
+Patch bump of the alpha: the change makes the reader accept more (a limit
+raised and a counting rule corrected), adds no public API and no error code,
+and rejects nothing that was accepted before. The last adoption took a minor
+for new codes and new rejections; this is neither.
+
+Changed:
+
+- **The YAML node cap counts containers only and defaults to 1,000,000.** It
+  was 100,000 and counted every key and every scalar value, whereas the spec's
+  D-9 counts nodes: mappings and sequences (an edge list; neither a key nor a
+  scalar value is a node), with a reference default of 1,000,000. So a document
+  the spec's own D-22 rationale says must not be refused was refused with
+  `document.limit.nodes`: the 1,000-service compose example, each service
+  merging a 60-key defaults block (`W` = 62,063), and a plain file of 160,000
+  scalar entries (one node). Both are now accepted. An alias is charged for the
+  containers it clones. The error code, path and message are unchanged, and the
+  cap is still not configurable. Depth (200) and the D-18 / D-22 limits are
+  untouched; a 1,000,000-container document is accepted and the next container
+  is refused.
+
 ## 0.6.0-alpha
 
 Adopts omnist-spec **v0.28.0-beta** (was v0.27.0-beta; still 338 vectors, none
