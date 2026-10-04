@@ -260,7 +260,12 @@ Every mapping key is run through the same implicit-type resolver as
 values, matching PyYAML: a key like `on:` is rejected (it resolves to
 `Bool(true)`, not a string), and so is any other non-string-resolving key
 shape (int-, float-, sexagesimal-shaped, `null`-shaped). The rejection is
-a `DocumentError` at path `"$"` with a Python-parity message (e.g.
+a `DocumentError` (`document.unlabeled-element`) at the Document path of
+the mapping that holds the key (`$` for the top-level mapping, `$.a` for
+`a: {on: 1}`, `$.a.b` deeper, and for a mapping inside a sequence the index
+appears only when the label repeats, E-10: `$.a` for `a: [{on: 1}]`, `$.a[1]`
+for `a: [{x: 1}, {on: 1}]`; through 0.7.0-alpha it was `$` at every depth),
+with a Python-parity message (e.g.
 `object key True is not a string`, `object key 1.0 is not a string` --
 including keeping the `.0` on whole-number floats). Ordinary string keys,
 and non-boolean words like bare `y`/`n`, are unaffected. Confirmed by

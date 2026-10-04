@@ -641,7 +641,7 @@ fn non_string_scalar_is_flagged_value_stringified() {
     assert!(
         rep.adjustments()
             .iter()
-            .any(|a| a.code == "value.stringified"),
+            .any(|a| a.code == "format.value-stringified"),
         "{rep:?}"
     );
 }
@@ -660,14 +660,14 @@ fn bool_and_float_scalars_are_also_flagged_value_stringified() {
     let count = rep
         .adjustments()
         .iter()
-        .filter(|a| a.code == "value.stringified")
+        .filter(|a| a.code == "format.value-stringified")
         .count();
     assert_eq!(count, 2, "{rep:?}");
 }
 
 #[test]
 fn a_string_that_looks_like_a_number_is_not_flagged() {
-    // A `Scalar::Str` is never flagged `value.stringified` -- it's already
+    // A `Scalar::Str` is never flagged `format.value-stringified` -- it's already
     // a string, nothing is being stringified. This is true regardless of
     // what the string's text looks like, since read_xml never re-types on
     // looks (omnist-rs#86).
@@ -676,7 +676,7 @@ fn a_string_that_looks_like_a_number_is_not_flagged() {
     assert!(
         !rep.adjustments()
             .iter()
-            .any(|a| a.code == "value.stringified" || a.code == "string.ambiguous"),
+            .any(|a| a.code == "format.value-stringified" || a.code == "string.ambiguous"),
         "{rep:?}"
     );
 }
@@ -688,7 +688,7 @@ fn ordinary_string_is_not_flagged_value_stringified() {
     assert!(
         !rep.adjustments()
             .iter()
-            .any(|a| a.code == "value.stringified")
+            .any(|a| a.code == "format.value-stringified")
     );
 }
 
@@ -709,7 +709,7 @@ fn null_leaf_writes_as_empty_element_and_is_reported() {
 fn round_trips_string_leaves() {
     // omnist-rs#86: a non-string scalar (int/bool/float) no longer
     // round-trips through XML at all -- it reads back as a string (see the
-    // `value.stringified` tests above) -- so the meaningful round-trip
+    // `format.value-stringified` tests above) -- so the meaningful round-trip
     // guarantee left for `read_xml`/`write_xml` alone (no schema) is over
     // string leaves only.
     let doc = Doc::from_raw(edges(vec![(
