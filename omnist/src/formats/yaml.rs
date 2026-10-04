@@ -2055,10 +2055,10 @@ mod tests {
 
     /// `(code, path)` of the Document error `read_yaml` raises for `text`.
     fn doc_diag(text: &str) -> (String, String) {
-        match read_yaml(text).unwrap_err() {
-            OmnistError::Document(e) => (e.code.unwrap_or_default(), e.path),
-            other => panic!("expected a DocumentError, got {other:?}"),
-        }
+        use OmnistError as E;
+        let err = read_yaml(text).unwrap_err();
+        let E::Document(e) = err else { panic!() };
+        (e.code.unwrap_or_default(), e.path)
     }
 
     fn unlabeled(path: &str) -> (String, String) {
