@@ -23,13 +23,13 @@ assert!(doc.eq_doc(&doc2));
 
 ## No `null` -- the one lossy TOML adjustment
 
-TOML has no `null` at all. Writing a null-valued field drops the field
-entirely (`{"a": 1, "b": null}` writes as `a = 1\n`, no trace of `b`); a
-null inside an array drops just that element, shifting later elements down.
-Each drop is recorded as a `null.omitted`/`Severity::Warning` adjustment,
-live-confirmed against `tomli_w.dumps` (Python's reference TOML writer) to
-match exactly, path-for-path. `strict` mode raises even though the severity
-is only `Warning`.
+TOML has no `null` at all. Writing a node that contains a null fails the write
+unconditionally with `write.unsupported-value` (spec sections 8.3.8 and 8.3.9),
+whatever `strict` says: dropping the field, as this port once did and recorded
+as a `null.omitted` warning, erased the edge's existence with no trace on
+read-back (omnist-rs#160 retired that behaviour). `null.omitted` is now emitted
+only by the XML writer, and is not a spec code; see
+[XML](xml.md#null-is-written-as-an-empty-element-nullomitted-is-not-a-spec-code).
 
 ## Integer digit cap, and a real, external `i64` ceiling from `toml_edit`
 

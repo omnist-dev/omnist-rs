@@ -204,7 +204,7 @@ fn arb_object_value(depth: u32) -> impl Strategy<Value = Value> {
 
 /// XML-only leaf generator (omnist-rs#93): since omnist-rs#86, `Str` is
 /// the *only* scalar kind `check_xml` accepts as losslessly writable --
-/// `Null`/`Bool`/`Int`/`Float` are all now reported as `value.stringified`
+/// `Null`/`Bool`/`Int`/`Float` are all now reported as `format.value-stringified`
 /// (XML has no native typed literals, so every non-string scalar reads
 /// back as a plain string). `arb_scalar` above is shared by every format's
 /// round-trip property and stays fully general on purpose (JSON/YAML/TOML/

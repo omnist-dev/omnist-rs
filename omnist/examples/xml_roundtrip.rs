@@ -10,7 +10,7 @@ fn main() {
     // `age` is a `Value::Str`, not `Value::Int`: XML text carries no type
     // information (see `docs/formats/xml.md`'s "Text is untyped" section,
     // and `omnist-rs#86`) -- writing a non-string scalar through XML now
-    // honestly reports that it reads back as a string (`value.stringified`),
+    // honestly reports that it reads back as a string (`format.value-stringified`),
     // so this example keeps the round trip lossless by not writing a typed
     // scalar in the first place.
     let mut fields = IndexMap::new();

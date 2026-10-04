@@ -271,7 +271,7 @@ fn convert_schema_conformance_failure_json_shape_has_structured_errors() {
 // `if let Some(rep) = e.report()` branch in `cmd_convert`) needs its own
 // coverage now that NaN (the old exercise for it) fails unconditionally
 // with no report instead -- see the renamed test right below. YAML's
-// NEL-forcing-double-quote adjustment (`string.line-break-char`,
+// NEL-forcing-double-quote adjustment (`format.string-line-break-char`,
 // `Severity::Warning`) is untouched by this PR and still succeeds
 // normally without `--strict`, but `--strict` still raises on *any*
 // adjustment regardless of severity (unchanged, pre-existing behavior),
@@ -320,7 +320,7 @@ fn convert_of_nan_fails_unconditionally_exits_2_regardless_of_strict() {
 // XML target and a genuine still-succeeding warning-severity adjustment.
 // Originally switched to a carriage return (`string.cr_normalized`), but
 // issue #162 retired that code too (CR now round-trips losslessly via
-// `&#13;`, nothing left to report) -- switched again, to `value.stringified`
+// `&#13;`, nothing left to report) -- switched again, to `format.value-stringified`
 // (writing a non-string scalar to XML, untouched by #159/#160/#161/#162),
 // to keep testing the `--report`/`--result-format` machinery on a real
 // non-failing case.
@@ -765,7 +765,7 @@ fn convert_to_oml_compact() {
 // (`write.unsupported-value`, `Severity::Error` when previewed via
 // `check`) instead of succeeding with a warning. Switched to XML's
 // carriage-return normalization (`string.cr_normalized`), but issue #162
-// retired that code too -- switched again, to `value.stringified` (a
+// retired that code too -- switched again, to `format.value-stringified` (a
 // non-string scalar written to XML), still a real `Severity::Warning`
 // adjustment on a write that still succeeds, to keep exercising the same
 // `--report`/`--result-format` machinery.
@@ -803,7 +803,7 @@ fn convert_report_with_a_warning_severity_adjustment_json_and_oml() {
 
 // Was `check_result_format_oml_with_a_warning_adjustment`: same
 // TOML-null -> XML-CR-normalization swap as above, then that -> XML
-// `value.stringified` swap as above, for the same reasons.
+// `format.value-stringified` swap as above, for the same reasons.
 #[test]
 fn check_result_format_oml_with_a_warning_adjustment() {
     let input = fixture("check_warning_oml_in", r#"{"a": 1}"#);
