@@ -45,9 +45,12 @@ skipped, now passes for real).
 
 ## Integer digit cap (arbitrary-precision, matching Python -- issue #104)
 
-A JSON integer literal over **4300 digits** is a `ParseError` (mirrors
-CPython's `sys.set_int_max_str_digits` guard, which fires inside
-`json.loads` before Python ever sees the value). Under that cap, this
+A JSON integer literal over **4300 digits** is a `DocumentError`
+(`document.limit.int-digits`, at the Document path of the integer, for example
+`$.a`; mirrors CPython's `sys.set_int_max_str_digits` guard, which fires inside
+`json.loads` before Python ever sees the value). The cap is
+`Limits::max_int_digits` and `read_json_with` changes it; see
+[Limitations](../limitations.md#safety-limits-and-the-yaml-alias-expansion-factor-d-10-d-11). Under that cap, this
 port's `Scalar::Int`/`Value::Int` hold the value exactly, at any size --
 `num_bigint::BigInt`, not a fixed-width integer -- matching Python's own
 arbitrary-precision `int` with no additional ceiling. (Previously

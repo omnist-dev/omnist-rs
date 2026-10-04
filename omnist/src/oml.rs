@@ -59,9 +59,10 @@
 #[cfg(test)]
 use crate::document::Scalar;
 use crate::document::{self, RawNode};
-use crate::error::{ParseError, WriteError};
+use crate::error::{DocumentError, OmnistError, ParseError, WriteError};
 #[cfg(test)]
 use crate::formats::int_cap::MAX_INT_DIGITS;
+use crate::limits::{Limits, Resolved};
 
 mod parser;
 mod scanner;
@@ -76,20 +77,89 @@ use writer::{write_edges, write_edges_compact, write_scalar};
 /// Supports the full OML-Core grammar, plus OML-Extended raw-string (`'...'`)
 /// and triple-quoted multiline-string (`"""..."""`) spellings -- see the
 /// module doc comment.
+///
+/// Reads under the default [`Limits`]. A safety limit crossed is reported
+/// here, for compatibility, as a [`ParseError`] carrying the `document.limit.*`
+/// code and the text position where it was crossed; [`read_oml_with`] reports
+/// the same failure the way spec E-11 requires, as a
+/// [`crate::error::DocumentError`] with a Document path.
 pub fn read_oml(text: &str) -> Result<RawNode, ParseError> {
-    // D-15/D-21: one leading BOM is stripped, a second is rejected at 1:1.
+    read_oml_resolved(text, &Resolved::DEFAULT).map_err(|e| match e {
+        OmlReadError::Parse(p) => p,
+        OmlReadError::Limit(d, line, col) => {
+            ParseError::new(line, col, d.code.unwrap_or_default(), d.message)
+        }
+    })
+}
+
+/// [`read_oml`] under explicit [`Limits`].
+///
+/// Returns the [`Limits::validate`] error unchanged when the limits are out
+/// of range. Otherwise a syntax error is an [`OmnistError::Parse`] as in
+/// [`read_oml`], and a limit crossed is an [`OmnistError::Document`]
+/// (`document.limit.depth` / `document.limit.nodes` at `$`,
+/// `document.limit.int-digits` at the path of the over-long integer).
+///
+/// ```
+/// use omnist::limits::Limits;
+/// use omnist::oml::read_oml_with;
+///
+/// let limits = Limits::default().with_max_int_digits(3);
+/// assert!(read_oml_with("n: 999\n", &limits).is_ok());
+/// let err = read_oml_with("n: 1000\n", &limits).unwrap_err();
+/// assert_eq!(err.to_string(), "$.n: integer literal exceeds the 3-digit limit (security: \
+///     unbounded-digit int-to-str conversion is superlinear)");
+/// ```
+pub fn read_oml_with(text: &str, limits: &Limits) -> Result<RawNode, OmnistError> {
+    let resolved = limits.resolve()?;
+    read_oml_resolved(text, &resolved).map_err(|e| match e {
+        OmlReadError::Parse(p) => OmnistError::from(p),
+        OmlReadError::Limit(d, _, _) => OmnistError::from(d),
+    })
+}
+
+/// How an OML read can fail: a syntax error, or a safety limit with both its
+/// Document-path form and the text position [`read_oml`] still reports.
+enum OmlReadError {
+    Parse(ParseError),
+    Limit(DocumentError, usize, usize),
+}
+
+fn read_oml_resolved(text: &str, limits: &Resolved) -> Result<RawNode, OmlReadError> {
+    // D-15/D-21: one leading BOM is stripped, a second is rejected at 1:1
     // This is the only place OML strips it (see `crate::bom`).
     let text = crate::bom::strip_leading_bom(text).map_err(|_| {
-        ParseError::new(
+        OmlReadError::Parse(ParseError::new(
             1,
             1,
             "parse.unexpected-token",
             crate::bom::DOUBLED_BOM_MESSAGE,
-        )
+        ))
     })?;
-    let sc = Scanner::new(text);
-    let mut parser = Parser::new(sc)?;
-    parser.parse_document()
+    let sc = Scanner::new(text, limits.max_int_digits);
+    let mut parser = Parser::new(sc, limits).map_err(|e| classify(e, limits))?;
+    let raw = parser.parse_document().map_err(|e| classify(e, limits))?;
+    if let Some(at) = parser.sc.overcap_at {
+        // An integer literal was over the digit cap and was replaced by a
+        // placeholder (see `crate::limits::IntGuard`); building the Document
+        // refuses it at its Document path.
+        let (line, col) = parser.sc.line_col(at);
+        let err = document::Doc::from_raw_resolved(raw, *limits)
+            .expect_err("a placeholder integer is over the cap, so building the Document fails");
+        return Err(OmlReadError::Limit(err, line, col));
+    }
+    Ok(raw)
+}
+
+/// Splits the parser's own limit errors (`document.limit.depth` /
+/// `document.limit.nodes`, raised with a text position) from syntax errors,
+/// giving each limit its `$` Document-path form.
+fn classify(e: ParseError, limits: &Resolved) -> OmlReadError {
+    match e.code.as_str() {
+        "document.limit.depth" => OmlReadError::Limit(limits.depth_error(), e.line, e.col),
+        "document.limit.nodes" => OmlReadError::Limit(limits.nodes_error(), e.line, e.col),
+        _ => OmlReadError::Parse(e),
+    }
 }
 
 /// Render a canonical [`RawNode`] as OML-Core source, pretty-printed with
@@ -141,7 +211,7 @@ impl crate::formats::Codec for Oml {
     const NAME: &'static str = "oml";
 
     fn read(text: &str) -> Result<document::Doc, crate::error::OmnistError> {
-        let raw: RawNode = read_oml(text)?;
+        let raw: RawNode = read_oml_with(text, &Limits::default())?;
         document::Doc::from_raw(raw).map_err(Into::into)
     }
 

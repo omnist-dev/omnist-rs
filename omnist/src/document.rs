@@ -35,19 +35,21 @@ use indexmap::IndexMap;
 use std::fmt;
 
 use crate::error::DocumentError;
+use crate::limits::{Limits, Resolved, int_exceeds};
 
-/// Maximum nesting depth for a Document node (matches Python's `_MAX_DEPTH`).
-pub const MAX_DEPTH: usize = 200;
+/// Default maximum nesting depth for a Document node (matches Python's
+/// `_MAX_DEPTH`). Configurable per read through [`Limits::max_depth`].
+pub const MAX_DEPTH: usize = crate::limits::DEFAULT_MAX_DEPTH as usize;
 
-/// Maximum total node count for a single Document (matches the reference
+/// Default maximum node count for a single Document (matches the reference
 /// default in omnist-spec docs/02-document-model.md Sec2.4: a depth limit
 /// alone doesn't bound a shallow-but-enormous document, e.g. a million
-/// sibling edges at depth 1). Enforced once, in `push`, the single arena
-/// choke point every construction path (`build_node`, `push_raw`) funnels
-/// through -- see omnist-rs#78: previously the only node-count guard in
-/// this crate was scoped narrowly to `formats::yaml`'s anchor/alias
-/// amplification defense, leaving every other construction path unbounded.
-pub const MAX_NODES: usize = 1_000_000;
+/// sibling edges at depth 1). A node is a container (an edge list), as D-9
+/// counts them: keys and scalar values are not nodes. Enforced once, in
+/// `push`, the single arena choke point every construction path
+/// (`build_node`, `push_raw`) funnels through -- see omnist-rs#78.
+/// Configurable per read through [`Limits::max_nodes`].
+pub const MAX_NODES: usize = crate::limits::DEFAULT_MAX_NODES as usize;
 
 /// An index into a [`Doc`]'s arena. Opaque outside this module's crate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -195,18 +197,42 @@ struct Entry {
 /// the tree calls this before creating a node -- see the module-level test
 /// `every_tree_mutating_entry_point_enforces_the_depth_guard` for the audit
 /// that walks every public entry point and confirms each one does.
-pub(crate) fn check_write_depth(depth: usize, path: &str) -> Result<(), DocumentError> {
-    if depth > MAX_DEPTH {
+pub(crate) fn check_write_depth(
+    depth: usize,
+    path: &str,
+    max_depth: usize,
+) -> Result<(), DocumentError> {
+    if depth > max_depth {
         return Err(DocumentError::with_code(
             path,
             "document.limit.depth",
-            format!("nesting exceeds the maximum depth ({MAX_DEPTH})"),
+            format!("nesting exceeds the maximum depth ({max_depth})"),
         ));
     }
     Ok(())
 }
 
-fn join(path: &str, key: &str) -> String {
+/// The node arena plus what the guards need: the count of containers (the
+/// nodes D-9 counts) and the limits the document was built under, so a later
+/// mutation enforces the same ones.
+#[derive(Debug, Clone)]
+struct Arena {
+    entries: Vec<Entry>,
+    containers: usize,
+    limits: Resolved,
+}
+
+impl Arena {
+    fn new(limits: Resolved) -> Arena {
+        Arena {
+            entries: Vec::new(),
+            containers: 0,
+            limits,
+        }
+    }
+}
+
+pub(crate) fn join(path: &str, key: &str) -> String {
     let is_identifier = !key.is_empty()
         && key
             .chars()
@@ -239,7 +265,12 @@ fn child_specs<'a>(
         Value::Array(items) => {
             let mut out = Vec::with_capacity(items.len());
             for (i, item) in items.iter().enumerate() {
-                let ip = format!("{path}[{i}]");
+                // E-10: the index appears only when the label repeats.
+                let ip = if items.len() == 1 {
+                    path.to_string()
+                } else {
+                    format!("{path}[{i}]")
+                };
                 if matches!(item, Value::Array(_)) {
                     return Err(DocumentError::with_code(
                         ip,
@@ -266,12 +297,12 @@ fn child_specs<'a>(
 /// Turn a plain [`Value`] into a canonical node inside `arena`, returning
 /// its [`NodeId`]. Mirrors Python's `build_node`.
 fn build_node(
-    arena: &mut Vec<Entry>,
+    arena: &mut Arena,
     value: &Value,
     path: &str,
     depth: usize,
 ) -> Result<NodeId, DocumentError> {
-    check_write_depth(depth, path)?;
+    check_write_depth(depth, path, arena.limits.max_depth)?;
     match value {
         Value::Object(map) => {
             let mut edges = Vec::new();
@@ -296,7 +327,12 @@ fn build_node(
         // to justify, since those two variants are already handled above.
         Value::Null => push(arena, NodeData::Leaf(Scalar::Null), depth, path),
         Value::Bool(b) => push(arena, NodeData::Leaf(Scalar::Bool(*b)), depth, path),
-        Value::Int(i) => push(arena, NodeData::Leaf(Scalar::Int(i.clone())), depth, path),
+        Value::Int(i) => {
+            if int_exceeds(i, arena.limits.max_int_digits) {
+                return Err(arena.limits.int_digits_error(path));
+            }
+            push(arena, NodeData::Leaf(Scalar::Int(i.clone())), depth, path)
+        }
         Value::Float(x) => push(arena, NodeData::Leaf(Scalar::Float(*x)), depth, path),
         Value::Date(s) => push(arena, NodeData::Leaf(Scalar::Date(s.clone())), depth, path),
         Value::Time(s) => push(arena, NodeData::Leaf(Scalar::Time(s.clone())), depth, path),
@@ -313,34 +349,52 @@ fn build_node(
 /// The shared node-count guard, checked once here since every construction
 /// path (`build_node`, `push_raw`) funnels through this single function.
 fn push(
-    arena: &mut Vec<Entry>,
+    arena: &mut Arena,
     data: NodeData,
     depth: usize,
     path: &str,
 ) -> Result<NodeId, DocumentError> {
-    if arena.len() >= MAX_NODES {
-        return Err(DocumentError::with_code(
-            path,
-            "document.limit.nodes",
-            format!("document exceeds the maximum node count ({MAX_NODES})"),
-        ));
+    if matches!(data, NodeData::Internal(_)) {
+        if arena.containers >= arena.limits.max_nodes {
+            return Err(DocumentError::with_code(
+                path,
+                "document.limit.nodes",
+                format!(
+                    "document exceeds the maximum node count ({})",
+                    arena.limits.max_nodes
+                ),
+            ));
+        }
+        arena.containers += 1;
     }
-    let id = NodeId(arena.len());
-    arena.push(Entry { data, depth });
+    let id = NodeId(arena.entries.len());
+    arena.entries.push(Entry { data, depth });
     Ok(id)
 }
 
 /// A guarded handle on a Document tree: an arena of nodes plus the root.
 #[derive(Debug, Clone)]
 pub struct Doc {
-    arena: Vec<Entry>,
+    arena: Arena,
     root: NodeId,
 }
 
 impl Doc {
     /// Build a `Doc` from a plain [`Value`].
     pub fn of(value: &Value) -> Result<Doc, DocumentError> {
-        let mut arena = Vec::new();
+        Doc::of_resolved(value, Resolved::DEFAULT)
+    }
+
+    /// Build a `Doc` from a plain [`Value`] under explicit [`Limits`]; see
+    /// [`Doc::of`]. Returns the [`Limits::validate`] error unchanged when
+    /// the limits are out of range. The document remembers the limits, so a
+    /// later [`Doc::add`] / [`Doc::set`] enforces the same ones.
+    pub fn of_with(value: &Value, limits: &Limits) -> Result<Doc, DocumentError> {
+        Doc::of_resolved(value, limits.resolve()?)
+    }
+
+    pub(crate) fn of_resolved(value: &Value, limits: Resolved) -> Result<Doc, DocumentError> {
+        let mut arena = Arena::new(limits);
         let root = build_node(&mut arena, value, "$", 0)?;
         Ok(Doc { arena, root })
     }
@@ -355,7 +409,7 @@ impl Doc {
     }
 
     fn entry(&self, id: NodeId) -> &Entry {
-        &self.arena[id.0]
+        &self.arena.entries[id.0]
     }
 
     /// Append an edge `(label, value)` under the node at `at`/`path`. A
@@ -442,7 +496,7 @@ impl Doc {
         path: &str,
         op: &str,
     ) -> Result<&mut Vec<(String, NodeId)>, DocumentError> {
-        match &mut self.arena[at.0].data {
+        match &mut self.arena.entries[at.0].data {
             NodeData::Internal(edges) => Ok(edges),
             NodeData::Leaf(_) => Err(DocumentError::new(path, format!("cannot {op} on a leaf"))),
         }
@@ -752,7 +806,21 @@ impl Doc {
     /// interleaving exactly. Depth-guarded via the same
     /// `check_write_depth` every other construction path uses.
     pub fn from_raw(root: RawNode) -> Result<Doc, DocumentError> {
-        let mut arena = Vec::new();
+        Doc::from_raw_resolved(root, Resolved::DEFAULT)
+    }
+
+    /// [`Doc::from_raw`] under explicit [`Limits`]. Returns the
+    /// [`Limits::validate`] error unchanged when the limits are out of range;
+    /// otherwise a limit crossed is `document.limit.depth` /
+    /// `document.limit.nodes` at `$` or `document.limit.int-digits` at the
+    /// path of the over-long integer (E-11). The document remembers the
+    /// limits.
+    pub fn from_raw_with(root: RawNode, limits: &Limits) -> Result<Doc, DocumentError> {
+        Doc::from_raw_resolved(root, limits.resolve()?)
+    }
+
+    pub(crate) fn from_raw_resolved(root: RawNode, limits: Resolved) -> Result<Doc, DocumentError> {
+        let mut arena = Arena::new(limits);
         let root_id = push_raw(&mut arena, root, 0)?;
         Ok(Doc {
             arena,
@@ -824,23 +892,61 @@ impl Doc {
     }
 }
 
-fn push_raw(arena: &mut Vec<Entry>, node: RawNode, depth: usize) -> Result<NodeId, DocumentError> {
-    // Path information isn't meaningful during a from-source OML parse (no
-    // dotted-key path exists yet), so a fixed placeholder is used here --
-    // matching the depth guard's own error message, which never mentions
-    // path for depth violations anyway (see `check_write_depth`).
-    check_write_depth(depth, "$")?;
+fn push_raw(arena: &mut Arena, node: RawNode, depth: usize) -> Result<NodeId, DocumentError> {
+    // Depth and node count are properties of the whole document and carry
+    // path `$` (E-11, the `document-model/limits` vectors); an over-long
+    // integer carries its own path, spliced in as the error unwinds.
+    if depth > arena.limits.max_depth {
+        return Err(arena.limits.depth_error());
+    }
     match node {
-        RawNode::Leaf(s) => push(arena, NodeData::Leaf(s), depth, "$"),
+        RawNode::Leaf(s) => {
+            if let Scalar::Int(i) = &s
+                && int_exceeds(i, arena.limits.max_int_digits)
+            {
+                return Err(arena.limits.int_digits_error("$"));
+            }
+            push(arena, NodeData::Leaf(s), depth, "$")
+        }
         RawNode::Edges(edges) => {
-            let mut out = Vec::with_capacity(edges.len());
-            for (label, child) in edges {
-                let cid = push_raw(arena, child, depth + 1)?;
-                out.push((label, cid));
+            let mut out: Vec<(String, NodeId)> = Vec::with_capacity(edges.len());
+            let mut rest = edges.into_iter();
+            while let Some((label, child)) = rest.next() {
+                match push_raw(arena, child, depth + 1) {
+                    Ok(cid) => out.push((label, cid)),
+                    Err(e) => {
+                        return Err(splice_edge_path(e, &label, &out, rest.map(|(l, _)| l)));
+                    }
+                }
             }
             push(arena, NodeData::Internal(out), depth, "$")
         }
     }
+}
+
+/// Prefixes the path of an over-long-integer error with the edge it
+/// unwinds through: `.label`, plus `[i]` when the label occurs more than
+/// once in the node (E-10). `done` are the edges already built, `after` the
+/// labels still to come; together with `label` they are the whole node.
+/// Other limit errors stay at `$`.
+fn splice_edge_path(
+    mut e: DocumentError,
+    label: &str,
+    done: &[(String, NodeId)],
+    after: impl Iterator<Item = String>,
+) -> DocumentError {
+    if e.code.as_deref() != Some("document.limit.int-digits") {
+        return e;
+    }
+    let before = done.iter().filter(|(l, _)| l == label).count();
+    let later = after.filter(|l| l == label).count();
+    let index = if before + later > 0 {
+        format!("[{before}]")
+    } else {
+        String::new()
+    };
+    e.path = format!("${}{index}{}", join("", label), &e.path[1..]);
+    e
 }
 
 #[cfg(test)]
@@ -928,7 +1034,16 @@ mod tests {
         )]);
         let err = Doc::of(&v).unwrap_err();
         assert!(err.message.contains("array of arrays"));
-        assert_eq!(err.path, "$.a[0]");
+        // E-10: the label occurs once, so no index.
+        assert_eq!(err.path, "$.a");
+        let two = obj(&[(
+            "a",
+            Value::Array(vec![
+                Value::Array(vec![Value::Int((1).into())]),
+                Value::Array(vec![Value::Int((2).into())]),
+            ]),
+        )]);
+        assert_eq!(Doc::of(&two).unwrap_err().path, "$.a[0]");
     }
 
     // -- depth guard: max-depth boundary ---------------------------------
@@ -952,13 +1067,16 @@ mod tests {
     //
     // A shallow document can still be enormous -- depth alone doesn't bound
     // total memory, e.g. a single label repeated a million times is depth 1.
-    // `wide(n)` builds `{"a": [0, 0, ..., 0]}` with `n` array elements, for
-    // a total node count of `n + 1` (the root object, plus one leaf per
+    // `wide(n)` builds `{"a": [{}, {}, ..., {}]}` with `n` empty objects, for
+    // a total node count of `n + 1` (the root object, plus one container per
     // array element -- the array itself desugars into repeated edges, not
-    // its own node).
+    // its own node; scalar leaves are not nodes, D-9).
 
     fn wide(n: usize) -> Value {
-        obj(&[("a", Value::Array(vec![Value::Int((0).into()); n]))])
+        obj(&[(
+            "a",
+            Value::Array(vec![Value::Object(Default::default()); n]),
+        )])
     }
 
     #[test]
@@ -1254,7 +1372,10 @@ mod tests {
         // the `path["key"]` form, not `path.key`.
         let v = obj(&[(
             "1bad",
-            Value::Array(vec![Value::Array(vec![Value::Int((1).into())])]),
+            Value::Array(vec![
+                Value::Array(vec![Value::Int((1).into())]),
+                Value::Array(vec![Value::Int((2).into())]),
+            ]),
         )]);
         let err = Doc::of(&v).unwrap_err();
         assert_eq!(err.path, "$[\"1bad\"][0]");

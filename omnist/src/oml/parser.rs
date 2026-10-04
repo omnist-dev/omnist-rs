@@ -5,21 +5,24 @@
 //! rationale (issue #10).
 
 use super::scanner::{Scanner, TemporalKind, TokKind};
-use crate::document::{self, RawNode, Scalar};
+use crate::document::{RawNode, Scalar};
 use crate::error::ParseError;
+use crate::limits::Resolved;
 
 pub(super) const RESERVED: [&str; 3] = ["null", "true", "false"];
 
 pub(super) struct Parser<'a> {
-    sc: Scanner<'a>,
+    pub(super) sc: Scanner<'a>,
     kind: TokKind,
     start: usize,
     end: usize,
     node_count: usize,
+    max_depth: usize,
+    max_nodes: usize,
 }
 
 impl<'a> Parser<'a> {
-    pub(super) fn new(mut sc: Scanner<'a>) -> Result<Self, ParseError> {
+    pub(super) fn new(mut sc: Scanner<'a>, limits: &Resolved) -> Result<Self, ParseError> {
         let (kind, start, end) = sc.next()?;
         Ok(Parser {
             sc,
@@ -27,18 +30,20 @@ impl<'a> Parser<'a> {
             start,
             end,
             node_count: 0,
+            max_depth: limits.max_depth,
+            max_nodes: limits.max_nodes,
         })
     }
 
     fn charge_node(&mut self, pos: usize) -> Result<(), ParseError> {
         self.node_count += 1;
-        if self.node_count > document::MAX_NODES {
+        if self.node_count > self.max_nodes {
             return Err(self.sc.error_at(
                 pos,
                 "document.limit.nodes",
                 format!(
                     "document exceeds the maximum node count ({})",
-                    document::MAX_NODES
+                    self.max_nodes
                 ),
             ));
         }
@@ -212,14 +217,11 @@ impl<'a> Parser<'a> {
     }
 
     fn check_depth(&self, depth: usize) -> Result<(), ParseError> {
-        if depth > document::MAX_DEPTH {
+        if depth > self.max_depth {
             return Err(self.sc.error_at(
                 self.start,
                 "document.limit.depth",
-                format!(
-                    "nesting exceeds the maximum depth ({})",
-                    document::MAX_DEPTH
-                ),
+                format!("nesting exceeds the maximum depth ({})", self.max_depth),
             ));
         }
         Ok(())
@@ -344,7 +346,6 @@ impl<'a> Parser<'a> {
     /// date/time/datetime-*shaped* text), which stays a plain
     /// `Scalar::Str`.
     fn parse_scalar(&mut self) -> Result<RawNode, ParseError> {
-        self.charge_node(self.start)?;
         let (kind, start, end) = self.advance()?;
         match kind {
             TokKind::Str(s) => Ok(RawNode::Leaf(Scalar::Str(s))),

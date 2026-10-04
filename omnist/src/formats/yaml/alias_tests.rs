@@ -351,7 +351,8 @@ fn the_materialized_node_cap_still_applies_below_the_expansion_limit() {
     let text = node_cap_text();
     let err = read_yaml_with(&text, &wide_options()).unwrap_err();
     assert!(
-        matches!(&err, OmnistError::Parse(e) if e.code == "document.limit.nodes"),
+        matches!(&err, OmnistError::Document(e)
+            if e.code.as_deref() == Some("document.limit.nodes") && e.path == "$"),
         "got {err:?}"
     );
 }
@@ -493,7 +494,7 @@ fn the_registry_codec_and_every_reader_path_apply_the_limit() {
     // The node cap is reached only below the ceiling.
     assert!(matches!(
         read_yaml_with(&node_cap_text(), &wide_options()).unwrap_err(),
-        OmnistError::Parse(e) if e.code == "document.limit.nodes"
+        OmnistError::Document(e) if e.code.as_deref() == Some("document.limit.nodes")
     ));
 }
 

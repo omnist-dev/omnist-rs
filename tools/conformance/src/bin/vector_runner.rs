@@ -38,18 +38,25 @@
 //!
 //! ## Skips are only ever E-20 "not yet implemented"
 //!
-//! Two categories exist, both E-20 "not yet implemented" (no E-21
-//! documented divergence applies to this port, and a skip reason is checked
-//! by the `every_skip_reason_is_true_for_its_vector` test against the
-//! vector's own input, so it cannot drift):
+//! One category exists, E-20 "not yet implemented" (no E-21 documented
+//! divergence applies to this port, and a skip reason is checked by the
+//! `every_skip_reason_is_true_for_its_vector` test against the vector's own
+//! input, so it cannot drift):
 //!
-//! 1. `document-model/limits.json` (6): the vector declares
-//!    `declared_max_depth`/`declared_max_nodes`/`declared_max_int_digits`,
-//!    and this port's limits are compile-time constants with no runtime
-//!    configuration surface, so the boundary cannot be pinned.
-//! 2. `extensions-osd-oml/` (28): the OSD-OML extension operations
-//!    (`parse_schema_oml`, `schema_from_document`, `schema_to_document`,
-//!    `write_schema_oml`) have no implementation in this port yet.
+//! `extensions-osd-oml/` (28): the OSD-OML extension operations
+//! (`parse_schema_oml`, `schema_from_document`, `schema_to_document`,
+//! `write_schema_oml`) have no implementation in this port yet.
+//!
+//! **`document-model/limits.json` (6) is not skipped.** A vector there
+//! declares `declared_max_depth`, `declared_max_nodes` or
+//! `declared_max_int_digits`; the runner passes each declared value through
+//! `Limits::max_depth` / `max_nodes` / `max_int_digits` (omnist-rs#181) and
+//! reads with `read_oml_with`, then builds the Document with
+//! `Doc::from_raw_with` under the same limits, so an at-limit vector is
+//! accepted by both stages (D-12) and a one-past vector is refused with the
+//! right code and path. A declared value that is not a `u32` fails the
+//! vector; a declared limit on a bytes input fails it too (it would run
+//! against the default).
 //!
 //! **`formats-yaml/alias-expansion.json` (35) is not skipped.** A vector there
 //! may declare `declared_max_alias_expansion` (D-18) and/or
@@ -78,13 +85,14 @@ use std::process::ExitCode;
 use conformance::referee::compare_schema;
 use omnist::document::{Doc, RawNode, Scalar};
 use omnist::error::OmnistError;
-use omnist::formats::json::{read_json, write_json};
-use omnist::formats::toml::{read_toml, write_toml};
-use omnist::formats::xml::{read_xml_report, write_xml};
+use omnist::formats::json::{read_json, read_json_with, write_json};
+use omnist::formats::toml::{read_toml, read_toml_with, write_toml};
+use omnist::formats::xml::{read_xml_report, read_xml_with, write_xml};
 use omnist::formats::yaml::{YamlReadOptions, read_yaml_with, write_yaml};
 use omnist::infer::infer_with_report;
+use omnist::limits::Limits;
 use omnist::materialize::materialize;
-use omnist::oml::{read_oml, write_oml};
+use omnist::oml::{read_oml, read_oml_with, write_oml};
 use omnist::ops::{compatible_with, equivalent, extract, is_empty, lint};
 use omnist::osd::{parse_schema, to_osd};
 use omnist::report::WriteReport;
@@ -101,19 +109,28 @@ const LIMIT_KEYS: &[&str] = &[
     "declared_max_int_digits",
 ];
 
-/// The E-20 "not yet implemented" skip reason for a vector carrying a
-/// `declared_max_*` key, or `None` if it carries none. The wording depends on
-/// the key, so the reason is true for THAT vector.
-fn limit_skip_reason(input: &Json) -> Option<String> {
-    LIMIT_KEYS
-        .iter()
-        .find(|k| input.get(**k).is_some())
-        .map(|k| {
-            format!(
-                "not yet implemented (E-20): {k} needs a runtime-configurable limit; this \
-                 port's limits are compile-time constants (omnist-rs#181)"
-            )
-        })
+/// The [`Limits`] a vector declares through its `declared_max_*` keys, or
+/// `None` if it declares none. A value that is not a `u32` is an error (never
+/// silently the default, which would turn a boundary vector into a false
+/// pass).
+fn declared_limits(input: &Json) -> Result<Option<Limits>, String> {
+    let mut limits = Limits::default();
+    let mut declared = false;
+    for key in LIMIT_KEYS {
+        let Some(value) = input.get(*key) else {
+            continue;
+        };
+        let Some(n) = value.as_u64().and_then(|n| u32::try_from(n).ok()) else {
+            return Err(format!("{key} is not a u32"));
+        };
+        declared = true;
+        limits = match *key {
+            "declared_max_depth" => limits.with_max_depth(n),
+            "declared_max_nodes" => limits.with_max_nodes(n),
+            _ => limits.with_max_int_digits(n),
+        };
+    }
+    Ok(declared.then_some(limits))
 }
 
 fn suite_dir() -> PathBuf {
@@ -373,9 +390,10 @@ fn cli_format(format: &str) -> Option<Fmt> {
 
 fn run_parse(v: &Json) -> VResult {
     let input = &v["input"];
-    if let Some(reason) = limit_skip_reason(input) {
-        return skip(reason);
-    }
+    let limits = match declared_limits(input) {
+        Ok(l) => l,
+        Err(message) => return fail(message),
+    };
     let format = input["format"].as_str().unwrap_or("oml");
     let source = match source_of(input) {
         Ok(s) => s,
@@ -390,23 +408,47 @@ fn run_parse(v: &Json) -> VResult {
         Source::Text(text) => Some(text.clone()),
         Source::Bytes(_) => None,
     };
+    if limits.is_some() && matches!(source, Source::Bytes(_)) {
+        return fail("a declared limit on a bytes input would run against the default");
+    }
     let result: Result<RawNode, OmnistError> = match (source, format) {
         (Source::Bytes(bytes), "oml") => read_oml_bytes(bytes),
         (Source::Bytes(bytes), other) => match cli_format(other) {
             Some(fmt) => read_document_bytes(fmt, bytes, None).map(|d| d.to_raw()),
             None => return fail(format!("unknown format {other:?}")),
         },
-        (Source::Text(text), "oml") => read_oml(&text).map_err(OmnistError::from),
-        (Source::Text(text), "json") => read_json(&text).map(|d| d.to_raw()),
-        (Source::Text(text), "toml") => read_toml(&text).map(|d| d.to_raw()),
-        (Source::Text(text), "xml") => {
-            read_xml_report(&text, Some(&mut xml_report)).map(|d| d.to_raw())
+        (Source::Text(text), "oml") => match &limits {
+            // The reader, then the Document builder under the same limits: a
+            // document the reader accepts MUST NOT then fail to build (D-12).
+            Some(l) => read_oml_with(&text, l).and_then(|raw| {
+                Doc::from_raw_with(raw.clone(), l)?;
+                Ok(raw)
+            }),
+            None => read_oml(&text).map_err(OmnistError::from),
+        },
+        (Source::Text(text), "json") => match &limits {
+            Some(l) => read_json_with(&text, l),
+            None => read_json(&text),
         }
+        .map(|d| d.to_raw()),
+        (Source::Text(text), "toml") => match &limits {
+            Some(l) => read_toml_with(&text, l),
+            None => read_toml(&text),
+        }
+        .map(|d| d.to_raw()),
+        (Source::Text(text), "xml") => match &limits {
+            Some(l) => read_xml_with(&text, l),
+            None => read_xml_report(&text, Some(&mut xml_report)),
+        }
+        .map(|d| d.to_raw()),
         (Source::Text(text), "yaml") => {
             // D-18: the declared maximum goes through the option, for the
             // vectors that declare one and only those (every other vector
             // reads with the default).
             let mut options = YamlReadOptions::default();
+            if let Some(l) = limits {
+                options = options.with_limits(l);
+            }
             if let Some(declared) = input.get("declared_max_alias_expansion") {
                 match declared.as_u64().and_then(|n| u32::try_from(n).ok()) {
                     Some(n) => options = options.with_max_alias_expansion(n),
@@ -1328,14 +1370,15 @@ mod tests {
     /// freshly measured, not computed by hand.
     ///
     /// Spec v0.28.0-beta, diagnostics compared as (path, code) sets:
-    /// 304 pass, 0 fail, 34 skip of 338.
+    /// 310 pass, 0 fail, 28 skip of 338.
     ///
-    /// - the 34 skips are E-20 "not yet implemented", never a documented
-    ///   divergence: 6 `document-model/limits` (no runtime-configurable
-    ///   limits) and 28 `extensions-osd-oml` (extension not implemented,
-    ///   omnist-rs#175). The 42 `formats-yaml/alias-expansion` vectors (D-18,
-    ///   D-18a, D-22) run, with each declared maximum passed through its
-    ///   option.
+    /// - the 28 skips are E-20 "not yet implemented", never a documented
+    ///   divergence: the `extensions-osd-oml` vectors (extension not
+    ///   implemented, omnist-rs#175). The 6 `document-model/limits` vectors
+    ///   (omnist-rs#181) and the 42 `formats-yaml/alias-expansion` vectors
+    ///   (D-18, D-18a, D-22) run, with each declared maximum passed through
+    ///   its option; the 6 limits vectors were skips (304, 0, 34) until the
+    ///   limits became runtime-configurable.
     ///
     /// History: (170, 0, 34) at v0.9.1-beta / 204 vectors, path-only mode.
     /// At v0.19.0-beta the same code, before any change, was (197, 18, 34)
@@ -1369,7 +1412,7 @@ mod tests {
         let (passed, failed, skipped) = run_all(&suite_dir());
         assert_eq!(
             (passed, failed, skipped),
-            (304, 0, 34),
+            (310, 0, 28),
             "vector pass/fail/skip counts changed -- if this is an intentional fix or a new \
              vector, update the pinned baseline; if not, something regressed"
         );
@@ -1393,7 +1436,7 @@ mod tests {
     }
 
     #[test]
-    fn a_known_runtime_limit_vector_skips() {
+    fn a_known_runtime_limit_vector_passes() {
         let vectors = iter_vectors(&suite_dir());
         let v = vectors
             .iter()
@@ -1401,7 +1444,7 @@ mod tests {
                 nv.vector["name"] == "document-model/limits/depth-at-declared-limit-succeeds"
             })
             .expect("vector exists");
-        assert_eq!(dispatch(&v.vector).status, Status::Skip);
+        assert_eq!(dispatch(&v.vector).status, Status::Pass);
     }
 
     #[test]
@@ -1781,9 +1824,9 @@ mod tests {
                 alias += 1;
                 assert_eq!(r.status, Status::Pass, "{}: {}", v["name"], r.message);
             } else if carries_limit_key {
-                // Every declared-limit vector MUST skip -- never run against
-                // the port's own default.
-                assert_eq!(r.status, Status::Skip, "{}", v["name"]);
+                // Every declared-limit vector MUST run and pass -- against
+                // the limit it declares, never the port's own default.
+                assert_eq!(r.status, Status::Pass, "{}: {}", v["name"], r.message);
                 limits += 1;
                 assert!(
                     v["name"]
@@ -1791,12 +1834,6 @@ mod tests {
                         .unwrap()
                         .starts_with("document-model/limits/")
                 );
-                let key = LIMIT_KEYS
-                    .iter()
-                    .find(|k| input.get(**k).is_some())
-                    .unwrap();
-                assert!(r.message.contains(key), "{}", r.message);
-                assert!(r.message.contains("omnist-rs#181"), "{}", r.message);
             } else if EXTENSION_OPERATIONS.contains(&op) {
                 ext += 1;
                 assert_eq!(r.status, Status::Skip, "{}", v["name"]);
@@ -1812,6 +1849,119 @@ mod tests {
             }
         }
         assert_eq!((limits, alias, ext), (6, 42, 28));
+    }
+
+    /// The declared limits must reach the reader: the one-past vectors only
+    /// pass if they do (a runner that ignored them would accept the input),
+    /// and the at-limit vectors only pass if the limit is not tighter than
+    /// declared. Each key, at-limit and one-past, with the key removed (the
+    /// default limit then governs and the one-past vector's input is
+    /// accepted, so it fails) and with a malformed value (a loud failure, not
+    /// a silent default).
+    #[test]
+    fn the_declared_limit_reaches_the_reader() {
+        let vectors = iter_vectors(&suite_dir());
+        let get = |name: &str| {
+            vectors
+                .iter()
+                .find(|nv| nv.vector["name"] == name)
+                .expect("vector exists")
+                .vector
+                .clone()
+        };
+        for (name, key) in [
+            (
+                "document-model/limits/depth-one-past-declared-limit-fails",
+                "declared_max_depth",
+            ),
+            (
+                "document-model/limits/node-count-one-past-declared-limit-fails",
+                "declared_max_nodes",
+            ),
+            (
+                "document-model/limits/integer-digits-one-past-declared-limit-fails",
+                "declared_max_int_digits",
+            ),
+        ] {
+            let v = get(name);
+            assert_eq!(dispatch(&v).status, Status::Pass, "{name}");
+            let mut undeclared = v.clone();
+            undeclared["input"].as_object_mut().unwrap().remove(key);
+            assert_eq!(
+                dispatch(&undeclared).status,
+                Status::Fail,
+                "{name}: without {key} the default limit accepts the input"
+            );
+            let mut bad = v.clone();
+            bad["input"][key] = json!("three");
+            let r = dispatch(&bad);
+            assert_eq!(r.status, Status::Fail);
+            assert!(r.message.contains(key), "{}", r.message);
+        }
+        // A declared limit on a bytes input would run against the default.
+        let mut bytes = get("document-model/limits/depth-at-declared-limit-succeeds");
+        let hex: String = "a: 1".bytes().map(|b| format!("{b:02x}")).collect();
+        bytes["input"].as_object_mut().unwrap().remove("text");
+        bytes["input"]["bytes_hex"] = json!(hex);
+        let r = dispatch(&bytes);
+        assert_eq!(r.status, Status::Fail);
+        assert!(r.message.contains("bytes input"), "{}", r.message);
+    }
+
+    /// The declared limits also reach the JSON, TOML, XML and YAML readers
+    /// (no suite vector declares one for those formats yet, so synthesize the
+    /// one-past vectors).
+    #[test]
+    fn declared_limits_reach_every_format_reader() {
+        for (format, text, key, n, code, path) in [
+            (
+                "json",
+                r#"{"a":{"b":1}}"#,
+                "declared_max_depth",
+                1,
+                "document.limit.depth",
+                "$",
+            ),
+            (
+                "toml",
+                "[a]\nb = 1\n",
+                "declared_max_nodes",
+                1,
+                "document.limit.nodes",
+                "$",
+            ),
+            (
+                "xml",
+                "<r><a><b/></a></r>",
+                "declared_max_depth",
+                1,
+                "document.limit.depth",
+                "$",
+            ),
+            (
+                "yaml",
+                "n: 1000\n",
+                "declared_max_int_digits",
+                3,
+                "document.limit.int-digits",
+                "$.n",
+            ),
+        ] {
+            let mut input = json!({"format": format, "text": text});
+            input[key] = json!(n);
+            let v = json!({
+                "name": format!("synthetic/{format}"),
+                "operation": "parse",
+                "input": input,
+                "expect": {"ok": false, "diagnostics": [{"path": path, "code": code}]},
+            });
+            let r = dispatch(&v);
+            assert_eq!(r.status, Status::Pass, "{format}: {}", r.message);
+            // Without the declared limit the default accepts the input.
+            let mut undeclared = v.clone();
+            undeclared["input"].as_object_mut().unwrap().remove(key);
+            assert_eq!(dispatch(&undeclared).status, Status::Fail, "{format}");
+        }
     }
 
     /// The declared maximum must reach the reader: the boundary vectors only

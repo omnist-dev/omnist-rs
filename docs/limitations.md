@@ -1,6 +1,6 @@
 # Limitations & stability
 
-## Alpha status: `0.6.1-alpha`, per this project's versioning rule
+## Alpha status: `0.7.0-alpha`, per this project's versioning rule
 
 The Rust port's first feature-complete milestone (issue #28) plus its own
 conformance-test harness against
@@ -52,13 +52,46 @@ types or mixed structures, also wired into the CLI's `infer --allow-any` flag).
 Every limit below is finite, documented here, and reported with its
 `document.limit.*` code (spec section 2.4):
 
-| Limit | Value | Configurable |
+| Limit | Default | Configurable |
 |---|---|---|
-| Maximum nesting depth | 200 | no (compile-time `MAX_DEPTH`) |
-| Maximum node count | 1,000,000 (documents and YAML materialization; a node is a container, not a key or a scalar value) | no |
-| Maximum integer digits | 4,300 | no |
+| Maximum nesting depth | 200 | yes: `Limits::max_depth` (`0` = default, at most 1,000) |
+| Maximum node count | 1,000,000 (a node is a container, not a key or a scalar value) | yes: `Limits::max_nodes` (`0` = default, at most 10,000,000) |
+| Maximum integer digits | 4,300 | yes: `Limits::max_int_digits` (`0` = default, at most 43,000) |
 | Maximum alias expansion factor (YAML) | **50** | yes: `YamlReadOptions::max_alias_expansion` (`0` = default, at most 10000) |
 | Maximum expanded size (YAML, inputs with an alias or merge key) | **1,000,000** value slots | yes: `YamlReadOptions::max_expanded_slots` (`0` = default, at most 10,000,000) |
+
+The first three are `omnist::limits::Limits`, taken by the explicit-limits
+readers `read_oml_with`, `read_json_with`, `read_toml_with`, `read_xml_with`,
+by `YamlReadOptions::with_limits` (for `read_yaml_with`) and by
+`Doc::from_raw_with` / `Doc::of_with`; the plain `read_*` functions use the
+defaults, unchanged. As for the YAML options, `0` selects the default (a zero
+or unset value never widens a limit) and a value above its ceiling is refused,
+not clamped, by `Limits::validate` (an uncoded `DocumentError`). The ceilings
+are this port's own, because the spec recommends none for these three; they
+keep the recursive readers well inside a thread's stack and bound the work a
+caller can opt into. A limit equal to the document's depth, node count or
+digit length accepts it and one past refuses it. A `Doc` remembers the limits
+it was built under, so a later `add` or `set` enforces the same ones.
+`write_oml` and the other writers, which take a bare `RawNode` or an existing
+`Doc`, still refuse nesting past the default depth of 200.
+
+A limit crossed is a `DocumentError` (spec E-11), never a `ParseError`:
+`document.limit.depth` and `document.limit.nodes` carry path `$` (they are
+properties of the whole input, as for `document.limit.expanded-size`), and
+`document.limit.int-digits` carries the Document path of the over-long integer
+(`$.n`, `$.a.n`, and an index only when the label repeats: `$.n[1]`). Through
+0.6.1-alpha the OML scanner and the JSON, TOML and YAML readers raised these as
+a `ParseError` with a `line:col` position. `read_oml`, whose signature is
+unchanged and returns a `ParseError`, still reports them that way, with the
+position; `read_oml_with` and the registry's `oml` format report the Document
+form. A syntax error anywhere in the input wins over an over-long integer.
+
+Two readers have a ceiling of their own below ours: `toml_edit` refuses nesting
+past about 80 inline-table levels and holds every integer in 64 bits, so a
+larger `max_depth` or a `max_int_digits` above 19 does not make the TOML
+reader accept more than `toml_edit` does. The XML reader counts an element as
+a node once it has a child element, so a million leaf elements are one node;
+its text is never an integer, so `max_int_digits` does not touch it.
 
 The alias expansion factor bounds the materialized-to-written value-slot
 ratio of every anchored node, every other mapping and sequence, and the
@@ -79,7 +112,8 @@ options, and neither implies the other. An input with no alias and no merge
 key is exempt however large, which is a cliff by design: a plain file of two
 million slots passes, and adding one alias subjects it to the cap. See
 [YAML](formats/yaml.md#expanded-size-limit-d-22). The YAML node cap counts what
-D-9 counts, containers only, and defaults to the spec's 1,000,000, so the
+D-9 counts, containers only, and defaults to the spec's 1,000,000 (it is
+`Limits::max_nodes`, set through `YamlReadOptions::with_limits`), so the
 spec's own 1,000-service x 60-key compose example (`W` = 62,063) is accepted
 (it was refused with `document.limit.nodes` through 0.6.0-alpha, DIV-11,
 omnist-rs#189). A malformed merge (a scalar

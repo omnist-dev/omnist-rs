@@ -1,5 +1,5 @@
 use super::*;
-use crate::document::{RawNode, Scalar};
+use crate::document::{MAX_DEPTH, RawNode, Scalar};
 
 fn edges(pairs: Vec<(&str, RawNode)>) -> RawNode {
     RawNode::Edges(pairs.into_iter().map(|(l, v)| (l.to_string(), v)).collect())
@@ -1349,25 +1349,33 @@ fn test_xml_pretype_read_xml_with_schema_parse_error() {
 }
 
 #[test]
-fn test_read_xml_node_count_limit_empty_elements() {
-    use crate::document::MAX_NODES;
-    // At limit: 1 doc root + 1 xml root + (MAX_NODES - 2) children = MAX_NODES
-    let at_limit = format!("<root>{}</root>", "<a/>".repeat(MAX_NODES - 2));
-    assert!(read_xml(&at_limit).is_ok());
-
-    // One past limit during event streaming: 1 xml root + MAX_NODES children = MAX_NODES + 1
-    let past_limit = format!("<root>{}</root>", "<a/>".repeat(MAX_NODES));
-    let err = read_xml(&past_limit).unwrap_err();
-    assert!(err.to_string().contains("maximum node count"));
+fn xml_node_count_counts_containers_not_leaf_elements() {
+    // A node is a container (D-9): the document root, plus every element
+    // that has a child element. A million leaf siblings are two nodes.
+    let limits = crate::limits::Limits::default().with_max_nodes(2);
+    let flat = format!("<root>{}</root>", "<a>1</a><b/>".repeat(1000));
+    assert!(read_xml_with(&flat, &limits).is_ok());
+    // A third container is one past the limit, at `$`.
+    for text in [
+        "<root><a><b/></a></root>",
+        "<root><a><b>1</b></a><c/></root>",
+    ] {
+        let err = read_xml_with(text, &limits).unwrap_err();
+        assert!(
+            matches!(&err, OmnistError::Document(e)
+                if e.code.as_deref() == Some("document.limit.nodes") && e.path == "$"),
+            "{text}: {err:?}"
+        );
+    }
 }
 
 #[test]
-fn test_read_xml_node_count_limit_start_elements() {
-    use crate::document::MAX_NODES;
-    // One past limit during event streaming with start elements: 1 xml root + MAX_NODES children
-    let past_limit = format!("<root>{}</root>", "<a>1</a>".repeat(MAX_NODES));
-    let err = read_xml(&past_limit).unwrap_err();
-    assert!(err.to_string().contains("maximum node count"));
+fn xml_default_node_cap_is_one_million_containers() {
+    assert_eq!(
+        crate::limits::Limits::default().effective_max_nodes(),
+        1_000_000
+    );
+    assert_eq!(crate::document::MAX_NODES, 1_000_000);
 }
 
 #[test]

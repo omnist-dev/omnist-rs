@@ -31,7 +31,9 @@
 //!   re-derives the same 4300-digit-cap-vs-genuine-overflow distinction
 //!   `json.rs`/`yaml.rs` already make (see "Integer digit cap" below for
 //!   why this needed hand-written recovery rather than being free from the
-//!   crate).
+//!   crate). The distinction is `Limits::max_int_digits` now, and the
+//!   over-cap error carries the integer's Document path, recovered by
+//!   blanking the literal and parsing again with spans kept.
 //! * **Depth guard, shape-check reuse** -- see their own sections below.
 //!
 //! ## No `null` (the one unrepresentable-value case TOML has)
@@ -200,9 +202,10 @@ use crate::WriteError;
 use crate::document::{Doc, Value};
 use crate::error::{OmnistError, ParseError};
 use crate::formats::float_fmt;
-use crate::formats::int_cap::{MAX_INT_DIGITS, out_of_range_message, over_cap_message};
+use crate::formats::int_cap::out_of_range_message;
 use crate::formats::string_escape::{TOML_ESCAPES, write_quoted};
 use crate::formats::textpos::line_col_bytes;
+use crate::limits::{Limits, Resolved};
 use crate::report::{Severity, WriteReport};
 use indexmap::IndexMap;
 use toml_edit::{Item, TableLike};
@@ -222,6 +225,26 @@ use toml_edit::{Item, TableLike};
 /// [`crate::error::DocumentError`] via [`Doc::of`], matching the other
 /// format readers.
 pub fn read_toml(text: &str) -> Result<Doc, OmnistError> {
+    read_toml_resolved(text, Resolved::DEFAULT)
+}
+
+/// [`read_toml`] under explicit [`Limits`].
+///
+/// Returns the [`Limits::validate`] error unchanged when the limits are out
+/// of range. A limit crossed is a [`crate::error::DocumentError`]
+/// (`document.limit.depth` / `document.limit.nodes` at `$`,
+/// `document.limit.int-digits` at the path of the over-long integer), never
+/// a [`ParseError`].
+///
+/// TOML text is parsed by `toml_edit`, which enforces a recursion cap of its
+/// own (about 80 levels of inline-table nesting) and holds every integer in
+/// 64 bits, so a `max_depth` above that cap, or a `max_int_digits` above 19,
+/// does not make this reader accept anything `toml_edit` refuses.
+pub fn read_toml_with(text: &str, limits: &Limits) -> Result<Doc, OmnistError> {
+    read_toml_resolved(text, limits.resolve()?)
+}
+
+fn read_toml_resolved(text: &str, limits: Resolved) -> Result<Doc, OmnistError> {
     // D-15/D-21: one leading BOM is stripped, a second is rejected at 1:1.
     // toml_edit would reject the second on its own grammar; the pre-check
     // makes that uniform and puts the position/code where the spec says.
@@ -229,16 +252,16 @@ pub fn read_toml(text: &str) -> Result<Doc, OmnistError> {
         .map_err(|_| ParseError::codec_syntax(1, 1, crate::bom::DOUBLED_BOM_MESSAGE))?;
     let parsed: toml_edit::DocumentMut = text
         .parse()
-        .map_err(|e: toml_edit::TomlError| toml_parse_error(text, &e))?;
+        .map_err(|e: toml_edit::TomlError| toml_parse_error(text, &e, &limits))?;
     let value = table_like_to_value(parsed.as_table())?;
-    Ok(Doc::of(&value)?)
+    Ok(Doc::of_resolved(&value, limits).map_err(|e| limits.whole_document(e))?)
 }
 
 /// Turns a `toml_edit` parse failure into this crate's [`ParseError`].
 /// Detects the crate's generic integer-overflow message specially (see
 /// this module's doc comment on the integer digit cap) and otherwise
 /// reports the crate's own message at the failure's line/column.
-fn toml_parse_error(text: &str, e: &toml_edit::TomlError) -> ParseError {
+fn toml_parse_error(text: &str, e: &toml_edit::TomlError, limits: &Resolved) -> OmnistError {
     // `toml_edit::TomlError::span()` is documented as optional, but
     // empirically (see this module's tests) every genuine parse failure --
     // an empty/unquoted key, an unclosed array/string, a missing `=`, an
@@ -249,10 +272,10 @@ fn toml_parse_error(text: &str, e: &toml_edit::TomlError) -> ParseError {
         .span()
         .expect("toml_edit's TomlError always carries a span for a genuine text-parse failure");
     if e.message().contains("overflow") {
-        return toml_overflow_error(text, span);
+        return toml_overflow_error(text, span, limits);
     }
     let (line, col) = line_col_bytes(text, span.start);
-    ParseError::codec_syntax(line, col, format!("invalid TOML: {}", e.message()))
+    ParseError::codec_syntax(line, col, format!("invalid TOML: {}", e.message())).into()
 }
 
 /// Recovers the raw digit run from an integer literal `toml_edit` refused
@@ -265,23 +288,113 @@ fn toml_parse_error(text: &str, e: &toml_edit::TomlError) -> ParseError {
 /// applies uniformly across radixes even though Python's own tomllib
 /// leaves hex/octal/binary literals uncapped (a disclosed divergence,
 /// not a parity claim).
-fn toml_overflow_error(text: &str, span: std::ops::Range<usize>) -> ParseError {
+fn toml_overflow_error(text: &str, span: std::ops::Range<usize>, limits: &Resolved) -> OmnistError {
+    if overflow_digit_count(text, &span) > limits.max_int_digits {
+        return over_cap_integer_error(text, span.start, limits);
+    }
     let (line, col) = line_col_bytes(text, span.start);
     let raw = &text[span];
-    let digits: String = raw.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
-    let digit_count = digits
+    ParseError::codec_syntax(line, col, out_of_range_message("invalid TOML: ", raw)).into()
+}
+
+/// The digit count of the integer literal `toml_edit` refused to parse.
+fn overflow_digit_count(text: &str, span: &std::ops::Range<usize>) -> usize {
+    let digits: String = text[span.clone()]
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect();
+    digits
         .trim_start_matches("0x")
         .trim_start_matches("0X")
-        .len();
-    if digit_count > MAX_INT_DIGITS {
-        return ParseError::new(
-            line,
-            col,
-            "document.limit.int-digits",
-            over_cap_message("invalid TOML: ", digit_count),
-        );
+        .len()
+}
+
+/// Builds the `document.limit.int-digits` error for the over-cap integer
+/// literal starting at byte offset `at`, whose Document path `toml_edit`'s
+/// refusal did not give (it returns no tree). The literal is blanked to `0`
+/// (padded with spaces so every other span keeps its offset) and the text
+/// parsed again, now with spans kept, to find which node starts at `at`. If
+/// the blanked text still fails, that failure is returned instead: a syntax
+/// error elsewhere in the input wins over a limit, as everywhere else.
+fn over_cap_integer_error(text: &str, at: usize, limits: &Resolved) -> OmnistError {
+    let mut patched = text.to_string();
+    let mut start = at;
+    loop {
+        match toml_edit::Document::parse(blank_integer(&mut patched, start)) {
+            Ok(doc) => {
+                let path = find_integer(doc.as_table(), at, "$").unwrap_or_else(|| "$".to_string());
+                return limits.int_digits_error(&path).into();
+            }
+            Err(e) => {
+                let span = e
+                    .span()
+                    .expect("toml_edit's TomlError always carries a span for a text-parse failure");
+                if e.message().contains("overflow")
+                    && overflow_digit_count(&patched, &span) > limits.max_int_digits
+                {
+                    // Another over-cap literal further on: blank it too, so
+                    // that a syntax error after it can still win.
+                    start = span.start;
+                    continue;
+                }
+                return toml_parse_error(&patched, &e, limits);
+            }
+        }
     }
-    ParseError::codec_syntax(line, col, out_of_range_message("invalid TOML: ", raw))
+}
+
+/// Blanks the integer literal starting at `start` in `patched` to `0` plus
+/// spaces (keeping every byte offset), returning the new text.
+fn blank_integer(patched: &mut String, start: usize) -> String {
+    let len = patched[start..]
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '+' || c == '-'))
+        .unwrap_or(patched.len() - start);
+    patched.replace_range(start..start + len, &format!("0{}", " ".repeat(len - 1)));
+    patched.clone()
+}
+
+/// The Document path of the integer starting at byte offset `target`.
+fn find_integer(t: &dyn TableLike, target: usize, path: &str) -> Option<String> {
+    for (k, item) in t.iter() {
+        let kp = crate::document::join(path, k);
+        let found = match item {
+            Item::Value(v) => find_integer_in_value(v, target, &kp),
+            Item::ArrayOfTables(a) => a
+                .iter()
+                .enumerate()
+                .find_map(|(i, t)| find_integer(t, target, &indexed(&kp, i, a.len()))),
+            other => other
+                .as_table_like()
+                .and_then(|t| find_integer(t, target, &kp)),
+        };
+        if found.is_some() {
+            return found;
+        }
+    }
+    None
+}
+
+fn find_integer_in_value(v: &toml_edit::Value, target: usize, path: &str) -> Option<String> {
+    match v {
+        toml_edit::Value::Integer(_) if v.span().map(|s| s.start) == Some(target) => {
+            Some(path.to_string())
+        }
+        toml_edit::Value::Array(arr) => arr
+            .iter()
+            .enumerate()
+            .find_map(|(i, e)| find_integer_in_value(e, target, &indexed(path, i, arr.len()))),
+        toml_edit::Value::InlineTable(t) => find_integer(t, target, path),
+        _ => None,
+    }
+}
+
+/// `path[i]` when the label repeats (`len > 1`), else `path` (E-10).
+fn indexed(path: &str, i: usize, len: usize) -> String {
+    if len > 1 {
+        format!("{path}[{i}]")
+    } else {
+        path.to_string()
+    }
 }
 
 /// Converts a `toml_edit` table (top-level document or inline table) into a
@@ -1240,7 +1353,10 @@ mod tests {
         let err = read_toml(&text).unwrap_err();
         assert!(matches!(
             err,
-            OmnistError::Parse(ref e) if e.message.contains("exceeding the 4300-digit limit")
+            OmnistError::Document(ref e)
+                if e.code.as_deref() == Some("document.limit.int-digits")
+                    && e.path == "$.x"
+                    && e.message.contains("4300-digit limit")
         ));
     }
 
@@ -1250,7 +1366,10 @@ mod tests {
         let err = read_toml(&text).unwrap_err();
         assert!(matches!(
             err,
-            OmnistError::Parse(ref e) if e.message.contains("exceeding the 4300-digit limit")
+            OmnistError::Document(ref e)
+                if e.code.as_deref() == Some("document.limit.int-digits")
+                    && e.path == "$.x"
+                    && e.message.contains("4300-digit limit")
         ));
     }
 
