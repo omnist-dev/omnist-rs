@@ -1442,6 +1442,19 @@ mod tests {
     }
 
     #[test]
+    fn from_raw_with_names_a_repeated_label_in_an_int_digits_path() {
+        let leaf = |i: i64| RawNode::Leaf(Scalar::Int(i.into()));
+        let limits = Limits::default().with_max_int_digits(3);
+        let raw = RawNode::Edges(vec![("n".into(), leaf(1)), ("n".into(), leaf(1000))]);
+        let e = Doc::from_raw_with(raw, &limits).unwrap_err();
+        assert_eq!(e.path, "$.n[1]");
+        let raw = RawNode::Edges(vec![("n".into(), leaf(1000)), ("n".into(), leaf(1))]);
+        assert_eq!(Doc::from_raw_with(raw, &limits).unwrap_err().path, "$.n[0]");
+        let raw = RawNode::Edges(vec![("n".into(), leaf(1000))]);
+        assert_eq!(Doc::from_raw_with(raw, &limits).unwrap_err().path, "$.n");
+    }
+
+    #[test]
     fn from_raw_enforces_the_depth_guard() {
         fn nest_raw(levels: usize) -> RawNode {
             let mut n = RawNode::Leaf(Scalar::Int((0).into()));

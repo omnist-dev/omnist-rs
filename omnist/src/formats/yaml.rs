@@ -2022,6 +2022,26 @@ mod tests {
     }
 
     #[test]
+    fn an_over_long_integer_used_as_a_key_is_refused_by_the_digit_limit() {
+        // Not as a missing label: the digit limit is what refuses it.
+        let options =
+            YamlReadOptions::default().with_limits(Limits::default().with_max_int_digits(3));
+        let err = read_yaml_with("1000: x\n", &options).unwrap_err();
+        assert!(
+            matches!(&err, OmnistError::Document(e)
+                if e.code.as_deref() == Some("document.limit.int-digits") && e.path == "$"),
+            "got {err:?}"
+        );
+        // At the limit it is an ordinary non-string key.
+        let err = read_yaml_with("999: x\n", &options).unwrap_err();
+        assert!(
+            matches!(&err, OmnistError::Document(e)
+                if e.code.as_deref() == Some("document.unlabeled-element")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
     fn i64_min_round_trips_through_yaml() {
         // Regression test for issue #26's fuzz harness finding: the
         // previous `parse_int_literal` stripped the sign, then parsed the
