@@ -964,10 +964,18 @@ fn multibyte_string_content_round_trips_and_error_after_it_reports_correct_line(
 }
 
 #[test]
-fn top_level_brace_document_is_equivalent_to_the_bare_edge_list() {
-    let a = read_oml("a: 1").unwrap();
-    let b = read_oml("{ a: 1 }").unwrap();
-    assert_eq!(a, b);
+fn a_braced_node_is_a_value_not_a_document_and_reads_as_the_bare_edge_list_inside_an_edge() {
+    // omnist-rs#194: `{ a: 1 }` is not a document shape (spec 4.6); the same
+    // node as the value of an edge is, and equals the bare edge list's.
+    let a = read_oml("x: { a: 1 }").unwrap();
+    let b = read_oml("x:\n    a: 1").unwrap_err();
+    assert_eq!(b.code, "parse.bare-word");
+    let c = read_oml("x: {\n  a: 1\n}").unwrap();
+    assert_eq!(a, c);
+    assert_eq!(
+        oml_err("{ a: 1 }"),
+        ("parse.unexpected-token".into(), "1:1".into())
+    );
 }
 
 #[test]
@@ -1060,20 +1068,15 @@ fn multiline_string_decodes_escapes_inside_the_body() {
 }
 
 #[test]
-fn multiline_string_allows_a_run_of_more_than_three_quotes_as_content() {
-    // A run of 4 quotes: the first 3 close the string, the 4th is literal
-    // content of the *next* token attempt -- mirrors the Python reference's
-    // `run >= 3` closing rule (only the first 3 are ever "the delimiter").
-    // 4 trailing quotes: the first 3 close the string, the 4th becomes a
-    // literal `"` appended to the content (mirrors the Python reference).
-    let node = read_oml("a: \"\"\"x\"\"\"\"").unwrap();
-    match node {
-        RawNode::Edges(edges) => match &edges[0].1 {
-            RawNode::Leaf(crate::document::Scalar::Str(s)) => assert_eq!(s, "x\""),
-            other => panic!("expected a string leaf, got {other:?}"),
-        },
-        other => panic!("expected edges, got {other:?}"),
-    }
+fn a_run_of_more_than_three_quotes_closes_after_three_and_the_rest_is_re_tokenized() {
+    // omnist-rs#193 (spec 4.8): the first three quotes close the string; the
+    // fourth is not content but the start of the next token, here an
+    // unterminated string. Pinned in full by
+    // `a_multiline_string_closes_at_the_first_run_of_three_quotes`.
+    assert_eq!(
+        oml_err("a: \"\"\"x\"\"\"\""),
+        ("parse.unterminated-string".to_string(), "1:11".to_string())
+    );
 }
 
 // -- coverage: surrogate-pair escape decoding -------------------------------
@@ -1604,9 +1607,10 @@ fn leftover_content_after_a_top_level_edge_is_trailing_content_but_inside_braces
         oml_err("a: { b: 1 c: 2 }"),
         pos("parse.unexpected-token", "1:11")
     );
+    // A braced node is not a document (omnist-rs#194): rejected at the brace.
     assert_eq!(
         oml_err("{ b: 1 c: 2 }"),
-        pos("parse.unexpected-token", "1:8")
+        pos("parse.unexpected-token", "1:1")
     );
     assert_eq!(oml_err("a: [1] b: 2"), pos("parse.trailing-content", "1:8"));
 }
@@ -1815,4 +1819,107 @@ fn a_skipped_gap_after_the_colon_still_needs_a_value_and_a_separator() {
             "{text:?}"
         );
     }
+}
+
+// -- omnist-rs#193: a multiline string closes at the FIRST run of three quotes -
+
+/// Spec 4.5/4.8: the first three quotes of a run close the string; what is
+/// left of the run is re-tokenized, so a fourth quote opens a new string
+/// (here unterminated), exactly the code and position Python reports.
+#[test]
+fn a_multiline_string_closes_at_the_first_run_of_three_quotes() {
+    let rejected: &[(&str, &str, &str)] = &[
+        // 4 quotes: the fourth opens a string that never ends.
+        ("a: \"\"\"x\"\"\"\"", "parse.unterminated-string", "1:11"),
+        // ... or one that meets a newline.
+        ("a: \"\"\"x\"\"\"\"\n", "parse.control-character", "1:11"),
+        // 5 quotes: the leftover pair is an empty string, then trailing content.
+        ("a: \"\"\"x\"\"\"\"\"", "parse.trailing-content", "1:11"),
+        // 6 quotes: the leftover three open a multiline string.
+        (
+            "a: \"\"\"x\"\"\"\"\"\"",
+            "parse.unterminated-string",
+            "1:11",
+        ),
+        // 7 quotes: three close, three more open one, a seventh is inside it.
+        (
+            "a: \"\"\"x\"\"\"\"\"\"\"",
+            "parse.unterminated-string",
+            "1:11",
+        ),
+        // The same on a second line, after an opening newline.
+        ("a: \"\"\"\nx\"\"\"\"", "parse.unterminated-string", "2:5"),
+        // Inside braces.
+        (
+            "a: {b: \"\"\"x\"\"\"\"}",
+            "parse.unterminated-string",
+            "1:15",
+        ),
+        // An empty multiline string is `""" """` with nothing between;
+        // `"""""""` is the empty string and then a leftover quote.
+        ("a: \"\"\"\"\"\"\"", "parse.unterminated-string", "1:10"),
+    ];
+    for (text, code, pos) in rejected {
+        assert_eq!(
+            oml_err(text),
+            (code.to_string(), pos.to_string()),
+            "{text:?}"
+        );
+    }
+}
+
+/// A run shorter than three inside the body is content; the closing run is
+/// exactly three quotes and ends the string.
+#[test]
+fn quotes_inside_a_multiline_body_are_content_and_the_close_takes_exactly_three() {
+    let cases: &[(&str, &str)] = &[
+        ("a: \"\"\"x\"y\"\"\"", "x\"y"),
+        ("a: \"\"\"x\"\"y\"\"\"", "x\"\"y"),
+        ("a: \"\"\"\"x\"\"\"", "\"x"),
+        ("a: \"\"\"\"\"x\"\"\"", "\"\"x"),
+        ("a: \"\"\"\"\"\"", ""),
+        ("a: \"\"\"\nx\"\"\"", "x"),
+        ("a: \"\"\"x\"\"\"\nb: 1", "x"),
+    ];
+    for (text, body) in cases {
+        let raw = crate::oml::read_oml(text).unwrap_or_else(|e| panic!("{text:?}: {e}"));
+        let crate::document::RawNode::Edges(edges) = raw else {
+            panic!("{text:?}: not a node")
+        };
+        assert_eq!(
+            edges[0].1,
+            crate::document::RawNode::Leaf(crate::document::Scalar::Str(body.to_string())),
+            "{text:?}"
+        );
+    }
+}
+
+// -- omnist-rs#194: a top-level braced node is not a document shape ------------
+
+/// Spec 4.6 allows three document shapes (empty, a node's edges, a lone
+/// scalar). `{a: 1}` is none of them: a value was expected at 1:1, as Python
+/// (omnist#356) and Go report.
+#[test]
+fn a_top_level_braced_node_is_rejected_at_the_brace() {
+    let rejected: &[(&str, &str)] = &[
+        ("{a: 1}", "1:1"),
+        ("{a: 1}\n", "1:1"),
+        ("{}", "1:1"),
+        ("{\n}", "1:1"),
+        ("  {a: 1}", "1:3"),
+        ("\n\n{a: 1}", "3:1"),
+        ("# c\n{a: {b: 1}}", "2:1"),
+        ("; {a: 1}", "1:3"),
+        ("{a: 1}; b: 2", "1:1"),
+    ];
+    for (text, pos) in rejected {
+        assert_eq!(
+            oml_err(text),
+            ("parse.unexpected-token".to_string(), pos.to_string()),
+            "{text:?}"
+        );
+    }
+    // A braced node is still a legal VALUE.
+    assert!(crate::oml::read_oml("a: {b: 1}").is_ok());
+    assert!(crate::oml::read_oml("a: {}").is_ok());
 }

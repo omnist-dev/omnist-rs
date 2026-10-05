@@ -77,8 +77,6 @@ impl<'a> Parser<'a> {
         let node = if matches!(self.kind, TokKind::Eof) {
             self.charge_node(self.start)?;
             RawNode::Edges(vec![])
-        } else if matches!(self.kind, TokKind::LBrace) {
-            self.parse_brace_value(0)?
         } else if self.looks_like_edge() {
             self.charge_node(self.start)?;
             RawNode::Edges(self.parse_node_edges(0, true)?)

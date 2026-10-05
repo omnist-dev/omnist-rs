@@ -289,13 +289,12 @@ impl<'a> Scanner<'a> {
                         j += 1;
                     }
                     if run >= 3 {
-                        // Only the first three quotes close the string;
-                        // any beyond that are literal content (mirrors the
-                        // Python reference's `run >= 3` closing rule).
-                        for _ in 0..(run - 3) {
-                            out.push('"');
-                        }
-                        i += run;
+                        // The string closes at the FIRST run of three
+                        // quotes (spec 4.5, 4.8): only those three are
+                        // consumed, and what is left of the run is
+                        // re-tokenized, so a fourth quote opens a new
+                        // string (omnist-rs#193).
+                        i += 3;
                         self.pos = i;
                         return Ok((TokKind::Str(out), start, i));
                     }
