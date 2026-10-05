@@ -261,7 +261,7 @@ fn read_xml_raw(
                     node_count: 1,
                 };
                 let tag = local_name(e.name());
-                let path = crate::report::child_path("$", &tag, 0);
+                let path = crate::report::child_path("$", &tag, None);
                 refuse_attribute_entities(&e, &mut refusal);
                 record_elem_diagnostics(&e, &path, report.as_deref_mut());
                 let content = parse_content(
@@ -277,7 +277,7 @@ fn read_xml_raw(
             }
             Event::Empty(e) => {
                 let tag = local_name(e.name());
-                let path = crate::report::child_path("$", &tag, 0);
+                let path = crate::report::child_path("$", &tag, None);
                 refuse_attribute_entities(&e, &mut refusal);
                 record_elem_diagnostics(&e, &path, report.as_deref_mut());
                 break RawNode::Edges(vec![(tag, RawNode::Leaf(Scalar::Str(String::new())))]);
@@ -471,6 +471,13 @@ fn parse_content(
     // made a MAX_NODES-sized sibling run O(n^2).
     let mut label_counts: std::collections::HashMap<String, usize> =
         std::collections::HashMap::new();
+    // E-10: a label occurring more than once is indexed on every occurrence,
+    // the first included, but the first occurrence is read before a sibling
+    // shows the label repeats. Its diagnostics are recorded under the bare
+    // path and re-indexed after the loop: label -> (report range of the
+    // first occurrence's subtree, its bare path).
+    let mut firsts: std::collections::HashMap<String, (std::ops::Range<usize>, String)> =
+        std::collections::HashMap::new();
     let mut buf = Vec::new();
     loop {
         buf.clear();
@@ -485,7 +492,9 @@ fn parse_content(
                     .entry(tag.clone())
                     .and_modify(|n| *n += 1)
                     .or_insert(0);
-                let child_path = crate::report::child_path(path, &tag, index);
+                let child_path =
+                    crate::report::child_path(path, &tag, (index > 0).then_some(index));
+                let start = report.as_deref().map_or(0, WriteReport::len);
                 refuse_attribute_entities(&e, refusal);
                 record_elem_diagnostics(&e, &child_path, report.as_deref_mut());
                 let child = parse_content(
@@ -497,6 +506,10 @@ fn parse_content(
                     refusal,
                     report.as_deref_mut(),
                 )?;
+                if index == 0 && report.is_some() {
+                    let end = report.as_deref().map_or(0, WriteReport::len);
+                    firsts.insert(tag.clone(), (start..end, child_path));
+                }
                 children.push((tag, child));
             }
             Event::Empty(e) => {
@@ -506,9 +519,15 @@ fn parse_content(
                     .entry(tag.clone())
                     .and_modify(|n| *n += 1)
                     .or_insert(0);
-                let child_path = crate::report::child_path(path, &tag, index);
+                let child_path =
+                    crate::report::child_path(path, &tag, (index > 0).then_some(index));
+                let start = report.as_deref().map_or(0, WriteReport::len);
                 refuse_attribute_entities(&e, refusal);
                 record_elem_diagnostics(&e, &child_path, report.as_deref_mut());
+                if index == 0 && report.is_some() {
+                    let end = report.as_deref().map_or(0, WriteReport::len);
+                    firsts.insert(tag.clone(), (start..end, child_path));
+                }
                 children.push((tag, RawNode::Leaf(Scalar::Str(String::new()))));
             }
             Event::End(_) => break,
@@ -546,6 +565,13 @@ fn parse_content(
             }
             // Comments/PIs inside an element body: skip.
             _ => {}
+        }
+    }
+    if let Some(rep) = report {
+        for (label, (range, bare)) in firsts {
+            if label_counts[&label] > 0 {
+                rep.reindex_prefix(range, &bare, &format!("{bare}[0]"));
+            }
         }
     }
     if !children.is_empty() {
@@ -832,12 +858,21 @@ fn scan_xml_cursor(
                 rep.add(path, "write.unsupported-value", detail, Severity::Error);
                 return Ok(());
             }
-            let mut counts: IndexMap<&str, usize> = IndexMap::new();
+            let mut totals: IndexMap<&str, usize> = IndexMap::new();
+            for (label, _) in edges {
+                *totals.entry(label.as_str()).or_insert(0) += 1;
+            }
+            let mut seen: IndexMap<&str, usize> = IndexMap::new();
             for (label, child_id) in edges {
-                let entry = counts.entry(label.as_str()).or_insert(0);
-                let i = *entry;
-                *entry += 1;
-                let p = crate::report::child_path(path, label, i);
+                let i = *seen
+                    .entry(label.as_str())
+                    .and_modify(|n| *n += 1)
+                    .or_insert(0);
+                let p = crate::report::child_path(
+                    path,
+                    label,
+                    crate::report::occurrence_index(i, totals[label.as_str()]),
+                );
                 if !is_valid_xml_name(label) {
                     let detail =
                         format!("label {label:?} is not a valid XML name and cannot be written");

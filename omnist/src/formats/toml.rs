@@ -570,7 +570,7 @@ fn check_toml_grouped(node: &Value, path: &str, rep: &mut WriteReport) {
                 match child {
                     Value::Null => {
                         rep.add(
-                            crate::report::child_path(path, label, 0),
+                            crate::report::child_path(path, label, None),
                             "write.unsupported-value",
                             "null value has no TOML representation (TOML has no null token)",
                             Severity::Error,
@@ -578,7 +578,11 @@ fn check_toml_grouped(node: &Value, path: &str, rep: &mut WriteReport) {
                     }
                     Value::Array(items) => {
                         for (i, item) in items.iter().enumerate() {
-                            let p = crate::report::child_path(path, label, i);
+                            let p = crate::report::child_path(
+                                path,
+                                label,
+                                crate::report::occurrence_index(i, items.len()),
+                            );
                             if matches!(item, Value::Null) {
                                 rep.add(
                                     p,
@@ -592,7 +596,7 @@ fn check_toml_grouped(node: &Value, path: &str, rep: &mut WriteReport) {
                         }
                     }
                     other => {
-                        let p = crate::report::child_path(path, label, 0);
+                        let p = crate::report::child_path(path, label, None);
                         check_toml_grouped(other, &p, rep);
                     }
                 }
@@ -600,7 +604,11 @@ fn check_toml_grouped(node: &Value, path: &str, rep: &mut WriteReport) {
         }
         Value::Array(items) => {
             for (i, item) in items.iter().enumerate() {
-                let p = crate::report::child_path(path, "", i);
+                let p = crate::report::child_path(
+                    path,
+                    "",
+                    crate::report::occurrence_index(i, items.len()),
+                );
                 if matches!(item, Value::Null) {
                     rep.add(
                         p,
@@ -657,7 +665,7 @@ fn strip_nulls(node: Value, path: &str) -> Result<Value, WriteError> {
             for (label, child) in map {
                 match child {
                     Value::Null => {
-                        let p = crate::report::child_path(path, &label, 0);
+                        let p = crate::report::child_path(path, &label, None);
                         return Err(crate::report::unsupported_value_error(
                             &p,
                             "null value has no TOML representation (TOML has no null token)",
@@ -665,8 +673,13 @@ fn strip_nulls(node: Value, path: &str) -> Result<Value, WriteError> {
                     }
                     Value::Array(items) => {
                         let mut kept = Vec::with_capacity(items.len());
+                        let count = items.len();
                         for (i, item) in items.into_iter().enumerate() {
-                            let p = crate::report::child_path(path, &label, i);
+                            let p = crate::report::child_path(
+                                path,
+                                &label,
+                                crate::report::occurrence_index(i, count),
+                            );
                             if matches!(item, Value::Null) {
                                 return Err(crate::report::unsupported_value_error(
                                     &p,
@@ -678,7 +691,7 @@ fn strip_nulls(node: Value, path: &str) -> Result<Value, WriteError> {
                         out.insert(label, Value::Array(kept));
                     }
                     other => {
-                        let p = crate::report::child_path(path, &label, 0);
+                        let p = crate::report::child_path(path, &label, None);
                         out.insert(label, strip_nulls(other, &p)?);
                     }
                 }
@@ -847,7 +860,7 @@ mod tests {
         let mut rep = WriteReport::new();
         check_toml_grouped(&arr, "$", &mut rep);
         assert_eq!(rep.adjustments().len(), 1);
-        assert_eq!(rep.adjustments()[0].path, "$.");
+        assert_eq!(rep.adjustments()[0].path, "$.[0]");
     }
 
     #[test]

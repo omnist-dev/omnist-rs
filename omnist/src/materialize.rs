@@ -120,11 +120,21 @@ fn materialize_record(
     };
     let mut out: Vec<(String, RawNode)> = Vec::with_capacity(edges.len());
     let mut counts: indexmap::IndexMap<&str, usize> = indexmap::IndexMap::new();
+    for (label, _) in edges {
+        *counts.entry(label.as_str()).or_insert(0) += 1;
+    }
+    let mut seen: indexmap::IndexMap<&str, usize> = indexmap::IndexMap::new();
     for (label, child) in edges {
-        let i = *counts.entry(label.as_str()).or_insert(0);
-        counts.insert(label.as_str(), i + 1);
+        let i = *seen
+            .entry(label.as_str())
+            .and_modify(|n| *n += 1)
+            .or_insert(0);
         let base = path.len();
-        crate::report::push_child_path(path, label, i);
+        crate::report::push_child_path(
+            path,
+            label,
+            crate::report::occurrence_index(i, counts[label.as_str()]),
+        );
         match rec.field(label) {
             None => {
                 res.add(

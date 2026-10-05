@@ -22,17 +22,19 @@
 
 use crate::error::WriteError;
 
-/// The path-numbering rule every codec scanner applies to a same-label
-/// array's entries: the first occurrence gets the bare path
-/// (`"{path}.{label}"`), later ones are indexed (`"{path}.{label}[{i}]"`).
-/// Lives next to [`Adjustment`], whose `path` field this format feeds.
+/// The path-numbering rule every codec scanner applies (spec E-10): a label
+/// that occurs more than once in a node is indexed on EVERY occurrence, the
+/// first included (`"{path}.{label}[0]"`, `"{path}.{label}[1]"`); a label
+/// that occurs once has no index (`"{path}.{label}"`). `index` is `Some(i)`
+/// exactly when the label repeats ([`occurrence_index`] decides). Lives next
+/// to [`Adjustment`], whose `path` field this format feeds.
 ///
 /// Used by scanners that build the full path eagerly (`toml.rs::strip_nulls`,
-/// `xml.rs::scan_xml_into`, whose own recursion doesn't fit the shared
+/// `xml.rs::scan_xml_cursor`, whose own recursion doesn't fit the shared
 /// `formats::visit_grouped` walker -- see that function's doc comment). The
 /// grouped-`Value` walkers (`json`/`yaml`) instead reuse a single path buffer
 /// via [`push_child_path`], never allocating a `String` per edge.
-pub(crate) fn child_path(path: &str, label: &str, index: usize) -> String {
+pub(crate) fn child_path(path: &str, label: &str, index: Option<usize>) -> String {
     let mut s = String::with_capacity(path.len() + label.len() + 8);
     s.push_str(path);
     push_child_path(&mut s, label, index);
@@ -43,13 +45,21 @@ pub(crate) fn child_path(path: &str, label: &str, index: usize) -> String {
 /// of allocating a new `String`. Callers that walk a whole tree can push a
 /// segment, recurse, then `buf.truncate` back -- one buffer, reused for
 /// every edge, instead of one allocation per edge.
-pub(crate) fn push_child_path(buf: &mut String, label: &str, index: usize) {
+pub(crate) fn push_child_path(buf: &mut String, label: &str, index: Option<usize>) {
     use std::fmt::Write;
     buf.push('.');
     buf.push_str(label);
-    if index != 0 {
+    if let Some(index) = index {
         write!(buf, "[{index}]").expect("writing to a String never fails");
     }
+}
+
+/// The E-10 index of the `i`-th (0-based) occurrence of a label that occurs
+/// `count` times in its node: `Some(i)` when `count > 1`, `None` when the
+/// label occurs once. The count is of the node's edges, never of the
+/// declared cardinality.
+pub(crate) fn occurrence_index(i: usize, count: usize) -> Option<usize> {
+    (count > 1).then_some(i)
 }
 
 /// How surprising/lossy a single [`Adjustment`] is. `strict` mode raises on
@@ -105,6 +115,22 @@ impl WriteReport {
             message: message.into(),
             severity,
         });
+    }
+
+    /// Rewrites the path prefix `from` to `to` on the adjustments recorded
+    /// at positions `range` (those whose path is `from` itself or continues
+    /// it with `.` or `[`). The XML reader uses it to index the first
+    /// occurrence of a label once a later sibling shows the label repeats
+    /// (E-10): the diagnostics of the first occurrence's whole subtree were
+    /// recorded under its bare path.
+    pub(crate) fn reindex_prefix(&mut self, range: std::ops::Range<usize>, from: &str, to: &str) {
+        for a in &mut self.adjustments[range] {
+            if let Some(rest) = a.path.strip_prefix(from)
+                && (rest.is_empty() || rest.starts_with(['.', '[']))
+            {
+                a.path = format!("{to}{rest}");
+            }
+        }
     }
 
     /// All recorded adjustments, in the order they were added.

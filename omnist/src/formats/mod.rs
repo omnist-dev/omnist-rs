@@ -123,7 +123,11 @@ pub(crate) fn visit_grouped(
                         path.truncate(base);
                         for (i, item) in items.iter().enumerate() {
                             let ibase = path.len();
-                            crate::report::push_child_path(path, label, i);
+                            crate::report::push_child_path(
+                                path,
+                                label,
+                                crate::report::occurrence_index(i, items.len()),
+                            );
                             visit_grouped(item, path, f);
                             path.truncate(ibase);
                         }
