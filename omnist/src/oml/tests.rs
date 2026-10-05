@@ -1765,3 +1765,54 @@ fn oml_columns_count_code_points_not_bytes() {
         want("parse.trailing-content", "1:8")
     );
 }
+
+// -- OML-29: a separator after the colon of an edge is insignificant ----------
+
+/// OML-29: after the colon of an edge, a run of spaces, comments, newlines
+/// and `;` is skipped and the value may start later. Each text reads as its
+/// one-line counterpart.
+#[test]
+fn a_gap_after_the_colon_is_skipped() {
+    let cases: &[(&str, &str)] = &[
+        ("a:\n1\n", "a: 1"),
+        ("a: ;1\n", "a: 1"),
+        ("a: # c\n1\n", "a: 1"),
+        ("a:\n{b: 1}\n", "a: {b: 1}"),
+        ("a:\n\n1\n", "a: 1"),
+        ("a: { b:\n1 }\n", "a: {b: 1}"),
+        ("a:\n[1, 2]\n", "a: [1, 2]"),
+        ("a: ;;\n; # c\n\"s\"\nb: 2\n", "a: \"s\"\nb: 2"),
+        ("\"a b\":\n  null\n", "\"a b\": null"),
+        ("a: {\n  b:\n    {c:\n      true}\n}", "a: {b: {c: true}}"),
+    ];
+    for (text, one_line) in cases {
+        assert_eq!(
+            crate::oml::read_oml(text).unwrap(),
+            crate::oml::read_oml(one_line).unwrap(),
+            "{text:?}"
+        );
+    }
+}
+
+/// The gap after a colon licenses no missing separator between edges
+/// (OML-26/27), and a colon with nothing after the gap still fails.
+#[test]
+fn a_skipped_gap_after_the_colon_still_needs_a_value_and_a_separator() {
+    let cases: &[(&str, &str, &str)] = &[
+        ("a:\n1 b: 2\n", "parse.trailing-content", "2:3"),
+        ("a: {b:\n1 c: 2}", "parse.unexpected-token", "2:3"),
+        ("a:\n", "parse.unexpected-token", "2:1"),
+        ("a: ;", "parse.unexpected-token", "1:5"),
+        ("a: # c", "parse.unexpected-token", "1:7"),
+        ("a: {b:\n}", "parse.unexpected-token", "2:1"),
+        // `b` is the value of `a`, the `:` is left over.
+        ("a:\nb: 1\n", "parse.bare-word", "2:1"),
+    ];
+    for (text, code, pos) in cases {
+        assert_eq!(
+            oml_err(text),
+            (code.to_string(), pos.to_string()),
+            "{text:?}"
+        );
+    }
+}
