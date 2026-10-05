@@ -27,13 +27,18 @@
 //! ## Integer digit cap (omnist-ts#54 / oml.rs precedent)
 //!
 //! Live-checked against Python (`omnist.formats.read_json`): a JSON integer
-//! literal over 4300 digits raises `ParseError` (CPython's
+//! literal over 4300 digits raises an error (CPython's
 //! `sys.set_int_max_str_digits` guard fires inside `json.loads` itself,
 //! before `build_node` ever sees a value); under the cap, arbitrary
 //! precision is accepted (`'9' * 4300` reads as a plain Python `int`). This
 //! scanner applies the identical 4300-digit cap *before* attempting to
 //! parse the literal, mirroring `oml.rs`'s `MAX_INT_DIGITS` guard exactly
 //! (same constant, same "reject the digit run before conversion" shape).
+//! The cap is [`crate::limits::Limits::max_int_digits`] (default 4300), and
+//! the error is a [`crate::error::DocumentError`] with code
+//! `document.limit.int-digits` at the integer's Document path (omnist-rs#182),
+//! raised when the Document is built: the scanner swaps an over-cap literal
+//! for a placeholder instead of converting it.
 //! Because this port's `Scalar::Int` is `i64` (max ~19 digits), any literal
 //! over 19 digits fails as "out of range for a 64-bit integer" well before
 //! the 4300-digit cap would ever fire on its own -- the same representational
@@ -47,9 +52,9 @@ use crate::WriteError;
 use crate::document::{Doc, Value};
 use crate::error::{OmnistError, ParseError};
 use crate::formats::float_fmt;
-use crate::formats::int_cap::{MAX_INT_DIGITS, over_cap_message};
 use crate::formats::string_escape::{JSON_ESCAPES, write_quoted};
 use crate::formats::textpos::line_col_bytes;
+use crate::limits::{IntGuard, Limits, Resolved};
 use crate::report::{Severity, WriteReport};
 use indexmap::IndexMap;
 
@@ -66,13 +71,28 @@ use indexmap::IndexMap;
 /// `DocumentError` propagate uncaught alongside its own caught
 /// `json.JSONDecodeError`/`ValueError` -> `ParseError` translation.
 pub fn read_json(text: &str) -> Result<Doc, OmnistError> {
+    read_json_resolved(text, Resolved::DEFAULT)
+}
+
+/// [`read_json`] under explicit [`Limits`].
+///
+/// Returns the [`Limits::validate`] error unchanged when the limits are out
+/// of range. A limit crossed is a [`crate::error::DocumentError`]
+/// (`document.limit.depth` / `document.limit.nodes` at `$`,
+/// `document.limit.int-digits` at the path of the over-long integer), never
+/// a [`ParseError`].
+pub fn read_json_with(text: &str, limits: &Limits) -> Result<Doc, OmnistError> {
+    read_json_resolved(text, limits.resolve()?)
+}
+
+fn read_json_resolved(text: &str, limits: Resolved) -> Result<Doc, OmnistError> {
     // D-15/D-21: one leading BOM is stripped, a second is rejected at 1:1
     // (`parse.codec-syntax`, E-24) before the scanner sees the text.
     let text = crate::bom::strip_leading_bom(text)
         .map_err(|_| ParseError::codec_syntax(1, 1, crate::bom::DOUBLED_BOM_MESSAGE))?;
-    let mut p = Parser::new(text);
+    let mut p = Parser::new(text, &limits);
     p.skip_ws();
-    let value = p.parse_value()?;
+    let value = p.parse_value().map_err(|e| limits.lift_parse_error(e))?;
     p.skip_ws();
     if p.pos < p.n {
         return Err(p
@@ -82,7 +102,11 @@ pub fn read_json(text: &str) -> Result<Doc, OmnistError> {
             )
             .into());
     }
-    Ok(Doc::of(&value)?)
+    let doc = Doc::of_resolved(&value, limits).map_err(|e| limits.whole_document(e))?;
+    // A duplicate key keeps its last value, which can drop an over-cap
+    // literal the tree held a placeholder for.
+    p.guard.finish(&limits)?;
+    Ok(doc)
 }
 
 /// Project a [`Doc`] to JSON text.
@@ -328,10 +352,12 @@ struct Parser<'a> {
     n: usize,
     pos: usize,
     depth: usize,
+    max_depth: usize,
+    guard: IntGuard,
 }
 
 impl<'a> Parser<'a> {
-    fn new(text: &'a str) -> Self {
+    fn new(text: &'a str, limits: &Resolved) -> Self {
         // `pos`/`n` are now byte offsets into `text`, not char indices --
         // this scanner reads UTF-8 lazily (via `peek`/`char_at`, which
         // decode at most one char at a time from the current byte offset)
@@ -345,7 +371,25 @@ impl<'a> Parser<'a> {
             n,
             pos: 0,
             depth: 0,
+            max_depth: limits.max_depth,
+            guard: IntGuard::new(limits.max_int_digits),
         }
+    }
+
+    /// Counts one more level of nesting; past the limit it is the
+    /// `document.limit.depth` error (a `ParseError` here, since the scanner
+    /// has a text position, not a Document path; `read_json_with` lifts it
+    /// to its `$` form).
+    fn enter(&mut self) -> Result<(), ParseError> {
+        self.depth += 1;
+        if self.depth > self.max_depth {
+            return Err(self.limit_error_at(
+                self.pos,
+                "document.limit.depth",
+                format!("nesting exceeds the maximum depth ({})", self.max_depth),
+            ));
+        }
+        Ok(())
     }
 
     fn error_at(&self, pos: usize, msg: String) -> ParseError {
@@ -443,17 +487,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_object(&mut self) -> Result<Value, ParseError> {
-        self.depth += 1;
-        if self.depth > crate::document::MAX_DEPTH {
-            return Err(self.limit_error_at(
-                self.pos,
-                "document.limit.depth",
-                format!(
-                    "nesting exceeds the maximum depth ({})",
-                    crate::document::MAX_DEPTH
-                ),
-            ));
-        }
+        self.enter()?;
         self.expect('{')?;
         let mut map: IndexMap<String, Value> = IndexMap::new();
         self.skip_ws();
@@ -493,17 +527,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_array(&mut self) -> Result<Value, ParseError> {
-        self.depth += 1;
-        if self.depth > crate::document::MAX_DEPTH {
-            return Err(self.limit_error_at(
-                self.pos,
-                "document.limit.depth",
-                format!(
-                    "nesting exceeds the maximum depth ({})",
-                    crate::document::MAX_DEPTH
-                ),
-            ));
-        }
+        self.enter()?;
         self.expect('[')?;
         let mut items = Vec::new();
         self.skip_ws();
@@ -731,12 +755,8 @@ impl<'a> Parser<'a> {
             Ok(Value::Float(v))
         } else {
             let digits = &text[if text.starts_with('-') { 1 } else { 0 }..];
-            if digits.len() > MAX_INT_DIGITS {
-                return Err(self.limit_error_at(
-                    start,
-                    "document.limit.int-digits",
-                    over_cap_message("", digits.len()),
-                ));
+            if digits.len() > self.guard.max() {
+                return Ok(Value::Int(self.guard.placeholder()));
             }
             // Arbitrary-precision (issue #104): the scanner only emits
             // number-shaped ASCII-digit text (with an optional leading
@@ -753,6 +773,7 @@ impl<'a> Parser<'a> {
 mod tests {
     use super::*;
     use crate::document::{Doc, Scalar, Value};
+    use crate::formats::int_cap::MAX_INT_DIGITS;
     use crate::report::Severity;
 
     fn obj(pairs: Vec<(&str, Value)>) -> Value {
@@ -846,7 +867,7 @@ mod tests {
     }
 
     #[test]
-    fn nesting_past_max_depth_is_a_parse_error() {
+    fn nesting_past_max_depth_is_a_document_limit_error_at_the_root() {
         let mut text = String::new();
         for _ in 0..=crate::document::MAX_DEPTH {
             text.push_str(r#"{"a":"#);
@@ -856,7 +877,11 @@ mod tests {
             text.push('}');
         }
         let err = read_json(&text).unwrap_err();
-        assert!(matches!(err, OmnistError::Parse(_)), "got {err:?}");
+        assert!(
+            matches!(&err, OmnistError::Document(e)
+                if e.code.as_deref() == Some("document.limit.depth") && e.path == "$"),
+            "got {err:?}"
+        );
         assert!(err.to_string().contains("maximum depth"));
     }
 
@@ -951,7 +976,10 @@ mod tests {
         let text = format!(r#"{{"a": {}}}"#, "9".repeat(MAX_INT_DIGITS + 1));
         let err = read_json(&text).unwrap_err();
         assert!(
-            matches!(&err, OmnistError::Parse(e) if e.message.contains("4300-digit")),
+            matches!(&err, OmnistError::Document(e)
+                if e.code.as_deref() == Some("document.limit.int-digits")
+                    && e.path == "$.a"
+                    && e.message.contains("4300-digit")),
             "got {err:?}"
         )
     }

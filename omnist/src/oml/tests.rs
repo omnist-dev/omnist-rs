@@ -1485,21 +1485,26 @@ fn test_oml_depth_limit_boundary_and_consistency() {
 
 #[test]
 fn test_read_oml_node_count_limit() {
-    use crate::document::MAX_NODES;
     use crate::oml::read_oml;
 
-    // At the limit: (MAX_NODES - 1) edges + 1 root node = MAX_NODES
-    let at_limit = "a: 0
+    // A node is a container, not a scalar value (D-9): a million flat
+    // scalar edges are one node, so the default cap is reached only by
+    // containers.
+    let flat = "a: 0
 "
-    .repeat(MAX_NODES - 1);
-    assert!(read_oml(&at_limit).is_ok());
-
-    // One past the limit: MAX_NODES edges + 1 root node = MAX_NODES + 1
-    let past_limit = "a: 0
-"
-    .repeat(MAX_NODES);
-    let err = read_oml(&past_limit).unwrap_err();
+    .repeat(1_000_000);
+    assert!(read_oml(&flat).is_ok());
+    let mut nested = String::new();
+    for _ in 0..1_000_000 {
+        nested.push_str("a: {}\n");
+    }
+    // 1 root + 1 000 000 containers is one past the default.
+    let err = read_oml(&nested).unwrap_err();
+    assert_eq!(err.code, "document.limit.nodes");
     assert!(err.to_string().contains("maximum node count"));
+    // The last container that fits: 999 999 + the root.
+    let fits = nested.split_at(nested.len() - "a: {}\n".len()).0;
+    assert!(read_oml(fits).is_ok());
 }
 
 /// A scanner error surfacing at every position the parser advances from:

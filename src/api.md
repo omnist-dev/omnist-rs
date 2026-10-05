@@ -37,7 +37,53 @@ pub const MAX_NODES: usize = 1_000_000;
 ```
 <!-- doc-illustrative -->
 
-Depth and total-node-count guards enforced on every construction path.
+The default depth and node-count guards, enforced on every construction path;
+the limits in force are `omnist::limits::Limits` (below).
+
+```rust
+impl Doc {
+    pub fn of_with(value: &Value, limits: &Limits) -> Result<Doc, DocumentError>;
+    pub fn from_raw_with(root: RawNode, limits: &Limits) -> Result<Doc, DocumentError>;
+}
+```
+<!-- doc-illustrative -->
+
+`Doc::of` and `Doc::from_raw` under explicit limits; the document remembers
+them for later `add`/`set`.
+
+## Safety limits (`omnist::limits`)
+
+```rust
+#[non_exhaustive]
+pub struct Limits { pub max_depth: u32, pub max_nodes: u32, pub max_int_digits: u32 }
+
+impl Limits {
+    pub fn with_max_depth(self, n: u32) -> Self;
+    pub fn with_max_nodes(self, n: u32) -> Self;
+    pub fn with_max_int_digits(self, n: u32) -> Self;
+    pub fn effective_max_depth(&self) -> u32;
+    pub fn effective_max_nodes(&self) -> u32;
+    pub fn effective_max_int_digits(&self) -> u32;
+    pub fn validate(&self) -> Result<(), DocumentError>;
+}
+
+pub const DEFAULT_MAX_DEPTH: u32 = 200;
+pub const MAX_DEPTH_CEILING: u32 = 250;
+pub const DEFAULT_MAX_NODES: u32 = 1_000_000;
+pub const MAX_NODES_CEILING: u32 = 10_000_000;
+pub const DEFAULT_MAX_INT_DIGITS: u32 = 4_300;
+pub const MAX_INT_DIGITS_CEILING: u32 = 43_000;
+```
+<!-- doc-illustrative -->
+
+The three universal limits of spec section 2.4. `0` selects the default; a
+value above its ceiling is refused by `validate`, which every `*_with` entry
+point calls first. The explicit-limits readers are
+`oml::read_oml_with`, `formats::json::read_json_with`,
+`formats::toml::read_toml_with`, `formats::xml::read_xml_with`, and
+`formats::yaml::read_yaml_with` with `YamlReadOptions::with_limits`; the plain
+`read_*` functions use the defaults. See
+[Limitations](limitations.md#safety-limits-and-the-yaml-alias-expansion-factor-d-10-d-11).
 
 ```rust
 pub struct NodeId(/* opaque */);

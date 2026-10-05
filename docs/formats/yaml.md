@@ -158,8 +158,8 @@ Raise `max_alias_expansion` (up to 10000) for configurations that large.
 `E` bounds the expansion of each node relative to what that node writes. It
 bounds the whole document too: `W(root) <= max x S(root)`. It does **not**
 bound a scalar-heavy document that is large without any aliasing, and the
-node cap below (`MAX_MATERIALIZED_NODES`, 1,000,000 containers, reported as
-`document.limit.nodes`) is a separate, absolute size limit that the reader
+node cap below (`Limits::max_nodes`, 1,000,000 containers by default, reported as
+`document.limit.nodes` at `$`) is a separate, absolute size limit that the reader
 still applies after the check has accepted the input. Neither limit stands in
 for the other: a document can sit far under the node cap and still be refused
 for its ratio (a 100-key block aliased 100 times at the document root), and a
@@ -205,7 +205,8 @@ refused).
   node is what D-9 counts: a mapping or a sequence. Keys and scalar values are
   not nodes, so a flat mapping of any number of scalar entries is one node, and
   the spec's 1,000-service x 60-key compose example (`W` = 62,063) is accepted.
-  An alias is charged for the containers it clones. The cap is not configurable.
+  An alias is charged for the containers it clones. The cap is
+`YamlReadOptions::limits.max_nodes` (`with_limits`).
   Through 0.6.0-alpha it was 100,000 and counted keys and values (DIV-11,
   omnist-rs#189).
 
@@ -267,8 +268,10 @@ omnist-rs issue #88, found and fixed alongside #87 above.
 
 ## Integer digit cap
 
-Same 4300-digit cap as `json.rs`/`oml.rs`/`toml.rs`, applied to a plain
-decimal integer scalar's digit run before parsing; arbitrary-precision
+Same 4300-digit cap as `json.rs`/`oml.rs`/`toml.rs` (`Limits::max_int_digits`,
+set through `YamlReadOptions::with_limits`; an over-long integer is a
+`DocumentError` `document.limit.int-digits` at its Document path), applied to a
+plain decimal integer scalar's digit run before parsing; arbitrary-precision
 above that (see [formats/json.md](json.md#integer-digit-cap-arbitrary-precision-matching-python----issue-104)).
 The legacy sexagesimal fold (above) enforces the identical cap on its
 *folded result*, not any one group -- issue #104: an unbounded

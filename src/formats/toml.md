@@ -33,6 +33,12 @@ is only `Warning`.
 
 ## Integer digit cap, and a real, external `i64` ceiling from `toml_edit`
 
+The cap is `Limits::max_int_digits` (default 4300; `read_toml_with` changes it),
+and an over-long literal is a `DocumentError` with code
+`document.limit.int-digits` at the integer's Document path. `toml_edit` refuses
+a literal past `i64` and returns no tree, so this reader recovers the path by
+blanking the literal and parsing the text again with spans kept.
+
 Live-confirmed against `tomllib.loads`: a **decimal** integer literal
 follows the identical 4300-digit `sys.set_int_max_str_digits` cap
 `json.rs`/`yaml.rs` already apply. **Hex/octal/binary literals are a

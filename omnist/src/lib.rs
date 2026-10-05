@@ -18,6 +18,7 @@ pub mod document;
 pub mod error;
 pub mod formats;
 pub mod infer;
+pub mod limits;
 pub mod materialize;
 pub mod oml;
 pub mod ops;

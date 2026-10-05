@@ -102,8 +102,8 @@ use crate::WriteError;
 use crate::document::{Doc, Value};
 use crate::error::{DocumentError, OmnistError, ParseError};
 use crate::formats::float_fmt;
-use crate::formats::int_cap::{MAX_INT_DIGITS, over_cap_message};
 use crate::formats::string_escape::{YAML_ESCAPES, write_quoted};
+use crate::limits::{IntGuard, Limits, Resolved, int_exceeds};
 use crate::report::{Severity, WriteReport};
 use indexmap::IndexMap;
 use num_bigint::BigInt;
@@ -112,20 +112,22 @@ use num_bigint::BigInt;
 // module's doc comment. Constant and message constructors now live in
 // [`crate::formats::int_cap`] (issue #49).
 
-/// Bound on the total number of nodes materialized while rebuilding the
-/// event stream (issue #42, "YAML alias/anchor expansion amplification").
+/// The default bound on the total number of nodes materialized while
+/// rebuilding the event stream (issue #42, "YAML alias/anchor expansion
+/// amplification"); the bound in force is [`Limits::max_nodes`].
 /// A node is what the spec's D-9 counts: a **container**, a mapping or a
 /// sequence (an edge list). Keys and scalar values are not nodes, so a flat
 /// mapping of any number of scalar entries is one node (omnist-rs#189).
 /// The number is the spec's reference default, 1 000 000
-/// (docs/02-document-model.md §2.4); it is not configurable.
+/// (docs/02-document-model.md §2.4); it is [`Limits::max_nodes`].
 ///
 /// An `*alias` reference counts every container of the subtree it clones,
 /// so a chain of anchors each referencing the previous generation's alias
 /// multiple times ("billion laughs") is still charged its real, amplified
 /// size. The value-slot amplification of aliases and merges is bounded
 /// separately and first, by D-18 and D-22, before any tree is built.
-const MAX_MATERIALIZED_NODES: usize = 1_000_000;
+#[cfg(test)]
+const MAX_MATERIALIZED_NODES: usize = crate::limits::DEFAULT_MAX_NODES as usize;
 
 /// Counts the containers (mappings and sequences) in `node`'s subtree,
 /// including `node` itself when it is one. Used to charge an alias reference
@@ -170,10 +172,13 @@ struct Builder {
     /// Running total of [`Raw`] nodes materialized so far -- see
     /// [`MAX_MATERIALIZED_NODES`].
     node_count: usize,
-    /// Set once [`MAX_MATERIALIZED_NODES`] is exceeded; further events are
-    /// ignored (no more work is done building an already-rejected tree) and
-    /// this is surfaced as a [`ParseError`] once parsing finishes.
-    error: Option<ParseError>,
+    /// Set once the node cap ([`Limits::max_nodes`]) is exceeded; further
+    /// events are ignored (no more work is done building an already-rejected
+    /// tree) and this is surfaced as `document.limit.nodes` at `$` once
+    /// parsing finishes.
+    error: Option<DocumentError>,
+    /// The limits in force.
+    limits: Resolved,
     /// Set when an alias refers to an anchor that is not complete yet (a
     /// self-referential definition, D-20): `document.limit.alias-expansion`
     /// at `$`; or when block/flow nesting runs far past
@@ -183,8 +188,9 @@ struct Builder {
 }
 
 impl Builder {
-    fn new() -> Self {
+    fn new(limits: &Resolved) -> Self {
         Builder {
+            limits: *limits,
             doc_stack: Vec::new(),
             key_stack: Vec::new(),
             anchor_map: HashMap::new(),
@@ -200,7 +206,7 @@ impl Builder {
     /// the later `check_write_depth` stages decide exactly as before; only
     /// nesting they would reject anyway is caught here.
     fn too_deep(&self) -> bool {
-        self.doc_stack.len() > crate::document::MAX_DEPTH + 8
+        self.doc_stack.len() > self.limits.max_depth + 8
     }
 
     /// Charges `n` newly-materialized nodes against the running total,
@@ -208,21 +214,21 @@ impl Builder {
     /// exceeds [`MAX_MATERIALIZED_NODES`]. Returns `true` if the caller
     /// should proceed (still under the limit), `false` if it tripped (or
     /// had already tripped) and should skip the work it was about to do.
-    fn charge(&mut self, n: usize, mark: Marker) -> bool {
+    fn charge(&mut self, n: usize, _mark: Marker) -> bool {
         if self.error.is_some() {
             return false;
         }
         self.node_count = self.node_count.saturating_add(n);
-        if self.node_count > MAX_MATERIALIZED_NODES {
-            self.error = Some(ParseError::new(
-                mark.line(),
-                mark.col() + 1,
+        if self.node_count > self.limits.max_nodes {
+            self.error = Some(DocumentError::with_code(
+                "$",
                 "document.limit.nodes",
                 format!(
                     "invalid YAML: document materializes more than \
-                     {MAX_MATERIALIZED_NODES} nodes (security: unbounded anchor/alias \
+                     {} nodes (security: unbounded anchor/alias \
                      expansion can amplify a small document into an enormous tree, \
-                     independent of nesting depth)"
+                     independent of nesting depth)",
+                    self.limits.max_nodes
                 ),
             ));
             return false;
@@ -291,7 +297,7 @@ impl Builder {
                 // or one more indent per line), so a small input could
                 // otherwise build a tree deep enough to overflow the stack
                 // when it is dropped or walked.
-                self.self_reference = Some(depth_error());
+                self.self_reference = Some(self.limits.depth_error());
             }
             Event::SequenceStart(aid, _) => {
                 if !self.charge(1, mark) {
@@ -363,19 +369,6 @@ impl MarkedEventReceiver for Builder {
     }
 }
 
-/// The `document.limit.depth` error at `$`, identical to what
-/// `check_write_depth` reports for the same over-deep input.
-fn depth_error() -> DocumentError {
-    DocumentError::with_code(
-        "$",
-        "document.limit.depth",
-        format!(
-            "nesting exceeds the maximum depth ({})",
-            crate::document::MAX_DEPTH
-        ),
-    )
-}
-
 /// The reference default for the maximum alias expansion factor (spec
 /// §2.4, D-18): the reader rejects any mapping or sequence whose
 /// materialized-to-written value-slot ratio exceeds it. Documented per D-11.
@@ -439,6 +432,9 @@ pub struct YamlReadOptions {
     /// [`MAX_EXPANDED_SLOTS_CEILING`] (10 000 000) are rejected by
     /// [`read_yaml_with`].
     pub max_expanded_slots: u32,
+    /// The safety limits every format shares (nesting depth, node count,
+    /// integer digits; spec section 2.4): see [`Limits`].
+    pub limits: Limits,
 }
 
 impl Default for YamlReadOptions {
@@ -446,6 +442,7 @@ impl Default for YamlReadOptions {
         YamlReadOptions {
             max_alias_expansion: DEFAULT_MAX_ALIAS_EXPANSION,
             max_expanded_slots: DEFAULT_MAX_EXPANDED_SLOTS,
+            limits: Limits::default(),
         }
     }
 }
@@ -464,6 +461,13 @@ impl YamlReadOptions {
     #[must_use]
     pub fn with_max_expanded_slots(mut self, n: u32) -> Self {
         self.max_expanded_slots = n;
+        self
+    }
+
+    /// These options with [`YamlReadOptions::limits`] set to `limits`.
+    #[must_use]
+    pub fn with_limits(mut self, limits: Limits) -> Self {
+        self.limits = limits;
         self
     }
 
@@ -489,7 +493,8 @@ impl YamlReadOptions {
 
     /// Checks the options: [`YamlReadOptions::max_alias_expansion`] must not
     /// exceed [`MAX_ALIAS_EXPANSION_CEILING`], nor
-    /// [`YamlReadOptions::max_expanded_slots`] [`MAX_EXPANDED_SLOTS_CEILING`].
+    /// [`YamlReadOptions::max_expanded_slots`] [`MAX_EXPANDED_SLOTS_CEILING`],
+    /// and [`YamlReadOptions::limits`] must pass [`Limits::validate`].
     /// [`read_yaml_with`] calls this
     /// first and returns its error unchanged.
     pub fn validate(&self) -> Result<(), DocumentError> {
@@ -513,6 +518,7 @@ impl YamlReadOptions {
                 ),
             ));
         }
+        self.limits.validate()?;
         Ok(())
     }
 }
@@ -549,6 +555,7 @@ impl YamlReadOptions {
 fn feed_events(
     parser: &mut Parser<std::str::Chars<'_>>,
     check: &mut alias::AliasCheck,
+    max_depth: usize,
 ) -> Result<Vec<(Event, Marker)>, ScanError> {
     let mut events = Vec::new();
     let mut halted = false;
@@ -557,7 +564,7 @@ fn feed_events(
         let done = ev == Event::StreamEnd;
         check.event(&ev, (mark.line(), mark.col() + 1));
         if !check.failed() && !halted {
-            halted = check.depth() > crate::document::MAX_DEPTH + 10;
+            halted = check.depth() > max_depth + 10;
             events.push((ev, mark));
         }
         if done {
@@ -609,11 +616,13 @@ pub fn read_yaml_with(text: &str, options: &YamlReadOptions) -> Result<Doc, Omni
         u64::from(options.effective_max_alias_expansion()),
         u64::from(options.effective_max_expanded_slots()),
     );
-    let events = feed_events(&mut parser, &mut check).map_err(|e| scan_error_to_parse_error(&e))?;
+    let limits = options.limits.resolve_validated();
+    let events = feed_events(&mut parser, &mut check, limits.max_depth)
+        .map_err(|e| scan_error_to_parse_error(&e))?;
     if let Some(e) = check.into_error() {
         return Err(e);
     }
-    let mut builder = Builder::new();
+    let mut builder = Builder::new(&limits);
     for (ev, mark) in events {
         builder.on_event(ev, mark);
     }
@@ -636,26 +645,31 @@ pub fn read_yaml_with(text: &str, options: &YamlReadOptions) -> Result<Doc, Omni
         TScalarStyle::Plain,
         None,
     ));
-    let resolved = resolve_merges(&raw, 0)?;
-    let value = raw_to_value(&resolved)?;
-    Ok(Doc::of(&value)?)
+    let resolved = resolve_merges(&raw, 0, limits.max_depth)?;
+    let mut guard = IntGuard::new(limits.max_int_digits);
+    let value = raw_to_value(&resolved, &mut guard)?;
+    let doc = Doc::of_resolved(&value, limits).map_err(|e| limits.whole_document(e))?;
+    // A duplicate key keeps its last value, which can drop an over-cap
+    // literal the tree held a placeholder for.
+    guard.finish(&limits)?;
+    Ok(doc)
 }
 
 /// Recursively expands every `<<` merge key, depth-guarded the same way
 /// `document.rs`'s own construction path is (an alias can smuggle in an
 /// already-deep subtree before `Doc::of` ever sees it).
-fn resolve_merges(node: &Raw, depth: usize) -> Result<Raw, OmnistError> {
-    crate::document::check_write_depth(depth, "$")?;
+fn resolve_merges(node: &Raw, depth: usize, max_depth: usize) -> Result<Raw, OmnistError> {
+    crate::document::check_write_depth(depth, "$", max_depth)?;
     match node {
         Raw::Scalar(..) => Ok(node.clone()),
         Raw::Sequence(items) => {
             let mut out = Vec::with_capacity(items.len());
             for item in items {
-                out.push(resolve_merges(item, depth + 1)?);
+                out.push(resolve_merges(item, depth + 1, max_depth)?);
             }
             Ok(Raw::Sequence(out))
         }
-        Raw::Mapping(entries) => Ok(Raw::Mapping(resolve_mapping(entries, depth)?)),
+        Raw::Mapping(entries) => Ok(Raw::Mapping(resolve_mapping(entries, depth, max_depth)?)),
     }
 }
 
@@ -670,14 +684,21 @@ fn resolve_merges(node: &Raw, depth: usize) -> Result<Raw, OmnistError> {
 /// referring mapping's own value when the mapping writes one (whether the
 /// local key is written before or after the `<<`), otherwise the value from
 /// the EARLIEST alias that supplies it.
-fn resolve_mapping(entries: &[(Raw, Raw)], depth: usize) -> Result<Vec<(Raw, Raw)>, OmnistError> {
+fn resolve_mapping(
+    entries: &[(Raw, Raw)],
+    depth: usize,
+    max_depth: usize,
+) -> Result<Vec<(Raw, Raw)>, OmnistError> {
     let mut merged_from: Vec<(Raw, Raw)> = Vec::new();
     let mut own: Vec<(Raw, Raw)> = Vec::new();
     for (k, v) in entries {
         if is_merge_key(k) {
-            merged_from.extend(merge_source_entries(v, depth)?);
+            merged_from.extend(merge_source_entries(v, depth, max_depth)?);
         } else {
-            own.push((resolve_merges(k, depth + 1)?, resolve_merges(v, depth + 1)?));
+            own.push((
+                resolve_merges(k, depth + 1, max_depth)?,
+                resolve_merges(v, depth + 1, max_depth)?,
+            ));
         }
     }
     // Merged entries, first supplier of a key wins (this also makes a
@@ -731,18 +752,22 @@ fn is_merge_key(k: &Raw) -> bool {
 /// member's entries in order. The alias check has already refused every other
 /// shape (a scalar, a scalar or sequence member, `parse.codec-syntax`, spec
 /// D-18a) before this runs, so only mappings reach here.
-fn merge_source_entries(v: &Raw, depth: usize) -> Result<Vec<(Raw, Raw)>, OmnistError> {
+fn merge_source_entries(
+    v: &Raw,
+    depth: usize,
+    max_depth: usize,
+) -> Result<Vec<(Raw, Raw)>, OmnistError> {
     match v {
         // A merged mapping is itself resolved first, so a nested `<<` inside
         // it flattens recursively and the grandparent's entries arrive first.
-        Raw::Mapping(entries) => resolve_mapping(entries, depth + 1),
+        Raw::Mapping(entries) => resolve_mapping(entries, depth + 1, max_depth),
         Raw::Sequence(items) => {
             let mut out = Vec::new();
             for item in items {
                 let Raw::Mapping(entries) = item else {
                     unreachable!("the alias check refused a non-mapping merge member")
                 };
-                out.extend(resolve_mapping(entries, depth + 2)?);
+                out.extend(resolve_mapping(entries, depth + 2, max_depth)?);
             }
             Ok(out)
         }
@@ -752,13 +777,13 @@ fn merge_source_entries(v: &Raw, depth: usize) -> Result<Vec<(Raw, Raw)>, Omnist
 
 /// Turn a (merge-resolved) [`Raw`] tree into a [`Value`], applying scalar-tag
 /// resolution to every leaf along the way.
-fn raw_to_value(node: &Raw) -> Result<Value, OmnistError> {
+fn raw_to_value(node: &Raw, guard: &mut IntGuard) -> Result<Value, OmnistError> {
     match node {
-        Raw::Scalar(text, style, tag) => Ok(scalar_to_value(text, *style, tag.as_ref())?),
+        Raw::Scalar(text, style, tag) => Ok(scalar_to_value(text, *style, tag.as_ref(), guard)?),
         Raw::Sequence(items) => {
             let mut out = Vec::with_capacity(items.len());
             for item in items {
-                out.push(raw_to_value(item)?);
+                out.push(raw_to_value(item, guard)?);
             }
             Ok(Value::Array(out))
         }
@@ -776,26 +801,41 @@ fn raw_to_value(node: &Raw) -> Result<Value, OmnistError> {
                     // (bool, null, int, float) is rejected here, matching
                     // Python's `DocumentError: object key <value> is not a
                     // string` (live-confirmed).
-                    Raw::Scalar(s, style, tag) => match scalar_to_value(s, *style, tag.as_ref())? {
-                        Value::Str(s) => s,
-                        other => {
-                            // `document.unlabeled-element`: the key has no
-                            // string label to become an edge. The path is
-                            // `$` at every depth -- this stage works on the
-                            // untyped Raw tree and does not track Document
-                            // paths (see the note on nested keys in the
-                            // changelog).
-                            return Err(DocumentError::with_code(
-                                "$",
-                                "document.unlabeled-element",
-                                format!(
-                                    "object key {} is not a string",
-                                    describe_non_string_key(&other)
-                                ),
-                            )
-                            .into());
+                    Raw::Scalar(s, style, tag) => {
+                        match scalar_to_value(s, *style, tag.as_ref(), guard)? {
+                            Value::Str(s) => s,
+                            // An over-long integer used as a key: the digit
+                            // limit is what refuses it, not the missing label.
+                            Value::Int(i) if int_exceeds(&i, guard.max()) => {
+                                return Err(DocumentError::with_code(
+                                    "$",
+                                    "document.limit.int-digits",
+                                    crate::formats::int_cap::over_cap_message(
+                                        "invalid YAML: ",
+                                        guard.max(),
+                                    ),
+                                )
+                                .into());
+                            }
+                            other => {
+                                // `document.unlabeled-element`: the key has no
+                                // string label to become an edge. The path is
+                                // `$` at every depth -- this stage works on the
+                                // untyped Raw tree and does not track Document
+                                // paths (see the note on nested keys in the
+                                // changelog).
+                                return Err(DocumentError::with_code(
+                                    "$",
+                                    "document.unlabeled-element",
+                                    format!(
+                                        "object key {} is not a string",
+                                        describe_non_string_key(&other)
+                                    ),
+                                )
+                                .into());
+                            }
                         }
-                    },
+                    }
                     _ => {
                         return Err(ParseError::codec_syntax(
                             1,
@@ -808,7 +848,7 @@ fn raw_to_value(node: &Raw) -> Result<Value, OmnistError> {
                 // Last-duplicate-key-wins, matching json.rs's IndexMap::insert
                 // semantics and PyYAML's own dict-construction behavior
                 // (confirmed live: `yaml.safe_load("a: 1\\na: 2\\n") == {'a': 2}`).
-                map.insert(key, raw_to_value(v)?);
+                map.insert(key, raw_to_value(v, guard)?);
             }
             Ok(Value::Object(map))
         }
@@ -850,16 +890,17 @@ fn scalar_to_value(
     text: &str,
     style: TScalarStyle,
     tag: Option<&Tag>,
+    guard: &mut IntGuard,
 ) -> Result<Value, ParseError> {
     if let Some(t) = tag
         && t.handle == "tag:yaml.org,2002:"
     {
-        return explicit_tag_to_value(text, &t.suffix);
+        return explicit_tag_to_value(text, &t.suffix, guard);
     }
     if style != TScalarStyle::Plain {
         return Ok(Value::Str(text.to_string()));
     }
-    resolve_plain_scalar(text)
+    resolve_plain_scalar(text, guard)
 }
 
 /// Constructs a [`Value`] from an explicit standard YAML tag
@@ -870,7 +911,11 @@ fn scalar_to_value(
 /// raises `ConstructorError: could not determine a constructor for the tag`
 /// for anything it doesn't recognize, so this is matching behavior, not an
 /// arbitrarily narrower one.
-fn explicit_tag_to_value(text: &str, suffix: &str) -> Result<Value, ParseError> {
+fn explicit_tag_to_value(
+    text: &str,
+    suffix: &str,
+    guard: &mut IntGuard,
+) -> Result<Value, ParseError> {
     match suffix {
         "str" => Ok(Value::Str(text.to_string())),
         "null" => Ok(Value::Null),
@@ -890,7 +935,7 @@ fn explicit_tag_to_value(text: &str, suffix: &str) -> Result<Value, ParseError> 
                 format!("invalid YAML: {text:?} is not a valid !!bool value"),
             )),
         },
-        "int" => parse_int_literal(text),
+        "int" => parse_int_literal(text, guard),
         "float" => parse_float_literal(text),
         other => Err(ParseError::codec_syntax(
             1,
@@ -903,7 +948,7 @@ fn explicit_tag_to_value(text: &str, suffix: &str) -> Result<Value, ParseError> 
 /// PyYAML's `tag:yaml.org,2002:bool` implicit-resolver spelling set --
 /// live-confirmed (see module doc comment): `yes`/`no`/`on`/`off` (and case
 /// variants) count as booleans; bare `y`/`n` do not.
-fn resolve_plain_scalar(text: &str) -> Result<Value, ParseError> {
+fn resolve_plain_scalar(text: &str, guard: &mut IntGuard) -> Result<Value, ParseError> {
     match text {
         "" | "~" | "null" | "Null" | "NULL" => return Ok(Value::Null),
         "true" | "True" | "TRUE" | "yes" | "Yes" | "YES" | "on" | "On" | "ON" => {
@@ -915,10 +960,10 @@ fn resolve_plain_scalar(text: &str) -> Result<Value, ParseError> {
         _ => {}
     }
     if is_int_literal_shape(text) {
-        return parse_int_literal(text);
+        return parse_int_literal(text, guard);
     }
     if is_sexagesimal_int_shape(text) {
-        return parse_sexagesimal_int(text);
+        return parse_sexagesimal_int(text, guard);
     }
     if is_float_literal_shape(text) {
         return parse_float_literal(text);
@@ -990,7 +1035,7 @@ fn is_sexagesimal_int_shape(text: &str) -> bool {
 /// `1:0:0:...:0` (thousands of groups); a naive swap to unchecked
 /// `BigInt` arithmetic here would silently remove that bound entirely,
 /// letting such a literal build an arbitrarily large integer.
-fn parse_sexagesimal_int(text: &str) -> Result<Value, ParseError> {
+fn parse_sexagesimal_int(text: &str, guard: &mut IntGuard) -> Result<Value, ParseError> {
     let neg = text.starts_with('-');
     let t = text.strip_prefix(['+', '-']).unwrap_or(text);
     let mut acc = BigInt::from(0);
@@ -1004,14 +1049,8 @@ fn parse_sexagesimal_int(text: &str) -> Result<Value, ParseError> {
         acc = acc * &sixty + digit;
     }
     let value = if neg { -acc } else { acc };
-    let digit_count = value.to_string().trim_start_matches('-').len();
-    if digit_count > MAX_INT_DIGITS {
-        return Err(ParseError::new(
-            1,
-            1,
-            "document.limit.int-digits",
-            over_cap_message("invalid YAML: ", digit_count),
-        ));
+    if int_exceeds(&value, guard.max()) {
+        return Ok(Value::Int(guard.placeholder()));
     }
     Ok(Value::Int(value))
 }
@@ -1021,7 +1060,7 @@ fn parse_sexagesimal_int(text: &str) -> Result<Value, ParseError> {
 /// `i64`-overflow special-casing (the old version's own comment about
 /// `i64::MIN`'s asymmetric magnitude is now moot, since `BigInt` negation
 /// never overflows).
-fn parse_int_literal(text: &str) -> Result<Value, ParseError> {
+fn parse_int_literal(text: &str, guard: &mut IntGuard) -> Result<Value, ParseError> {
     let neg = text.starts_with('-');
     let t = text.strip_prefix(['+', '-']).unwrap_or(text);
     let cleaned: String = t.chars().filter(|&c| c != '_').collect();
@@ -1034,13 +1073,8 @@ fn parse_int_literal(text: &str) -> Result<Value, ParseError> {
     } else {
         (10, cleaned.as_str())
     };
-    if radix == 10 && digits.len() > MAX_INT_DIGITS {
-        return Err(ParseError::new(
-            1,
-            1,
-            "document.limit.int-digits",
-            over_cap_message("invalid YAML: ", digits.len()),
-        ));
+    if radix == 10 && digits.len() > guard.max() {
+        return Ok(Value::Int(guard.placeholder()));
     }
     // Implicit resolution only calls this after `is_int_literal_shape` has
     // confirmed the shape, but an EXPLICIT `!!int` tag reaches it with any
@@ -1423,7 +1457,8 @@ fn needs_quoting(s: &str) -> bool {
     if s.starts_with(crate::bom::BOM) {
         return true;
     }
-    if matches!(resolve_plain_scalar(s), Ok(Value::Str(ref t)) if t == s) {
+    if matches!(resolve_plain_scalar(s, &mut IntGuard::new(crate::formats::int_cap::MAX_INT_DIGITS)), Ok(Value::Str(ref t)) if t == s)
+    {
         // Round-trips as the identical plain string -- but a leading char /
         // embedded token that's YAML-significant still needs quoting even
         // though resolve_plain_scalar wouldn't itself retype it.
@@ -1468,6 +1503,7 @@ fn needs_quoting(s: &str) -> bool {
 mod tests {
     use super::*;
     use crate::document::{Doc, Scalar, Value};
+    use crate::formats::int_cap::MAX_INT_DIGITS;
 
     fn obj(pairs: Vec<(&str, Value)>) -> Value {
         Value::Object(pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
@@ -1693,7 +1729,10 @@ mod tests {
         let text = format!("a: 1{}\n", ":59".repeat(2500));
         let err = read_yaml(&text).unwrap_err();
         assert!(
-            matches!(&err, OmnistError::Parse(e) if e.message.contains("4300-digit")),
+            matches!(&err, OmnistError::Document(e)
+                if e.code.as_deref() == Some("document.limit.int-digits")
+                    && e.path == "$.a"
+                    && e.message.contains("4300-digit")),
             "got {err:?}"
         );
     }
@@ -1974,7 +2013,30 @@ mod tests {
         let text = format!("a: {}\n", "9".repeat(MAX_INT_DIGITS + 1));
         let err = read_yaml(&text).unwrap_err();
         assert!(
-            matches!(&err, OmnistError::Parse(e) if e.message.contains("4300-digit")),
+            matches!(&err, OmnistError::Document(e)
+                if e.code.as_deref() == Some("document.limit.int-digits")
+                    && e.path == "$.a"
+                    && e.message.contains("4300-digit")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn an_over_long_integer_used_as_a_key_is_refused_by_the_digit_limit() {
+        // Not as a missing label: the digit limit is what refuses it.
+        let options =
+            YamlReadOptions::default().with_limits(Limits::default().with_max_int_digits(3));
+        let err = read_yaml_with("1000: x\n", &options).unwrap_err();
+        assert!(
+            matches!(&err, OmnistError::Document(e)
+                if e.code.as_deref() == Some("document.limit.int-digits") && e.path == "$"),
+            "got {err:?}"
+        );
+        // At the limit it is an ordinary non-string key.
+        let err = read_yaml_with("999: x\n", &options).unwrap_err();
+        assert!(
+            matches!(&err, OmnistError::Document(e)
+                if e.code.as_deref() == Some("document.unlabeled-element")),
             "got {err:?}"
         );
     }
@@ -2833,19 +2895,19 @@ mod tests {
     #[should_panic(expected = "the alias check refused a scalar merge value")]
     fn merge_source_entries_panics_on_a_scalar_the_check_refused() {
         let scalar = Raw::Scalar("1".to_string(), TScalarStyle::Plain, None);
-        let _ = merge_source_entries(&scalar, 0);
+        let _ = merge_source_entries(&scalar, 0, 200);
     }
 
     #[test]
     #[should_panic(expected = "the alias check refused a non-mapping merge member")]
     fn merge_source_entries_panics_on_a_member_the_check_refused() {
         let member = Raw::Scalar("1".to_string(), TScalarStyle::Plain, None);
-        let _ = merge_source_entries(&Raw::Sequence(vec![member]), 0);
+        let _ = merge_source_entries(&Raw::Sequence(vec![member]), 0, 200);
     }
 
     #[test]
     fn builder_document_end_with_an_empty_stack_pushes_a_null_scalar() {
-        let mut b = Builder::new();
+        let mut b = Builder::new(&Resolved::DEFAULT);
         b.on_event_impl(Event::DocumentEnd, test_marker());
         assert_eq!(b.docs.len(), 1);
         assert!(matches!(&b.docs[0], Raw::Scalar(s, TScalarStyle::Plain, None) if s.is_empty()));
@@ -2854,7 +2916,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "a single document's stack never nests more than one root")]
     fn builder_document_end_with_more_than_one_stack_entry_panics() {
-        let mut b = Builder::new();
+        let mut b = Builder::new(&Resolved::DEFAULT);
         b.doc_stack
             .push((Raw::Scalar(String::new(), TScalarStyle::Plain, None), 0));
         b.doc_stack
@@ -2865,7 +2927,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "a Scalar is never a container on doc_stack")]
     fn builder_insert_onto_a_scalar_container_panics() {
-        let mut b = Builder::new();
+        let mut b = Builder::new(&Resolved::DEFAULT);
         b.doc_stack
             .push((Raw::Scalar("x".to_string(), TScalarStyle::Plain, None), 0));
         b.insert(
@@ -2880,7 +2942,7 @@ mod tests {
         // Calling `on_event_impl` directly with an id that has no entry: the
         // same state a self-referential definition reaches through real
         // input (see `self_referential_anchors_are_rejected_not_panicked`).
-        let mut b = Builder::new();
+        let mut b = Builder::new(&Resolved::DEFAULT);
         b.on_event_impl(Event::Alias(999), test_marker());
         let e = b.self_reference.as_ref().expect("recorded");
         assert_eq!(e.code.as_deref(), Some("document.limit.alias-expansion"));
@@ -2942,7 +3004,7 @@ mod tests {
     /// invoked a second time once tripped in the normal event-driven path.
     #[test]
     fn charge_after_already_tripped_is_a_pure_no_op() {
-        let mut b = Builder::new();
+        let mut b = Builder::new(&Resolved::DEFAULT);
         assert!(!b.charge(MAX_MATERIALIZED_NODES + 1, test_marker()));
         let first_error = format!("{:?}", b.error);
         let count_after_first_trip = b.node_count;
@@ -2965,7 +3027,7 @@ mod tests {
     /// independently reachable.
     #[test]
     fn sequence_start_can_itself_trip_the_node_count_guard() {
-        let mut b = Builder::new();
+        let mut b = Builder::new(&Resolved::DEFAULT);
         b.node_count = MAX_MATERIALIZED_NODES;
         b.on_event_impl(Event::SequenceStart(0, None), test_marker());
         assert!(
@@ -2980,7 +3042,7 @@ mod tests {
     /// Same as above, for `Event::MappingStart`.
     #[test]
     fn mapping_start_can_itself_trip_the_node_count_guard() {
-        let mut b = Builder::new();
+        let mut b = Builder::new(&Resolved::DEFAULT);
         b.node_count = MAX_MATERIALIZED_NODES;
         b.on_event_impl(Event::MappingStart(0, None), test_marker());
         assert!(
@@ -2994,7 +3056,7 @@ mod tests {
 
     #[test]
     fn n189_the_cap_counts_containers_not_keys_or_scalar_values() {
-        let mut b = Builder::new();
+        let mut b = Builder::new(&Resolved::DEFAULT);
         let mark = test_marker();
         b.on_event_impl(Event::MappingStart(0, None), mark);
         for i in 0..10 {
@@ -3013,14 +3075,14 @@ mod tests {
     #[test]
     fn n189_the_node_cap_boundary_is_exact() {
         let mark = test_marker();
-        let mut b = Builder::new();
+        let mut b = Builder::new(&Resolved::DEFAULT);
         b.node_count = MAX_MATERIALIZED_NODES - 1;
         b.on_event_impl(Event::MappingStart(0, None), mark);
         assert!(b.error.is_none(), "exactly the cap is accepted");
         assert_eq!(b.node_count, MAX_MATERIALIZED_NODES);
         b.on_event_impl(Event::SequenceStart(0, None), mark);
         assert!(
-            matches!(&b.error, Some(e) if e.code == "document.limit.nodes"),
+            matches!(&b.error, Some(e) if e.code.as_deref() == Some("document.limit.nodes")),
             "one past the cap is refused: {:?}",
             b.error
         );
@@ -3033,7 +3095,7 @@ mod tests {
 
     #[test]
     fn n189_an_alias_is_charged_for_the_containers_it_clones() {
-        let mut b = Builder::new();
+        let mut b = Builder::new(&Resolved::DEFAULT);
         let mark = test_marker();
         // &1 [x, {a: b}] holds a sequence and a mapping: two containers.
         b.on_event_impl(Event::SequenceStart(1, None), mark);

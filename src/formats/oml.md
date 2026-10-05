@@ -90,9 +90,14 @@ that produce a genuine temporal variant are unchanged:
 
 ## Integer digit cap and `i64`
 
-Same 4300-digit cap (`MAX_INT_DIGITS`) as `json.rs`/`yaml.rs`/`toml.rs`, and
-the same `i64`-backed representational ceiling -- see
-[formats/json.md](json.md).
+Same 4300-digit cap as `json.rs`/`yaml.rs`/`toml.rs` (`Limits::max_int_digits`,
+changed with `read_oml_with`), and the same `i64`-backed representational
+ceiling -- see [formats/json.md](json.md). An over-long integer is a
+`DocumentError` (`document.limit.int-digits`) at the integer's Document path
+through `read_oml_with`; `read_oml` keeps reporting it as a `ParseError` at the
+text position. The depth and node limits are `document.limit.depth` and
+`document.limit.nodes` at `$`; a node is a brace subtree or the document's own
+edge list, never a scalar.
 
 ## `--arrays` is not yet implemented
 

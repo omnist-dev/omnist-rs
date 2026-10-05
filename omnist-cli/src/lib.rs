@@ -417,7 +417,7 @@ pub fn read_document_bytes(
 /// [`read_document_bytes`] with [`Fmt::Oml`], this keeps the raw tree.
 pub fn read_oml_bytes(bytes: Vec<u8>) -> Result<omnist::document::RawNode, OmnistError> {
     let text = decode_input(bytes)?;
-    Ok(omnist::oml::read_oml(&text)?)
+    omnist::oml::read_oml_with(&text, &omnist::limits::Limits::default())
 }
 
 /// Decode `bytes` (D-14) and parse them as OSD, as every `schema` command
@@ -568,7 +568,7 @@ fn read_by_fmt(
             None => omnist::formats::xml::read_xml(text),
         },
         Fmt::Oml => {
-            let raw = omnist::oml::read_oml(text)?;
+            let raw = omnist::oml::read_oml_with(text, &omnist::limits::Limits::default())?;
             Ok(Doc::from_raw(raw)?)
         }
     }

@@ -25,7 +25,7 @@
 //! already canonical.
 
 use crate::error::ParseError;
-use crate::formats::int_cap::{MAX_INT_DIGITS, over_cap_message};
+use crate::limits::IntGuard;
 use crate::schema::{
     canonicalize_iso_datetime, canonicalize_iso_time, is_iso_date, is_iso_datetime, is_iso_time,
 };
@@ -64,10 +64,16 @@ pub(super) struct Scanner<'a> {
     pub(super) text: &'a str,
     n: usize,
     pub(super) pos: usize,
+    /// Stands in for an integer literal over the digit cap (see
+    /// [`IntGuard`]): the literal is not converted, and the document is
+    /// refused once its Document path is known.
+    pub(super) guard: IntGuard,
+    /// The byte offset of the first over-cap integer literal, if any.
+    pub(super) overcap_at: Option<usize>,
 }
 
 impl<'a> Scanner<'a> {
-    pub(super) fn new(text: &'a str) -> Self {
+    pub(super) fn new(text: &'a str, max_int_digits: usize) -> Self {
         // A leading BOM is stripped (and a doubled one rejected) by
         // `read_oml` via `crate::bom::strip_leading_bom` before a Scanner
         // is ever built; this constructor takes the text as it is.
@@ -76,7 +82,13 @@ impl<'a> Scanner<'a> {
         // UTF-8 lazily via `char_at` instead of materializing the whole
         // input into a `Vec<char>` upfront (issue #43).
         let n = text.len();
-        Scanner { text, n, pos: 0 }
+        Scanner {
+            text,
+            n,
+            pos: 0,
+            guard: IntGuard::new(max_int_digits),
+            overcap_at: None,
+        }
     }
 
     /// Decode the char starting at byte offset `at`, if any. `at` must be a
@@ -636,12 +648,9 @@ impl<'a> Scanner<'a> {
             Ok((TokKind::Float(v), start, end))
         } else {
             let digits = &text[if text.starts_with('-') { 1 } else { 0 }..];
-            if digits.len() > MAX_INT_DIGITS {
-                return Err(self.error_at(
-                    start,
-                    "document.limit.int-digits",
-                    over_cap_message("", digits.len()),
-                ));
+            if digits.len() > self.guard.max() {
+                self.overcap_at.get_or_insert(start);
+                return Ok((TokKind::Int(self.guard.placeholder()), start, end));
             }
             // Arbitrary-precision (issue #104): `text` is exclusively
             // ASCII digits with an optional leading `-` by construction,

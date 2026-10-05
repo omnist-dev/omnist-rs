@@ -174,6 +174,48 @@ fn convert_golden_path_json_to_oml() {
     assert_eq!(r.stdout, "a: 1\nb: \"x\"\n");
 }
 
+/// Limit violations in OML input carry a Document path (E-11), never a
+/// line:col; syntax errors stay positioned parse errors.
+fn oml_json_error(name: &str, text: &str) -> String {
+    let input = fixture(name, text);
+    let r = run(&["convert", &input, "--from", "oml", "--to", "json", "--json"]);
+    assert_eq!(r.code, 2, "stdout: {} stderr: {}", r.stdout, r.stderr);
+    r.stdout
+}
+
+#[test]
+fn convert_oml_depth_limit_is_a_document_path_error() {
+    let out = oml_json_error("oml_deep", &format!("{}n: 1", "a: { ".repeat(201)));
+    assert!(
+        out.contains("\"message\": \"$: nesting exceeds the maximum depth (200)\""),
+        "{out}"
+    );
+}
+
+#[test]
+fn convert_oml_node_limit_is_a_document_path_error() {
+    let out = oml_json_error("oml_nodes", &"a: {}\n".repeat(1_000_000));
+    assert!(
+        out.contains("\"message\": \"$: document exceeds the maximum node count (1000000)\""),
+        "{out}"
+    );
+}
+
+#[test]
+fn convert_oml_int_digits_limit_is_a_document_path_error() {
+    let out = oml_json_error("oml_digits", &format!("n: {}\n", "9".repeat(4301)));
+    assert!(
+        out.contains("\"message\": \"$.n: integer literal exceeds the 4300-digit limit"),
+        "{out}"
+    );
+}
+
+#[test]
+fn convert_oml_syntax_error_stays_a_positioned_parse_error() {
+    let out = oml_json_error("oml_syntax", "n: 1 1\n");
+    assert!(out.contains("\"message\": \"line 1, col 6:"), "{out}");
+}
+
 #[test]
 fn convert_oml_to_oml_is_rejected() {
     let input = fixture("convert_oml_oml", "a: 1\n");

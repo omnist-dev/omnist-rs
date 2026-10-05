@@ -16,22 +16,26 @@
 //! reproduce the unprefixed form -- so every call site's produced string
 //! is byte-identical to what it emitted before this refactor.
 
-/// Same guard, same constant, previously copied into `oml.rs`,
+/// The default digit cap, previously copied into `oml.rs`,
 /// `formats/json.rs`, `formats/toml.rs`, and `formats/yaml.rs` -- see
 /// issue #49. Provenance: omnist-ts#54, CPython's
-/// `sys.set_int_max_str_digits`.
-pub(crate) const MAX_INT_DIGITS: usize = 4300;
+/// `sys.set_int_max_str_digits`. Since omnist-rs#181 the cap in force is
+/// [`crate::limits::Limits::max_int_digits`]; this is its default.
+pub(crate) const MAX_INT_DIGITS: usize = crate::limits::DEFAULT_MAX_INT_DIGITS as usize;
 
 /// The digit-cap rejection message, spelled identically for every format
 /// modulo each format's own error-prefix convention.
 ///
 /// `prefix` is prepended verbatim -- pass `""` for formats (OML, JSON) that
 /// don't embed a format-name prefix in this message, or `"invalid TOML: "`/
-/// `"invalid YAML: "` for the formats that do.
-pub(crate) fn over_cap_message(prefix: &str, digit_count: usize) -> String {
+/// `"invalid YAML: "` for the formats that do. `max` is the cap in force.
+/// The literal's own digit count is not in the message: an over-cap literal
+/// is replaced by a placeholder before it is ever converted (see
+/// [`crate::limits::IntGuard`]), so its length is not computed.
+pub(crate) fn over_cap_message(prefix: &str, max: usize) -> String {
     format!(
-        "{prefix}integer literal has {digit_count} digits, exceeding the {MAX_INT_DIGITS}-digit \
-         limit (security: unbounded-digit int-to-str conversion is superlinear)"
+        "{prefix}integer literal exceeds the {max}-digit limit (security: unbounded-digit \
+         int-to-str conversion is superlinear)"
     )
 }
 
@@ -50,18 +54,18 @@ mod tests {
     #[test]
     fn over_cap_message_no_prefix() {
         assert_eq!(
-            over_cap_message("", 4301),
-            "integer literal has 4301 digits, exceeding the 4300-digit limit (security: \
-             unbounded-digit int-to-str conversion is superlinear)"
+            over_cap_message("", 4300),
+            "integer literal exceeds the 4300-digit limit (security: unbounded-digit \
+             int-to-str conversion is superlinear)"
         );
     }
 
     #[test]
     fn over_cap_message_with_prefix() {
         assert_eq!(
-            over_cap_message("invalid TOML: ", 4301),
-            "invalid TOML: integer literal has 4301 digits, exceeding the 4300-digit limit \
-             (security: unbounded-digit int-to-str conversion is superlinear)"
+            over_cap_message("invalid TOML: ", 4300),
+            "invalid TOML: integer literal exceeds the 4300-digit limit (security: \
+             unbounded-digit int-to-str conversion is superlinear)"
         );
     }
 

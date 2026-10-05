@@ -1,5 +1,68 @@
 # Changelog
 
+## 0.7.0-alpha
+
+Makes the three safety limits of the spec's section 2.4 runtime-configurable
+(omnist-rs#181) and reports every `document.limit.*` violation with a Document
+path (omnist-rs#182, item 1; spec E-11). Spec pin unchanged (v0.28.0-beta);
+vectors 310 pass, 0 fail, 28 skip of 338 (was 304 / 0 / 34: the six
+`document-model/limits` vectors now run and pass); fixtures 19 / 19.
+
+Minor bump of the alpha: a new public configuration surface (`omnist::limits`,
+the `*_with` entry points) and a behaviour change in the error type and path
+of limit violations, both of which a caller can observe. The previous release
+took a patch for a change that added no API and rejected nothing new.
+
+Added:
+
+- **`omnist::limits::Limits`** (`max_depth`, `max_nodes`, `max_int_digits`,
+  defaulting to 200, 1,000,000 and 4,300, the spec's reference defaults), in
+  the style of `YamlReadOptions`: `#[non_exhaustive]`, `with_*` builders,
+  `effective_*`, `validate`. `0` selects the default (a zero or unset value
+  never widens a limit); a value above its ceiling (250, 10,000,000 and
+  43,000, this port's own, since the spec recommends none for these three) is
+  refused, not clamped. The ceilings and defaults are public constants. D-10
+  (finite) and D-11 (documented, in `docs/limitations.md`) are met.
+- **Explicit-limits entry points**: `read_oml_with`, `read_json_with`,
+  `read_toml_with`, `read_xml_with`, `YamlReadOptions::with_limits` (with the
+  existing `read_yaml_with`), `Doc::of_with` and `Doc::from_raw_with`. The
+  plain `read_*` signatures and defaults are unchanged. A `Doc` remembers the
+  limits it was built under, so a later `add` / `set` enforces the same ones.
+- **The conformance runner sets the limits from `declared_max_depth`,
+  `declared_max_nodes` and `declared_max_int_digits`** and runs the six
+  `document-model/limits` vectors instead of skipping them (E-20): each
+  at-limit vector is accepted by the reader and by `Doc::from_raw_with`, each
+  one-past vector is refused with the right code and path.
+
+Changed:
+
+- **Limit violations are `DocumentError`s with a Document path (E-11), not
+  `ParseError`s with a `line:col`** (#182, item 1), in the OML, JSON, TOML and
+  YAML readers (XML and `Doc::from_raw` already were). `document.limit.depth`
+  and `document.limit.nodes` carry path `$`; `document.limit.int-digits`
+  carries the path of the integer (`$.n`, and `$.n[1]` only when the label
+  repeats, E-10), as the vectors pin. The code is unchanged. `read_oml` keeps
+  its signature and still returns a `ParseError` carrying the position; the
+  Document form is `read_oml_with` and the registry's `oml` format. The message
+  of the digit-cap error no longer states the literal's own digit count (an
+  over-cap literal is replaced by a placeholder and never converted).
+  A syntax error anywhere in the input now wins over an over-long integer
+  (previously whichever came first in the text).
+- **The CLI reads OML with `read_oml_with`**, so a limit violation in OML input
+  prints a Document path (`$: nesting exceeds the maximum depth (200)`), like the
+  other formats; syntax errors stay `line:col`. The depth ceiling is 250: a 2 MB
+  thread stack was measured to overflow at 400 levels in a debug build.
+- **A node is a container in `Doc` and in the OML reader**, as D-9 counts them
+  (and as the YAML reader has since 0.6.1-alpha): `Doc` counted every leaf,
+  and the OML parser counted every scalar value, so `a: 1` / `b: 2` was
+  three nodes. The XML reader counted every element; it now counts the document
+  root and every element that has a child element, matching `Doc`. A document
+  with many scalars (or leaf elements) is accepted where it was refused.
+- **`Doc::of` and `Doc::from_raw` refuse an integer over the digit cap**
+  (spec: the limits bound every route into the model); programmatic
+  construction was unbounded before. A single-element array's path no longer
+  carries `[0]` (E-10) in `Doc::of`'s diagnostics.
+
 ## 0.6.1-alpha
 
 Fixes the YAML materialization node cap (omnist-rs#189, DIV-11 in the spec's

@@ -123,10 +123,11 @@
 //! "non-table root" precedent).
 
 use crate::WriteError;
-use crate::document::{Cursor, Doc, MAX_DEPTH, MAX_NODES, RawNode, Scalar};
+use crate::document::{Cursor, Doc, RawNode, Scalar};
 use crate::error::{DocumentError, OmnistError, ParseError};
 use crate::formats::float_fmt;
 use crate::formats::textpos::line_col_bytes;
+use crate::limits::{Limits, Resolved as ResolvedLimits};
 use crate::report::{Severity, WriteReport};
 use crate::schema::{FieldType, Resolved, ScalarKind, Schema};
 use indexmap::IndexMap;
@@ -231,7 +232,11 @@ fn note_refusal(slot: &mut Refusal, code: &'static str, message: impl Into<Strin
     }
 }
 
-fn read_xml_raw(text: &str, mut report: Option<&mut WriteReport>) -> Result<RawNode, OmnistError> {
+fn read_xml_raw(
+    text: &str,
+    mut report: Option<&mut WriteReport>,
+    limits: &ResolvedLimits,
+) -> Result<RawNode, OmnistError> {
     // D-15/D-21: one leading BOM is stripped, a second is rejected at 1:1
     // (`parse.codec-syntax`, E-24). XML 1.0 admits a leading BOM, so
     // quick_xml would otherwise discard a second one silently.
@@ -249,7 +254,12 @@ fn read_xml_raw(text: &str, mut report: Option<&mut WriteReport>) -> Result<RawN
             .map_err(|e| xml_parse_error(&reader, &normalized, &e))?;
         match ev {
             Event::Start(e) => {
-                let mut node_count = 1;
+                // The document root is the first node; an element becomes a
+                // node (a container) once it has a child element.
+                let mut budget = NodeBudget {
+                    limits,
+                    node_count: 1,
+                };
                 let tag = local_name(e.name());
                 let path = crate::report::child_path("$", &tag, 0);
                 refuse_attribute_entities(&e, &mut refusal);
@@ -258,7 +268,7 @@ fn read_xml_raw(text: &str, mut report: Option<&mut WriteReport>) -> Result<RawN
                     &mut reader,
                     &normalized,
                     1,
-                    &mut node_count,
+                    &mut budget,
                     &path,
                     &mut refusal,
                     report,
@@ -377,9 +387,23 @@ fn read_xml_raw(text: &str, mut report: Option<&mut WriteReport>) -> Result<RawN
 /// Parse XML text into a [`Doc`], preserving element order/interleaving
 /// exactly (see this module's doc comment).
 pub fn read_xml(text: &str) -> Result<Doc, OmnistError> {
-    let raw = read_xml_raw(text, None)?;
+    let raw = read_xml_raw(text, None, &ResolvedLimits::DEFAULT)?;
     let doc = Doc::from_raw(raw)?;
     Ok(doc)
+}
+
+/// [`read_xml`] under explicit [`Limits`].
+///
+/// Returns the [`Limits::validate`] error unchanged when the limits are out
+/// of range. A limit crossed is a [`crate::error::DocumentError`]
+/// (`document.limit.depth` / `document.limit.nodes` at `$`). An element's
+/// text is never an integer literal here (XML is untyped), so
+/// `max_int_digits` only governs the schema-guided pretyping of
+/// [`read_xml_with_schema`], which keeps using the default.
+pub fn read_xml_with(text: &str, limits: &Limits) -> Result<Doc, OmnistError> {
+    let resolved = limits.resolve()?;
+    let raw = read_xml_raw(text, None, &resolved)?;
+    Ok(Doc::from_raw_resolved(raw, resolved)?)
 }
 
 /// Same as [`read_xml`], but also reports `format.attribute-dropped` and
@@ -390,7 +414,7 @@ pub fn read_xml(text: &str) -> Result<Doc, OmnistError> {
 /// `crate::report`'s module doc. `report: None` behaves exactly like
 /// [`read_xml`].
 pub fn read_xml_report(text: &str, report: Option<&mut WriteReport>) -> Result<Doc, OmnistError> {
-    let raw = read_xml_raw(text, report)?;
+    let raw = read_xml_raw(text, report, &ResolvedLimits::DEFAULT)?;
     let doc = Doc::from_raw(raw)?;
     Ok(doc)
 }
@@ -398,10 +422,28 @@ pub fn read_xml_report(text: &str, report: Option<&mut WriteReport>) -> Result<D
 /// Parse XML text into a [`Doc`] with schema-guided pretyping of boolean,
 /// integer, and number scalar fields (spec §2.2 / issue #114).
 pub fn read_xml_with_schema(text: &str, schema: &Schema) -> Result<Doc, OmnistError> {
-    let raw = read_xml_raw(text, None)?;
+    let raw = read_xml_raw(text, None, &ResolvedLimits::DEFAULT)?;
     let pretyped = xml_pretype(raw, schema, &FieldType::Ref(schema.root().clone()));
     let doc = Doc::from_raw(pretyped)?;
     Ok(doc)
+}
+
+/// An element is a node (a container) from its first child element on:
+/// charges that one node against the cap when `first_child` is set.
+fn charge_container(first_child: bool, budget: &mut NodeBudget) -> Result<(), OmnistError> {
+    if first_child {
+        budget.node_count += 1;
+        if budget.node_count > budget.limits.max_nodes {
+            return Err(budget.limits.nodes_error().into());
+        }
+    }
+    Ok(())
+}
+
+/// The limits in force and the nodes (containers) counted so far.
+struct NodeBudget<'a> {
+    limits: &'a ResolvedLimits,
+    node_count: usize,
 }
 
 /// Reads the content of an already-opened element (the matching `Start`
@@ -413,18 +455,13 @@ fn parse_content(
     reader: &mut Reader<&[u8]>,
     source: &str,
     depth: usize,
-    node_count: &mut usize,
+    budget: &mut NodeBudget,
     path: &str,
     refusal: &mut Refusal,
     mut report: Option<&mut WriteReport>,
 ) -> Result<RawNode, OmnistError> {
-    if depth > MAX_DEPTH {
-        return Err(DocumentError::with_code(
-            "$",
-            "document.limit.depth",
-            format!("nesting exceeds the maximum depth ({MAX_DEPTH})"),
-        )
-        .into());
+    if depth > budget.limits.max_depth {
+        return Err(budget.limits.depth_error().into());
     }
     let mut text = String::new();
     let mut children: Vec<(String, RawNode)> = Vec::new();
@@ -442,15 +479,7 @@ fn parse_content(
             .map_err(|e| xml_parse_error(reader, source, &e))?;
         match ev {
             Event::Start(e) => {
-                *node_count += 1;
-                if *node_count > MAX_NODES {
-                    return Err(DocumentError::with_code(
-                        "$",
-                        "document.limit.nodes",
-                        format!("document exceeds the maximum node count ({MAX_NODES})"),
-                    )
-                    .into());
-                }
+                charge_container(children.is_empty(), budget)?;
                 let tag = local_name(e.name());
                 let index = *label_counts
                     .entry(tag.clone())
@@ -463,7 +492,7 @@ fn parse_content(
                     reader,
                     source,
                     depth + 1,
-                    node_count,
+                    budget,
                     &child_path,
                     refusal,
                     report.as_deref_mut(),
@@ -471,15 +500,7 @@ fn parse_content(
                 children.push((tag, child));
             }
             Event::Empty(e) => {
-                *node_count += 1;
-                if *node_count > MAX_NODES {
-                    return Err(DocumentError::with_code(
-                        "$",
-                        "document.limit.nodes",
-                        format!("document exceeds the maximum node count ({MAX_NODES})"),
-                    )
-                    .into());
-                }
+                charge_container(children.is_empty(), budget)?;
                 let tag = local_name(e.name());
                 let index = *label_counts
                     .entry(tag.clone())

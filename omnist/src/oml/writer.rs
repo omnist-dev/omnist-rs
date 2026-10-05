@@ -28,7 +28,7 @@
 //! unlike Python's `repr()`), or the OML round-trip would silently
 //! reclassify it as `Scalar::Int` on read-back.
 
-use crate::document::{RawNode, Scalar, check_write_depth};
+use crate::document::{MAX_DEPTH, RawNode, Scalar, check_write_depth};
 use crate::error::WriteError;
 use crate::formats::string_escape::{OML_ESCAPES, write_quoted};
 
@@ -49,14 +49,14 @@ pub(super) fn write_edges(
     indent: usize,
     node_depth: usize,
 ) -> Result<String, WriteError> {
-    check_write_depth(node_depth, "$")?;
+    check_write_depth(node_depth, "$", MAX_DEPTH)?;
     let pad = " ".repeat(indent * depth);
     let mut lines = Vec::with_capacity(edges.len());
     for (label, child) in edges {
         let lab = write_label(label);
         match child {
             RawNode::Edges(inner) if inner.is_empty() => {
-                check_write_depth(node_depth + 1, "$")?;
+                check_write_depth(node_depth + 1, "$", MAX_DEPTH)?;
                 lines.push(format!("{pad}{lab}: {{}}"));
             }
             RawNode::Edges(inner) => {
@@ -64,7 +64,7 @@ pub(super) fn write_edges(
                 lines.push(format!("{pad}{lab}: {{\n{body}\n{pad}}}"));
             }
             RawNode::Leaf(s) => {
-                check_write_depth(node_depth + 1, "$")?;
+                check_write_depth(node_depth + 1, "$", MAX_DEPTH)?;
                 lines.push(format!("{pad}{lab}: {}", write_scalar(s)));
             }
         }
@@ -76,13 +76,13 @@ pub(super) fn write_edges_compact(
     edges: &[(String, RawNode)],
     node_depth: usize,
 ) -> Result<String, WriteError> {
-    check_write_depth(node_depth, "$")?;
+    check_write_depth(node_depth, "$", MAX_DEPTH)?;
     let mut parts = Vec::with_capacity(edges.len());
     for (label, child) in edges {
         let lab = write_label(label);
         match child {
             RawNode::Edges(inner) if inner.is_empty() => {
-                check_write_depth(node_depth + 1, "$")?;
+                check_write_depth(node_depth + 1, "$", MAX_DEPTH)?;
                 parts.push(format!("{lab}: {{}}"));
             }
             RawNode::Edges(inner) => {
@@ -90,7 +90,7 @@ pub(super) fn write_edges_compact(
                 parts.push(format!("{lab}: {{ {body} }}"));
             }
             RawNode::Leaf(s) => {
-                check_write_depth(node_depth + 1, "$")?;
+                check_write_depth(node_depth + 1, "$", MAX_DEPTH)?;
                 parts.push(format!("{lab}: {}", write_scalar(s)));
             }
         }

@@ -17,7 +17,7 @@ reporting rule:
 - **Track 1** (`vendor/omnist-spec/conformance/fixtures/`, directory-per-fixture,
   11 operations): **19 passed, 0 failed, 0 skipped**.
 - **Track 2** (`vendor/omnist-spec/test-suite/`, JSON-vector suite, 14-operation
-  vocabulary): **304 passed, 0 failed, 34 skipped** (of 338 vectors),
+  vocabulary): **310 passed, 0 failed, 28 skipped** (of 338 vectors),
   **diagnostics compared as `(path, code)` sets** (section 8.5.2), not in
   code-agnostic mode. The runner exits non-zero on any failing vector and
   never on skips (E-22); it has no list of tolerated failures.
@@ -33,8 +33,12 @@ cargo run -p conformance --bin vector_runner
 
 ## Every Track 2 skip, and why
 
-All 34 skips are one spec category, E-20 "not yet implemented"; none is an
-E-21 documented divergence. (v0.28.0-beta adds no vectors (still 338): its four programmatic-schema
+All 28 skips are one spec category, E-20 "not yet implemented"; none is an
+E-21 documented divergence. The 6 `document-model/limits` vectors were skips
+through 0.6.1-alpha (304 / 0 / 34); the limits became runtime-configurable in
+0.7.0-alpha and they now run and pass (310 / 0 / 28).
+
+Earlier history: (v0.28.0-beta adds no vectors (still 338): its four programmatic-schema
 rules, S-8's `$` path, S-22, S-23 and OSD-16/S-24, are pinned by no vector
 (DIV-5), only by `omnist/tests/spec_v028.rs`; Track 2 stays 304 / 0 / 34.
 v0.27.0-beta (338 vectors) added 7 `alias-expansion` vectors for the empty merge
@@ -73,12 +77,6 @@ own input by the `every_skip_reason_is_true_for_its_vector` test, so it
 cannot drift from what is actually skipped. A vector whose actual error lacks
 a structured `code` or `path` FAILS; it is never skipped for lack of one.
 
-- **6 `document-model/limits.json` vectors.** Each declares a vector-local
-  `declared_max_depth`/`declared_max_nodes`/`declared_max_int_digits`. This
-  port's limits (`MAX_DEPTH`, `MAX_NODES`, `MAX_INT_DIGITS`) are compile-time
-  constants with no runtime configuration surface, so the boundary cannot be
-  pinned; running them against the default would test nothing. Tracked in
-  [omnist-rs#181](https://github.com/omnist-dev/omnist-rs/issues/181).
 - **28 `extensions-osd-oml/*` vectors.** The OSD-OML extension operations
   (`parse_schema_oml`, `schema_from_document`, `schema_to_document`,
   `write_schema_oml`) are not implemented; tracked in

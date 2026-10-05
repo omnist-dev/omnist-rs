@@ -351,7 +351,8 @@ fn the_materialized_node_cap_still_applies_below_the_expansion_limit() {
     let text = node_cap_text();
     let err = read_yaml_with(&text, &wide_options()).unwrap_err();
     assert!(
-        matches!(&err, OmnistError::Parse(e) if e.code == "document.limit.nodes"),
+        matches!(&err, OmnistError::Document(e)
+            if e.code.as_deref() == Some("document.limit.nodes") && e.path == "$"),
         "got {err:?}"
     );
 }
@@ -493,7 +494,7 @@ fn the_registry_codec_and_every_reader_path_apply_the_limit() {
     // The node cap is reached only below the ceiling.
     assert!(matches!(
         read_yaml_with(&node_cap_text(), &wide_options()).unwrap_err(),
-        OmnistError::Parse(e) if e.code == "document.limit.nodes"
+        OmnistError::Document(e) if e.code.as_deref() == Some("document.limit.nodes")
     ));
 }
 
@@ -1041,4 +1042,20 @@ fn a_flat_mapping_of_scalar_entries_is_one_node() {
         RawNode::Edges(es) => assert_eq!(es.len(), 160_000),
         other => panic!("not a mapping: {other:?}"),
     }
+}
+
+#[test]
+fn read_options_compare_and_print_their_limits() {
+    let a = YamlReadOptions::default();
+    assert_eq!(
+        a,
+        YamlReadOptions::default().with_limits(crate::limits::Limits::default())
+    );
+    assert_ne!(
+        a,
+        a.with_limits(crate::limits::Limits::default().with_max_depth(3))
+    );
+    assert_ne!(a, a.with_max_alias_expansion(7));
+    assert_ne!(a, a.with_max_expanded_slots(7));
+    assert!(format!("{a:?}").contains("max_depth: 200"));
 }
