@@ -756,7 +756,7 @@ pub fn write_xml(
         return Err(single_root_error());
     }
     let mut rep = WriteReport::new();
-    scan_xml_cursor(&root, "$", &mut rep, true)?;
+    scan_xml_cursor(&root, &mut String::from("$"), &mut rep, true)?;
     let (tag, child_id) = &edges[0];
     let child_cursor = root.seek(*child_id);
     let mut out = String::new();
@@ -794,7 +794,8 @@ pub fn check_xml(doc: &Doc) -> WriteReport {
     // path, it only records the same conditions as `write.unsupported-value`
     // `Severity::Error` adjustments for preview purposes (`check_xml` never
     // produces output to begin with, so there is nothing to fail).
-    scan_xml_cursor(&doc.root(), "$", &mut rep, false).expect("fail_fast: false never returns Err");
+    scan_xml_cursor(&doc.root(), &mut String::from("$"), &mut rep, false)
+        .expect("fail_fast: false never returns Err");
     rep
 }
 
@@ -842,7 +843,7 @@ impl crate::formats::Codec for Xml {
 /// occurrence in one pass rather than just the first.
 fn scan_xml_cursor(
     cursor: &Cursor,
-    path: &str,
+    path: &mut String,
     rep: &mut WriteReport,
     fail_fast: bool,
 ) -> Result<(), WriteError> {
@@ -855,7 +856,12 @@ fn scan_xml_cursor(
                 if fail_fast {
                     return Err(crate::report::unsupported_value_error(path, detail));
                 }
-                rep.add(path, "write.unsupported-value", detail, Severity::Error);
+                rep.add(
+                    path.as_str(),
+                    "write.unsupported-value",
+                    detail,
+                    Severity::Error,
+                );
                 return Ok(());
             }
             let mut totals: IndexMap<&str, usize> = IndexMap::new();
@@ -868,7 +874,8 @@ fn scan_xml_cursor(
                     .entry(label.as_str())
                     .and_modify(|n| *n += 1)
                     .or_insert(0);
-                let p = crate::report::child_path(
+                let base = path.len();
+                crate::report::push_child_path(
                     path,
                     label,
                     crate::report::occurrence_index(i, totals[label.as_str()]),
@@ -877,17 +884,18 @@ fn scan_xml_cursor(
                     let detail =
                         format!("label {label:?} is not a valid XML name and cannot be written");
                     if fail_fast {
-                        return Err(crate::report::unsupported_value_error(&p, detail));
+                        return Err(crate::report::unsupported_value_error(path, detail));
                     }
                     rep.add(
-                        p.clone(),
+                        path.as_str(),
                         "write.unsupported-value",
                         detail,
                         Severity::Error,
                     );
                 }
                 let child = cursor.seek(*child_id);
-                scan_xml_cursor(&child, &p, rep, fail_fast)?;
+                scan_xml_cursor(&child, path, rep, fail_fast)?;
+                path.truncate(base);
             }
         }
         Err(_) => {
@@ -907,7 +915,12 @@ fn scan_xml_cursor(
                 if fail_fast {
                     return Err(crate::report::unsupported_value_error(path, detail));
                 }
-                rep.add(path, "write.unsupported-value", detail, Severity::Error);
+                rep.add(
+                    path.as_str(),
+                    "write.unsupported-value",
+                    detail,
+                    Severity::Error,
+                );
                 return Ok(());
             }
             scan_leaf(scalar, path, rep);
