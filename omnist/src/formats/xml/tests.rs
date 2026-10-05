@@ -1693,3 +1693,14 @@ fn predefined_entities_and_character_references_in_attribute_values_stay_legal()
         assert!(doc.is_ok(), "{src}: {doc:?}");
     }
 }
+
+#[test]
+fn read_xml_with_schema_and_limits_validates_the_limits_and_applies_them() {
+    let schema = crate::osd::parse_schema("record R {\n    \"a\": string,\n}\nroot R\n").unwrap();
+    let bad = Limits::default().with_max_input_bytes(u64::MAX);
+    assert!(read_xml_with_schema_and_limits("<a>x</a>", &schema, &bad).is_err());
+    let tight = Limits::default().with_max_input_bytes(7);
+    let e = read_xml_with_schema_and_limits("<a>x</a>", &schema, &tight).unwrap_err();
+    assert!(e.to_string().contains("maximum input size"), "{e}");
+    assert!(read_xml_with_schema_and_limits("<a>x</a>", &schema, &Limits::default()).is_ok());
+}

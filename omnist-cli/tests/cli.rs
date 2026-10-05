@@ -1693,8 +1693,7 @@ fn hostile_bytes_never_panic_on_any_read_surface() {
     let deep_json_obj = "{\"a\":".repeat(50_000);
     // omnist-rs#197: toml_edit's recursion cap on a table header carries no
     // span and used to panic the reader.
-    let deep_toml_header = format!("[{}]
-", vec!["a"; 200].join("."));
+    let deep_toml_header = format!("[{}]\n", vec!["a"; 200].join("."));
     let inputs: Vec<(&str, Vec<u8>)> = vec![
         ("empty", vec![]),
         ("bom only", b"\xef\xbb\xbf".to_vec()),

@@ -692,7 +692,7 @@ impl<'a> Cursor<'a> {
 
     /// Each edge's label, its E-10 index (`Some(i)` exactly when the label
     /// occurs more than once in this node) and its `NodeId`.
-    pub(crate) fn raw_edges(&self) -> Result<Vec<(&'a str, Option<usize>, NodeId)>, DocumentError> {
+    pub(crate) fn raw_edges(&self) -> Result<Vec<RawEdge<'a>>, DocumentError> {
         match &self.doc.entry(self.id).data {
             NodeData::Internal(edges) => Ok(with_occurrence_indices(edges).collect()),
             NodeData::Leaf(_) => Err(DocumentError::new(&self.path, "a leaf has no edges")),
@@ -917,6 +917,9 @@ fn push_raw(arena: &mut Arena, node: RawNode, depth: usize) -> Result<NodeId, Do
         }
     }
 }
+
+/// A node's edge for a path-buffer walker: label, E-10 index, child.
+pub(crate) type RawEdge<'a> = (&'a str, Option<usize>, NodeId);
 
 /// Pairs every edge of a node with its E-10 index: `Some(i)`, the 0-based
 /// position among the node's edges of the same label, when the label occurs

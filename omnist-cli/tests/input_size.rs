@@ -271,3 +271,18 @@ fn schema_commands_take_no_such_flag() {
     assert_eq!(r.code, 2);
     assert!(r.stderr.contains("--max-input-bytes"), "{}", r.stderr);
 }
+
+#[test]
+fn an_unreadable_schema_on_stdin_is_still_an_io_error() {
+    // Schema files are read whole by `read_bytes` (not bounded by D-23):
+    // stdin as a directory makes the read fail with EISDIR.
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_omnist"));
+    cmd.args(["schema", "format", "-"]);
+    cmd.stdin(std::fs::File::open(std::env::temp_dir()).unwrap());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    let output = cmd.output().unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("(reading stdin)"), "{stderr}");
+}

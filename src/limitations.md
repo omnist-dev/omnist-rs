@@ -1,6 +1,6 @@
 # Limitations & stability
 
-## Alpha status: `0.8.0-alpha`, per this project's versioning rule
+## Alpha status: `0.9.0-alpha`, per this project's versioning rule
 
 The Rust port's first feature-complete milestone (issue #28) plus its own
 conformance-test harness against
@@ -90,9 +90,13 @@ position; `read_oml_with` and the registry's `oml` format report the Document
 form. A syntax error anywhere in the input wins over an over-long integer.
 
 Two readers have a ceiling of their own below ours: `toml_edit` refuses nesting
-past about 80 inline-table levels and holds every integer in 64 bits, so a
-larger `max_depth` or a `max_int_digits` above 19 does not make the TOML
-reader accept more than `toml_edit` does. The XML reader counts an element as
+past about 80 levels (inline tables, arrays, dotted keys and table headers
+alike) and holds every integer in 64 bits, so a larger `max_depth` or a
+`max_int_digits` above 19 does not make the TOML reader accept more than
+`toml_edit` does. Its recursion cap is reported as `document.limit.depth` at
+`$`, with a message naming `toml_edit`'s own cap (through 0.8.0-alpha a table
+header deeper than 80 levels panicked the reader, omnist-rs#197, and the other
+spellings were `parse.codec-syntax`). The XML reader counts an element as
 a node once it has a child element, so a million leaf elements are one node;
 its text is never an integer, so `max_int_digits` does not touch it.
 

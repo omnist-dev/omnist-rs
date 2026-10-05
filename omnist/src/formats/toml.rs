@@ -1476,14 +1476,13 @@ mod tests {
     /// span (inline tables, arrays) or not (table headers), and never
     /// panics.
     fn assert_depth_refusal(err: &OmnistError) {
-        match err {
-            OmnistError::Document(e) => {
-                assert_eq!(e.code.as_deref(), Some("document.limit.depth"));
-                assert_eq!(e.path, "$");
-                assert!(e.message.contains("toml_edit"), "{}", e.message);
-            }
-            other => panic!("expected document.limit.depth, got {other:?}"),
-        }
+        assert!(
+            matches!(err, OmnistError::Document(e)
+                if e.code.as_deref() == Some("document.limit.depth")
+                    && e.path == "$"
+                    && e.message.contains("toml_edit")),
+            "expected document.limit.depth, got {err:?}"
+        );
     }
 
     fn header_chain(n: usize, open: &str, close: &str) -> String {

@@ -676,7 +676,7 @@ fn read_by_fmt(
         },
         Fmt::Oml => {
             let raw = omnist::oml::read_oml_with(text, limits)?;
-            Ok(Doc::from_raw_with(raw, limits)?)
+            Doc::from_raw_with(raw, limits).map_err(Into::into)
         }
     }
 }
@@ -1266,6 +1266,18 @@ pub fn version_line() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_byte_readers_refuse_an_oversized_input_before_decoding() {
+        let limits = Limits::default().with_max_input_bytes(5);
+        // Invalid UTF-8 and oversized: the size comes first (D-23).
+        let e = read_document_bytes_with(Fmt::Json, vec![0xff; 6], None, &limits).unwrap_err();
+        assert!(e.to_string().contains("maximum input size"), "{e}");
+        let e = read_oml_bytes_with(vec![0xff; 6], &limits).unwrap_err();
+        assert!(e.to_string().contains("--max-input-bytes"), "{e}");
+        // Exactly the maximum is accepted.
+        assert!(read_oml_bytes_with(b"a: 1 ".to_vec(), &limits).is_ok());
+    }
 
     #[test]
     fn version_line_includes_crate_version() {

@@ -390,8 +390,7 @@ fn read_xml_raw(
 /// exactly (see this module's doc comment).
 pub fn read_xml(text: &str) -> Result<Doc, OmnistError> {
     let raw = read_xml_raw(text, None, &ResolvedLimits::DEFAULT)?;
-    let doc = Doc::from_raw(raw)?;
-    Ok(doc)
+    Doc::from_raw(raw).map_err(Into::into)
 }
 
 /// [`read_xml`] under explicit [`Limits`].
@@ -405,7 +404,7 @@ pub fn read_xml(text: &str) -> Result<Doc, OmnistError> {
 pub fn read_xml_with(text: &str, limits: &Limits) -> Result<Doc, OmnistError> {
     let resolved = limits.resolve()?;
     let raw = read_xml_raw(text, None, &resolved)?;
-    Ok(Doc::from_raw_resolved(raw, resolved)?)
+    Doc::from_raw_resolved(raw, resolved).map_err(Into::into)
 }
 
 /// Same as [`read_xml`], but also reports `format.attribute-dropped` and
@@ -417,8 +416,7 @@ pub fn read_xml_with(text: &str, limits: &Limits) -> Result<Doc, OmnistError> {
 /// [`read_xml`].
 pub fn read_xml_report(text: &str, report: Option<&mut WriteReport>) -> Result<Doc, OmnistError> {
     let raw = read_xml_raw(text, report, &ResolvedLimits::DEFAULT)?;
-    let doc = Doc::from_raw(raw)?;
-    Ok(doc)
+    Doc::from_raw(raw).map_err(Into::into)
 }
 
 /// Parse XML text into a [`Doc`] with schema-guided pretyping of boolean,
@@ -437,7 +435,7 @@ pub fn read_xml_with_schema_and_limits(
     let resolved = limits.resolve()?;
     let raw = read_xml_raw(text, None, &resolved)?;
     let pretyped = xml_pretype(raw, schema, &FieldType::Ref(schema.root().clone()));
-    Ok(Doc::from_raw_resolved(pretyped, resolved)?)
+    Doc::from_raw_resolved(pretyped, resolved).map_err(Into::into)
 }
 
 /// An element is a node (a container) from its first child element on:
