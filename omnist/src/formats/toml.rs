@@ -200,6 +200,7 @@
 
 use crate::WriteError;
 use crate::document::{Doc, Value};
+use crate::error::DocumentError;
 use crate::error::{OmnistError, ParseError};
 use crate::formats::float_fmt;
 use crate::formats::int_cap::out_of_range_message;
@@ -264,20 +265,43 @@ fn read_toml_resolved(text: &str, limits: Resolved) -> Result<Doc, OmnistError> 
 /// this module's doc comment on the integer digit cap) and otherwise
 /// reports the crate's own message at the failure's line/column.
 fn toml_parse_error(text: &str, e: &toml_edit::TomlError, limits: &Resolved) -> OmnistError {
-    // `toml_edit::TomlError::span()` is documented as optional, but
-    // empirically (see this module's tests) every genuine parse failure --
-    // an empty/unquoted key, an unclosed array/string, a missing `=`, an
-    // integer overflow -- carries a real span; there is no reachable case
-    // from parsing text (as opposed to this crate's own mutation API,
-    // which this module never uses) that omits one.
-    let span = e
-        .span()
-        .expect("toml_edit's TomlError always carries a span for a genuine text-parse failure");
+    // omnist-rs#197: `toml_edit`'s own recursion cap (about 80 levels) is
+    // nesting past a bound, so it is `document.limit.depth` at `$`. Its error
+    // carries a span for an inline table or array but NOT for a table header
+    // (`[a.a.a. ...]`), so this check comes before anything reads the span.
+    // Two spellings: "cannot recurse further; max recursion depth met" (with
+    // a span) and "recursion limit" (a table header, without one).
+    if ["max recursion depth", "recursion limit"]
+        .iter()
+        .any(|m| e.message().contains(m))
+    {
+        return toml_recursion_error(limits).into();
+    }
+    // `TomlError::span()` is optional. Every other genuine parse failure
+    // seen carries one, but a missing one must never panic the reader on
+    // hostile input (that was #197): fall back to the start of the input.
+    let span = e.span().unwrap_or(0..0);
     if e.message().contains("overflow") {
         return toml_overflow_error(text, span, limits);
     }
     let (line, col) = line_col_bytes(text, span.start);
     ParseError::codec_syntax(line, col, format!("invalid TOML: {}", e.message())).into()
+}
+
+/// The `document.limit.depth` error for `toml_edit`'s own recursion cap. The
+/// configured maximum depth may be larger (200 by default): the parser
+/// library refuses first, so the message names it rather than claiming the
+/// configured maximum was reached.
+fn toml_recursion_error(limits: &Resolved) -> DocumentError {
+    DocumentError::with_code(
+        "$",
+        "document.limit.depth",
+        format!(
+            "nesting exceeds toml_edit's own recursion limit (about 80 levels), which applies \
+             below the configured maximum depth ({})",
+            limits.max_depth
+        ),
+    )
 }
 
 /// Recovers the raw digit run from an integer literal `toml_edit` refused
@@ -328,9 +352,9 @@ fn over_cap_integer_error(text: &str, at: usize, limits: &Resolved) -> OmnistErr
                 return limits.int_digits_error(&path).into();
             }
             Err(e) => {
-                let span = e
-                    .span()
-                    .expect("toml_edit's TomlError always carries a span for a text-parse failure");
+                // No span (a recursion-cap error): not an overflow, so it
+                // falls through to `toml_parse_error`, which maps it.
+                let span = e.span().unwrap_or(0..0);
                 if e.message().contains("overflow")
                     && overflow_digit_count(&patched, &span) > limits.max_int_digits
                 {
@@ -1444,7 +1468,66 @@ mod tests {
         }
         text.push('\n');
         let err = read_toml(&text).unwrap_err();
-        assert!(matches!(err, OmnistError::Parse(_)));
+        assert_depth_refusal(&err);
+    }
+
+    /// omnist-rs#197: `toml_edit`'s own recursion cap (about 80 levels) is
+    /// reported as `document.limit.depth` at `$`, whether its error carries a
+    /// span (inline tables, arrays) or not (table headers), and never
+    /// panics.
+    fn assert_depth_refusal(err: &OmnistError) {
+        match err {
+            OmnistError::Document(e) => {
+                assert_eq!(e.code.as_deref(), Some("document.limit.depth"));
+                assert_eq!(e.path, "$");
+                assert!(e.message.contains("toml_edit"), "{}", e.message);
+            }
+            other => panic!("expected document.limit.depth, got {other:?}"),
+        }
+    }
+
+    fn header_chain(n: usize, open: &str, close: &str) -> String {
+        format!("{open}{}{close}\n", vec!["a"; n].join("."))
+    }
+
+    #[test]
+    fn deeply_nested_table_headers_are_a_depth_error_not_a_panic() {
+        // 80 levels read; 81 and beyond (200 and 201 are the depths the issue
+        // measured, 1000 is far past the port's own limit) are refused.
+        for (open, close) in [("[", "]"), ("[[", "]]")] {
+            let ok = read_toml(&header_chain(80, open, close));
+            assert!(ok.is_ok(), "80 levels of {open}: {ok:?}");
+            for n in [81, 90, 199, 200, 201, 250, 1000] {
+                let err = read_toml(&header_chain(n, open, close)).unwrap_err();
+                assert_depth_refusal(&err);
+            }
+        }
+        // The same through the explicit-limits reader, whatever the limits.
+        let limits = crate::limits::Limits::default().with_max_depth(250);
+        let err = read_toml_with(&header_chain(200, "[", "]"), &limits).unwrap_err();
+        assert_depth_refusal(&err);
+    }
+
+    #[test]
+    fn deeply_nested_inline_tables_arrays_and_dotted_keys_are_a_depth_error() {
+        for n in [100usize, 200, 1000] {
+            let inline = format!("a = {}1{}\n", "{a = ".repeat(n), "}".repeat(n));
+            assert_depth_refusal(&read_toml(&inline).unwrap_err());
+            let array = format!("a = {}1{}\n", "[".repeat(n), "]".repeat(n));
+            assert_depth_refusal(&read_toml(&array).unwrap_err());
+            let dotted = format!("{} = 1\n", vec!["a"; n].join("."));
+            assert_depth_refusal(&read_toml(&dotted).unwrap_err());
+        }
+    }
+
+    /// An over-long integer ahead of a header chain past the cap: the literal
+    /// is blanked and the text parsed again, which then hits the recursion
+    /// cap with no span. Still a coded depth error, no panic.
+    #[test]
+    fn an_over_cap_integer_before_a_too_deep_header_is_a_depth_error() {
+        let digits = "9".repeat(5000);
+        let text = format!("n = {digits}\n{}", header_chain(100, "[", "]"));
+        assert_depth_refusal(&read_toml(&text).unwrap_err());
     }
 
     #[test]

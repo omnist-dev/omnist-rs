@@ -1691,6 +1691,10 @@ fn hostile_bytes_never_panic_on_any_read_surface() {
         .collect();
     let deep_yaml_mixed = format!("{}{}", "- ".repeat(30_000), "[".repeat(500));
     let deep_json_obj = "{\"a\":".repeat(50_000);
+    // omnist-rs#197: toml_edit's recursion cap on a table header carries no
+    // span and used to panic the reader.
+    let deep_toml_header = format!("[{}]
+", vec!["a"; 200].join("."));
     let inputs: Vec<(&str, Vec<u8>)> = vec![
         ("empty", vec![]),
         ("bom only", b"\xef\xbb\xbf".to_vec()),
@@ -1704,6 +1708,7 @@ fn hostile_bytes_never_panic_on_any_read_surface() {
         ("deep yaml block maps", deep_yaml_maps.into_bytes()),
         ("deep yaml flow after block", deep_yaml_mixed.into_bytes()),
         ("deep json objects", deep_json_obj.into_bytes()),
+        ("deep toml header", deep_toml_header.into_bytes()),
         (
             "high code points",
             "\u{10FFFF}\u{10FFFF}: \u{10FFFF}\n".into(),
