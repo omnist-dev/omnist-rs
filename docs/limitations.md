@@ -158,9 +158,10 @@ slowest codec at the size chosen. This port enforces one, **64 MiB** by default
 a parse fast. Measured on 2026-10-05 (release build, one run each, a flat
 mapping of integer entries filling 64 MiB; TOML and YAML also measured at
 8 and 16 MiB and scale about linearly): OML 2.4 s and 0.5 GB peak, XML 7.1 s and 0.6 GB, JSON 6.1 s
-and 1.0 GB, TOML 15.8 s and 2.5 GB, YAML 18.8 s and 2.7 GB. The spec says an
-implementation SHOULD NOT exceed 10 MiB without such a measurement; this one is
-above it and has it, but a deployment that reads untrusted TOML or YAML on a
+and 1.0 GB, TOML 15.8 s and 2.5 GB, YAML 18.8 s and 2.7 GB. The spec
+gives no default (D-24) and asks an implementation to document its value and to
+measure its slowest codec on a worst-case input before raising it; these
+measurements are why the default is documented here. A deployment that reads untrusted TOML or YAML on a
 small host should set a lower maximum (the same inputs at 10 MiB: TOML 2.1 s
 and 0.43 GB, YAML 2.7 s and 0.46 GB, the others under 1.3 s and 0.17 GB). Before 0.9.0-alpha a reader took any size, so a caller
 that reads more than 64 MiB now has to raise the limit explicitly: that is a
