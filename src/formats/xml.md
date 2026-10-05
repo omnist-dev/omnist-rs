@@ -94,17 +94,22 @@ string, not its original type (`check_xml`'s `format.value-stringified`
 adjustment; named `value.stringified` through 0.7.0-alpha, renamed to the
 code the spec's section 8.3.8 names).
 
-## `null` is written as an empty element: `null.omitted` is not a spec code
+## `null` has no XML form
 
-A `null` leaf is written as an empty element, which reads back as the empty
-string, and the write records a `null.omitted` warning. **`null.omitted` is
-not in the spec's section 8.3.8 table**: the taxonomy has no code for a null
-written as an empty XML element, so this port keeps its own and documents it
-here (spec D-11-style disclosure) rather than inventing a `format.*` name for
-the spec. It appears in `WriteReport` adjustments and in the CLI's `--report`
-and `check` output. It is the one adjustment code this port emits that is not
-in the taxonomy; it will be renamed or removed when the spec decides how this
-case is reported.
+XML has no null token, and a childless element reads back as the empty string
+(`<root><s/></root>` is `s` holding `""`, not a null). A written null would
+therefore be indistinguishable from the different, valid Document holding the
+empty string, so the writer fails (spec C-10): `write_xml` returns a
+`WriteError` with code `write.unsupported-value` and the Document path of the
+null leaf, E-10 indexed (`$.root.item[1]` for the second of three `item`
+edges), whatever `strict` says. `check_xml` previews the same refusal as an
+error-severity `write.unsupported-value` entry.
+
+Through 0.8.0-alpha this port wrote an empty element and recorded a
+`null.omitted` warning, a code the spec's table never had. The code is gone
+with the behaviour (0.9.0-alpha); a script that matched `null.omitted`, or
+relied on a null becoming `<a />`, must change. TOML's null fails the same
+way.
 
 ## Schema-guided pretyping (spec §2.2 / issue #114)
 

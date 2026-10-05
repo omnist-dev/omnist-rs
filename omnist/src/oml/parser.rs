@@ -77,8 +77,6 @@ impl<'a> Parser<'a> {
         let node = if matches!(self.kind, TokKind::Eof) {
             self.charge_node(self.start)?;
             RawNode::Edges(vec![])
-        } else if matches!(self.kind, TokKind::LBrace) {
-            self.parse_brace_value(0)?
         } else if self.looks_like_edge() {
             self.charge_node(self.start)?;
             RawNode::Edges(self.parse_node_edges(0, true)?)
@@ -155,6 +153,9 @@ impl<'a> Parser<'a> {
                     ),
                 ));
             }
+            // OML-29: after the colon any run of spaces, comments, newlines
+            // and `;` is skipped; the value may start on a later line.
+            self.skip_sep()?;
             let child_depth = depth + 1;
             if matches!(self.kind, TokKind::LBracket) {
                 for element in self.parse_array(child_depth)? {

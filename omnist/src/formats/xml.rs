@@ -237,6 +237,8 @@ fn read_xml_raw(
     mut report: Option<&mut WriteReport>,
     limits: &ResolvedLimits,
 ) -> Result<RawNode, OmnistError> {
+    // D-23: first, on the input as received (BOM counted).
+    limits.check_input_size(text.len())?;
     // D-15/D-21: one leading BOM is stripped, a second is rejected at 1:1
     // (`parse.codec-syntax`, E-24). XML 1.0 admits a leading BOM, so
     // quick_xml would otherwise discard a second one silently.
@@ -261,7 +263,7 @@ fn read_xml_raw(
                     node_count: 1,
                 };
                 let tag = local_name(e.name());
-                let path = crate::report::child_path("$", &tag, 0);
+                let path = crate::report::child_path("$", &tag, None);
                 refuse_attribute_entities(&e, &mut refusal);
                 record_elem_diagnostics(&e, &path, report.as_deref_mut());
                 let content = parse_content(
@@ -277,7 +279,7 @@ fn read_xml_raw(
             }
             Event::Empty(e) => {
                 let tag = local_name(e.name());
-                let path = crate::report::child_path("$", &tag, 0);
+                let path = crate::report::child_path("$", &tag, None);
                 refuse_attribute_entities(&e, &mut refusal);
                 record_elem_diagnostics(&e, &path, report.as_deref_mut());
                 break RawNode::Edges(vec![(tag, RawNode::Leaf(Scalar::Str(String::new())))]);
@@ -388,8 +390,7 @@ fn read_xml_raw(
 /// exactly (see this module's doc comment).
 pub fn read_xml(text: &str) -> Result<Doc, OmnistError> {
     let raw = read_xml_raw(text, None, &ResolvedLimits::DEFAULT)?;
-    let doc = Doc::from_raw(raw)?;
-    Ok(doc)
+    Doc::from_raw(raw).map_err(Into::into)
 }
 
 /// [`read_xml`] under explicit [`Limits`].
@@ -403,7 +404,7 @@ pub fn read_xml(text: &str) -> Result<Doc, OmnistError> {
 pub fn read_xml_with(text: &str, limits: &Limits) -> Result<Doc, OmnistError> {
     let resolved = limits.resolve()?;
     let raw = read_xml_raw(text, None, &resolved)?;
-    Ok(Doc::from_raw_resolved(raw, resolved)?)
+    Doc::from_raw_resolved(raw, resolved).map_err(Into::into)
 }
 
 /// Same as [`read_xml`], but also reports `format.attribute-dropped` and
@@ -415,17 +416,26 @@ pub fn read_xml_with(text: &str, limits: &Limits) -> Result<Doc, OmnistError> {
 /// [`read_xml`].
 pub fn read_xml_report(text: &str, report: Option<&mut WriteReport>) -> Result<Doc, OmnistError> {
     let raw = read_xml_raw(text, report, &ResolvedLimits::DEFAULT)?;
-    let doc = Doc::from_raw(raw)?;
-    Ok(doc)
+    Doc::from_raw(raw).map_err(Into::into)
 }
 
 /// Parse XML text into a [`Doc`] with schema-guided pretyping of boolean,
 /// integer, and number scalar fields (spec §2.2 / issue #114).
 pub fn read_xml_with_schema(text: &str, schema: &Schema) -> Result<Doc, OmnistError> {
-    let raw = read_xml_raw(text, None, &ResolvedLimits::DEFAULT)?;
+    read_xml_with_schema_and_limits(text, schema, &Limits::default())
+}
+
+/// [`read_xml_with_schema`] under explicit [`Limits`] (see [`read_xml_with`]
+/// for what each limit governs here).
+pub fn read_xml_with_schema_and_limits(
+    text: &str,
+    schema: &Schema,
+    limits: &Limits,
+) -> Result<Doc, OmnistError> {
+    let resolved = limits.resolve()?;
+    let raw = read_xml_raw(text, None, &resolved)?;
     let pretyped = xml_pretype(raw, schema, &FieldType::Ref(schema.root().clone()));
-    let doc = Doc::from_raw(pretyped)?;
-    Ok(doc)
+    Doc::from_raw_resolved(pretyped, resolved).map_err(Into::into)
 }
 
 /// An element is a node (a container) from its first child element on:
@@ -471,6 +481,13 @@ fn parse_content(
     // made a MAX_NODES-sized sibling run O(n^2).
     let mut label_counts: std::collections::HashMap<String, usize> =
         std::collections::HashMap::new();
+    // E-10: a label occurring more than once is indexed on every occurrence,
+    // the first included, but the first occurrence is read before a sibling
+    // shows the label repeats. Its diagnostics are recorded under the bare
+    // path and re-indexed after the loop: label -> (report range of the
+    // first occurrence's subtree, its bare path).
+    let mut firsts: std::collections::HashMap<String, (std::ops::Range<usize>, String)> =
+        std::collections::HashMap::new();
     let mut buf = Vec::new();
     loop {
         buf.clear();
@@ -485,7 +502,9 @@ fn parse_content(
                     .entry(tag.clone())
                     .and_modify(|n| *n += 1)
                     .or_insert(0);
-                let child_path = crate::report::child_path(path, &tag, index);
+                let child_path =
+                    crate::report::child_path(path, &tag, (index > 0).then_some(index));
+                let start = report.as_deref().map_or(0, WriteReport::len);
                 refuse_attribute_entities(&e, refusal);
                 record_elem_diagnostics(&e, &child_path, report.as_deref_mut());
                 let child = parse_content(
@@ -497,6 +516,10 @@ fn parse_content(
                     refusal,
                     report.as_deref_mut(),
                 )?;
+                if index == 0 && report.is_some() {
+                    let end = report.as_deref().map_or(0, WriteReport::len);
+                    firsts.insert(tag.clone(), (start..end, child_path));
+                }
                 children.push((tag, child));
             }
             Event::Empty(e) => {
@@ -506,9 +529,15 @@ fn parse_content(
                     .entry(tag.clone())
                     .and_modify(|n| *n += 1)
                     .or_insert(0);
-                let child_path = crate::report::child_path(path, &tag, index);
+                let child_path =
+                    crate::report::child_path(path, &tag, (index > 0).then_some(index));
+                let start = report.as_deref().map_or(0, WriteReport::len);
                 refuse_attribute_entities(&e, refusal);
                 record_elem_diagnostics(&e, &child_path, report.as_deref_mut());
+                if index == 0 && report.is_some() {
+                    let end = report.as_deref().map_or(0, WriteReport::len);
+                    firsts.insert(tag.clone(), (start..end, child_path));
+                }
                 children.push((tag, RawNode::Leaf(Scalar::Str(String::new()))));
             }
             Event::End(_) => break,
@@ -534,6 +563,10 @@ fn parse_content(
                     text.push(c);
                 }
             }
+            // C-9 audit: the reader is `Reader::from_str` over a valid `&str`
+            // and a CDATA body is cut at ASCII delimiters, so the lossy form
+            // below never inserts a U+FFFD (docs/limitations.md,
+            // omnist/tests/c9_vacuous.rs).
             Event::CData(e) => {
                 text.push_str(&String::from_utf8_lossy(e.as_ref()));
             }
@@ -546,6 +579,13 @@ fn parse_content(
             }
             // Comments/PIs inside an element body: skip.
             _ => {}
+        }
+    }
+    if let Some(rep) = report {
+        for (label, (range, bare)) in firsts {
+            if label_counts[&label] > 0 {
+                rep.reindex_prefix(range, &bare, &format!("{bare}[0]"));
+            }
         }
     }
     if !children.is_empty() {
@@ -615,6 +655,8 @@ fn record_elem_diagnostics(
 /// well-formedness is checked by the reader.
 fn refuse_attribute_entities(e: &quick_xml::events::BytesStart<'_>, refusal: &mut Refusal) {
     for attr in e.attributes().filter_map(Result::ok) {
+        // C-9 audit: an attribute value is a slice of the valid `&str`
+        // source cut at quotes, so this never inserts a U+FFFD.
         let value = String::from_utf8_lossy(&attr.value);
         let mut rest: &str = &value;
         while let Some(at) = rest.find('&') {
@@ -730,7 +772,7 @@ pub fn write_xml(
         return Err(single_root_error());
     }
     let mut rep = WriteReport::new();
-    scan_xml_cursor(&root, "$", &mut rep, true)?;
+    scan_xml_cursor(&root, &mut String::from("$"), &mut rep, true)?;
     let (tag, child_id) = &edges[0];
     let child_cursor = root.seek(*child_id);
     let mut out = String::new();
@@ -768,7 +810,8 @@ pub fn check_xml(doc: &Doc) -> WriteReport {
     // path, it only records the same conditions as `write.unsupported-value`
     // `Severity::Error` adjustments for preview purposes (`check_xml` never
     // produces output to begin with, so there is nothing to fail).
-    scan_xml_cursor(&doc.root(), "$", &mut rep, false).expect("fail_fast: false never returns Err");
+    scan_xml_cursor(&doc.root(), &mut String::from("$"), &mut rep, false)
+        .expect("fail_fast: false never returns Err");
     rep
 }
 
@@ -816,7 +859,7 @@ impl crate::formats::Codec for Xml {
 /// occurrence in one pass rather than just the first.
 fn scan_xml_cursor(
     cursor: &Cursor,
-    path: &str,
+    path: &mut String,
     rep: &mut WriteReport,
     fail_fast: bool,
 ) -> Result<(), WriteError> {
@@ -829,30 +872,46 @@ fn scan_xml_cursor(
                 if fail_fast {
                     return Err(crate::report::unsupported_value_error(path, detail));
                 }
-                rep.add(path, "write.unsupported-value", detail, Severity::Error);
+                rep.add(
+                    path.as_str(),
+                    "write.unsupported-value",
+                    detail,
+                    Severity::Error,
+                );
                 return Ok(());
             }
-            let mut counts: IndexMap<&str, usize> = IndexMap::new();
+            let mut totals: IndexMap<&str, usize> = IndexMap::new();
+            for (label, _) in edges {
+                *totals.entry(label.as_str()).or_insert(0) += 1;
+            }
+            let mut seen: IndexMap<&str, usize> = IndexMap::new();
             for (label, child_id) in edges {
-                let entry = counts.entry(label.as_str()).or_insert(0);
-                let i = *entry;
-                *entry += 1;
-                let p = crate::report::child_path(path, label, i);
+                let i = *seen
+                    .entry(label.as_str())
+                    .and_modify(|n| *n += 1)
+                    .or_insert(0);
+                let base = path.len();
+                crate::report::push_child_path(
+                    path,
+                    label,
+                    crate::report::occurrence_index(i, totals[label.as_str()]),
+                );
                 if !is_valid_xml_name(label) {
                     let detail =
                         format!("label {label:?} is not a valid XML name and cannot be written");
                     if fail_fast {
-                        return Err(crate::report::unsupported_value_error(&p, detail));
+                        return Err(crate::report::unsupported_value_error(path, detail));
                     }
                     rep.add(
-                        p.clone(),
+                        path.as_str(),
                         "write.unsupported-value",
                         detail,
                         Severity::Error,
                     );
                 }
                 let child = cursor.seek(*child_id);
-                scan_xml_cursor(&child, &p, rep, fail_fast)?;
+                scan_xml_cursor(&child, path, rep, fail_fast)?;
+                path.truncate(base);
             }
         }
         Err(_) => {
@@ -872,7 +931,30 @@ fn scan_xml_cursor(
                 if fail_fast {
                     return Err(crate::report::unsupported_value_error(path, detail));
                 }
-                rep.add(path, "write.unsupported-value", detail, Severity::Error);
+                rep.add(
+                    path.as_str(),
+                    "write.unsupported-value",
+                    detail,
+                    Severity::Error,
+                );
+                return Ok(());
+            }
+            // C-10: XML has no null token, and the empty element `<a/>` reads
+            // back as the empty string, so a written null would be
+            // indistinguishable from the different, valid Document holding
+            // "". Fails unconditionally, like TOML's null.
+            if matches!(scalar, Scalar::Null) {
+                let detail = "null has no XML representation (XML has no null token, and an \
+                              empty element reads back as the empty string)";
+                if fail_fast {
+                    return Err(crate::report::unsupported_value_error(path, detail));
+                }
+                rep.add(
+                    path.as_str(),
+                    "write.unsupported-value",
+                    detail,
+                    Severity::Error,
+                );
                 return Ok(());
             }
             scan_leaf(scalar, path, rep);
@@ -883,17 +965,8 @@ fn scan_xml_cursor(
 
 fn scan_leaf(scalar: &Scalar, path: &str, rep: &mut WriteReport) {
     match scalar {
-        // `null.omitted` is NOT a code of the spec's section 8.3.8 table: the
-        // taxonomy has none for a null written as an empty element (which
-        // reads back as the empty string). This port keeps its own and
-        // documents it (docs/formats/xml.md) rather than inventing a
-        // `format.*` name; a spec issue decides what replaces it.
-        Scalar::Null => rep.add(
-            path,
-            "null.omitted",
-            "null written as an empty element",
-            Severity::Warning,
-        ),
+        // A null never reaches this function: `scan_xml_cursor` fails the
+        // write (C-10), or records the failure for `check_xml`, first.
         // omnist-rs#86: read_xml no longer infers scalar kind from
         // element-text shape, so a non-string scalar written to XML (XML
         // has no native typed literals -- everything is text) now reads
@@ -912,7 +985,7 @@ fn scan_leaf(scalar: &Scalar, path: &str, rep: &mut WriteReport) {
             "non-string scalar written as text (reads back as a string)",
             Severity::Warning,
         ),
-        Scalar::Str(_) => {}
+        Scalar::Null | Scalar::Str(_) => {}
     }
     // `string.cr_normalized` retired (spec Sec8.3.8, issue #162): a
     // literal CR is no longer written raw and reported lossy -- it is

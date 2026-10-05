@@ -694,13 +694,105 @@ fn ordinary_string_is_not_flagged_value_stringified() {
 
 // --------------------------------------------------------------------- null leaf
 
+fn null() -> RawNode {
+    RawNode::Leaf(Scalar::Null)
+}
+
+/// C-10 (omnist-spec v0.33.0-beta): the XML writer fails with
+/// `write.unsupported-value` at the Document path of a null leaf,
+/// unconditionally (`strict` or not, report or not), E-10-indexed. XML has no
+/// null token and `<a/>` reads back as the empty string.
 #[test]
-fn null_leaf_writes_as_empty_element_and_is_reported() {
-    let doc = Doc::from_raw(edges(vec![("root", RawNode::Leaf(Scalar::Null))])).unwrap();
-    let mut rep = WriteReport::new();
-    let text = write_xml(&doc, false, Some(&mut rep)).unwrap();
-    assert_eq!(text, "<root />");
-    assert!(rep.adjustments().iter().any(|a| a.code == "null.omitted"));
+fn a_null_leaf_fails_the_write_at_its_document_path() {
+    let cases: Vec<(&str, RawNode, &str)> = vec![
+        ("top level", edges(vec![("a", null())]), "$.a"),
+        (
+            "nested",
+            edges(vec![(
+                "root",
+                edges(vec![("x", edges(vec![("n", null())]))]),
+            )]),
+            "$.root.x.n",
+        ),
+        (
+            "second of three occurrences",
+            edges(vec![(
+                "root",
+                edges(vec![
+                    ("item", leaf_str("a")),
+                    ("item", null()),
+                    ("item", leaf_str("c")),
+                ]),
+            )]),
+            "$.root.item[1]",
+        ),
+        (
+            "first of two occurrences",
+            edges(vec![(
+                "root",
+                edges(vec![("item", null()), ("item", leaf_str("b"))]),
+            )]),
+            "$.root.item[0]",
+        ),
+        (
+            "a single occurrence has no index",
+            edges(vec![(
+                "root",
+                edges(vec![("n", null()), ("m", leaf_str("x"))]),
+            )]),
+            "$.root.n",
+        ),
+    ];
+    for (name, raw, path) in cases {
+        let doc = Doc::from_raw(raw).unwrap();
+        for strict in [false, true] {
+            let mut rep = WriteReport::new();
+            let e = write_xml(&doc, strict, Some(&mut rep)).unwrap_err();
+            assert_eq!(e.path.as_deref(), Some(path), "{name} strict={strict}");
+            assert_eq!(
+                e.code.as_deref(),
+                Some("write.unsupported-value"),
+                "{name} strict={strict}"
+            );
+            assert!(
+                rep.is_empty(),
+                "{name}: the failure is not also a report entry"
+            );
+        }
+        // `check_xml` previews the same refusal, as an error-severity entry.
+        let rep = check_xml(&doc);
+        let found: Vec<_> = rep
+            .iter()
+            .map(|a| (a.path.as_str(), a.code.as_str()))
+            .collect();
+        assert_eq!(found, vec![(path, "write.unsupported-value")], "{name}");
+        assert_eq!(rep.errors().len(), 1, "{name}");
+        assert!(
+            !rep.iter().any(|a| a.code == "null.omitted"),
+            "{name}: the port-local code is gone"
+        );
+    }
+}
+
+/// The read-side neighbour: a childless element is the empty string, not a
+/// null, so it reads back as `""` and writes as an empty element.
+#[test]
+fn an_empty_element_reads_as_the_empty_string_and_writes_back() {
+    let doc = read_xml("<root><s/></root>").unwrap();
+    assert!(
+        doc.eq_doc(
+            &Doc::from_raw(edges(vec![("root", edges(vec![("s", leaf_str(""))]))])).unwrap()
+        )
+    );
+    let text = write_xml(&doc, false, None).unwrap();
+    assert_eq!(read_xml(&text).unwrap().to_raw(), doc.to_raw());
+}
+
+/// `xml_text` still totals over every scalar: a null is the empty text
+/// (defensive: the write scan refuses a null before any element is written).
+#[test]
+fn xml_text_of_a_null_is_empty() {
+    assert_eq!(xml_text(&Scalar::Null), "");
 }
 
 // ------------------------------------------------------------------------ round trip
@@ -1599,5 +1691,37 @@ fn predefined_entities_and_character_references_in_attribute_values_stay_legal()
     ] {
         let doc = read_xml(src);
         assert!(doc.is_ok(), "{src}: {doc:?}");
+    }
+}
+
+#[test]
+fn read_xml_with_schema_and_limits_validates_the_limits_and_applies_them() {
+    let schema = crate::osd::parse_schema("record R {\n    \"a\": string,\n}\nroot R\n").unwrap();
+    let bad = Limits::default().with_max_input_bytes(u64::MAX);
+    assert!(read_xml_with_schema_and_limits("<a>x</a>", &schema, &bad).is_err());
+    let tight = Limits::default().with_max_input_bytes(7);
+    let e = read_xml_with_schema_and_limits("<a>x</a>", &schema, &tight).unwrap_err();
+    assert!(e.to_string().contains("maximum input size"), "{e}");
+    assert!(read_xml_with_schema_and_limits("<a>x</a>", &schema, &Limits::default()).is_ok());
+}
+
+/// E-10 for the reader's report, in the library's own build (the integration
+/// tests link a separate instance of the reader): the first of a repeated
+/// element is indexed once a later sibling shows the label repeats, for an
+/// empty element and for one with children, and a nested diagnostic follows.
+#[test]
+fn the_report_indexes_the_first_of_a_repeated_element() {
+    let cases: &[(&str, &[&str])] = &[
+        ("<r><a x=\"1\"/><a/></r>", &["$.r.a[0]"]),
+        ("<r><a x=\"1\"></a><a/></r>", &["$.r.a[0]"]),
+        ("<r><a><k x=\"1\"/></a><a/></r>", &["$.r.a[0].k"]),
+        ("<r><a/><a x=\"1\"/></r>", &["$.r.a[1]"]),
+        ("<r><a x=\"1\"/></r>", &["$.r.a"]),
+    ];
+    for (text, expect) in cases {
+        let mut rep = WriteReport::new();
+        read_xml_report(text, Some(&mut rep)).unwrap();
+        let got: Vec<&str> = rep.iter().map(|a| a.path.as_str()).collect();
+        assert_eq!(&got, expect, "{text}");
     }
 }

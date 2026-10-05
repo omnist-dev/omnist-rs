@@ -107,12 +107,41 @@ const LIMIT_KEYS: &[&str] = &[
     "declared_max_depth",
     "declared_max_nodes",
     "declared_max_int_digits",
+    "declared_max_input_bytes",
 ];
 
+/// The `declared_*` keys only the YAML reader honours (D-18, D-22).
+const ALIAS_KEYS: &[&str] = &[
+    "declared_max_alias_expansion",
+    "declared_max_expanded_slots",
+];
+
+/// The first `declared_*` key of a vector's input that this runner does not
+/// honour for the vector's operation, if any (E-20a). Honoured: the
+/// [`LIMIT_KEYS`] and, for a YAML vector, the [`ALIAS_KEYS`], on `parse`
+/// only. A vector carrying any other `declared_*` key must not run against
+/// the port's own default, where a boundary vector passes without testing
+/// its boundary.
+fn unhonoured_declared_key(op: &str, input: &Json) -> Option<String> {
+    let object = input.as_object()?;
+    let format = input["format"].as_str().unwrap_or("oml");
+    object
+        .keys()
+        .filter(|k| k.starts_with("declared_"))
+        .find(|k| {
+            let key = k.as_str();
+            let honoured = op == "parse"
+                && (LIMIT_KEYS.contains(&key) || (format == "yaml" && ALIAS_KEYS.contains(&key)));
+            !honoured
+        })
+        .cloned()
+}
+
 /// The [`Limits`] a vector declares through its `declared_max_*` keys, or
-/// `None` if it declares none. A value that is not a `u32` is an error (never
-/// silently the default, which would turn a boundary vector into a false
-/// pass).
+/// `None` if it declares none. A value that is not a `u32` (a positive
+/// integer, for `declared_max_input_bytes`, which is a `u64`) is an error
+/// (never silently the default, which would turn a boundary vector into a
+/// false pass).
 fn declared_limits(input: &Json) -> Result<Option<Limits>, String> {
     let mut limits = Limits::default();
     let mut declared = false;
@@ -120,6 +149,15 @@ fn declared_limits(input: &Json) -> Result<Option<Limits>, String> {
         let Some(value) = input.get(*key) else {
             continue;
         };
+        if *key == "declared_max_input_bytes" {
+            // 0 would select the default; a vector never declares it.
+            let Some(n) = value.as_u64().filter(|n| *n >= 1) else {
+                return Err(format!("{key} is not a positive integer"));
+            };
+            declared = true;
+            limits = limits.with_max_input_bytes(n);
+            continue;
+        }
         let Some(n) = value.as_u64().and_then(|n| u32::try_from(n).ok()) else {
             return Err(format!("{key} is not a u32"));
         };
@@ -1006,6 +1044,14 @@ fn dispatch(v: &Json) -> VResult {
             "operation {op:?} does not accept `bytes_hex` (E-27)"
         ));
     }
+    // E-20a: a `declared_*` key this runner does not honour is an E-20 skip,
+    // never a run against the default.
+    if let Some(key) = unhonoured_declared_key(op, &v["input"]) {
+        return skip(format!(
+            "not yet implemented (E-20): the vector declares `{key}`, which this runner does not \
+             honour for operation {op:?}"
+        ));
+    }
     match op {
         "parse" => run_parse(v),
         "parse_schema" => run_parse_schema(v),
@@ -1344,8 +1390,111 @@ mod tests {
         assert!(r.message.contains("E-27"));
     }
 
+    /// E-20a: a `declared_*` key the runner does not honour is never run
+    /// against the default (a boundary vector would pass without testing its
+    /// boundary): the vector is an E-20 skip.
     #[test]
-    fn vector_count_is_338() {
+    fn a_declared_key_the_runner_does_not_honour_is_an_e20_skip() {
+        let cases = [
+            // An unknown key on a parse vector.
+            json!({"operation": "parse", "input": {
+                "format": "json", "text": "{}", "declared_max_flux": 3}}),
+            // The alias keys are honoured for YAML only.
+            json!({"operation": "parse", "input": {
+                "format": "json", "text": "{}", "declared_max_alias_expansion": 3}}),
+            json!({"operation": "parse", "input": {
+                "format": "oml", "text": "", "declared_max_expanded_slots": 3}}),
+            // A known key on an operation that does not read a limit.
+            json!({"operation": "validate", "input": {"declared_max_input_bytes": 3}}),
+            json!({"operation": "parse_schema", "input": {
+                "text": "root R", "declared_max_depth": 3}}),
+        ];
+        for v in cases {
+            let r = dispatch(&v);
+            assert_eq!(r.status, Status::Skip, "{v}: {}", r.message);
+            assert!(r.message.contains("E-20"), "{}", r.message);
+            assert!(r.message.contains("declared_"), "{}", r.message);
+        }
+        // The honoured combinations are not skipped.
+        for v in [
+            json!({"operation": "parse", "input": {
+                "format": "yaml", "text": "a: 1", "declared_max_alias_expansion": 3}}),
+            json!({"operation": "parse", "input": {
+                "format": "json", "text": "{}", "declared_max_input_bytes": 3}}),
+        ] {
+            assert_ne!(dispatch(&v).status, Status::Skip, "{v}");
+        }
+    }
+
+    /// `declared_max_input_bytes` (D-23) must reach the reader, in every
+    /// format the suite samples: the over-cap vectors only pass if it does,
+    /// and with the key removed the default (64 MiB) accepts the input, so
+    /// the vector fails. A malformed value fails loudly.
+    #[test]
+    fn the_declared_input_size_reaches_the_reader() {
+        let vectors = iter_vectors(&suite_dir());
+        let mut checked = 0;
+        for nv in &vectors {
+            let name = nv.vector["name"].as_str().unwrap();
+            if !name.starts_with("document-model/input-size/") {
+                continue;
+            }
+            let v = &nv.vector;
+            assert_eq!(dispatch(v).status, Status::Pass, "{name}");
+            if v["expect"]["ok"] == json!(false) {
+                let mut undeclared = v.clone();
+                undeclared["input"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("declared_max_input_bytes");
+                assert_eq!(
+                    dispatch(&undeclared).status,
+                    Status::Fail,
+                    "{name}: without the key the default accepts the input"
+                );
+            }
+            for bad in [json!("three"), json!(0), json!(-1), json!(1.5)] {
+                let mut malformed = v.clone();
+                malformed["input"]["declared_max_input_bytes"] = bad;
+                let r = dispatch(&malformed);
+                assert_eq!(r.status, Status::Fail, "{name}");
+                assert!(
+                    r.message.contains("declared_max_input_bytes"),
+                    "{}",
+                    r.message
+                );
+            }
+            checked += 1;
+        }
+        assert_eq!(checked, 10);
+        // A bytes input would run against the default.
+        let bytes = json!({"operation": "parse", "input": {
+            "format": "json", "bytes_hex": "7b7d", "declared_max_input_bytes": 1}});
+        let r = dispatch(&bytes);
+        assert_eq!(r.status, Status::Fail);
+        assert!(r.message.contains("bytes input"), "{}", r.message);
+    }
+
+    /// E-10 for the XML reader's report as the runner drives it (the runner
+    /// links the library as a dependency, a separate build from the
+    /// library's own tests): the first of a repeated element is indexed.
+    #[test]
+    fn the_xml_report_indexes_the_first_of_a_repeated_element() {
+        let mut rep = WriteReport::new();
+        read_xml_report(
+            "<r><a x=\"1\"/><a/><b><c x=\"1\"></c></b></r>",
+            Some(&mut rep),
+        )
+        .unwrap();
+        let paths: Vec<&str> = rep.adjustments().iter().map(|a| a.path.as_str()).collect();
+        assert_eq!(paths, vec!["$.r.a[0]", "$.r.b.c"]);
+        let mut rep = WriteReport::new();
+        read_xml_report("<r><a><k x=\"1\"/></a><a/></r>", Some(&mut rep)).unwrap();
+        assert_eq!(rep.adjustments()[0].path, "$.r.a[0].k");
+    }
+
+    #[test]
+    fn vector_count_is_367() {
         // 204 -> 249 via the submodule pin bump v0.9.1-beta -> v0.19.0-beta,
         // 249 -> 273 via v0.19.0-beta -> v0.21.0-beta (14 new bytes_hex D-14
         // vectors, 4 new OSD-15 canonical-output vectors, 5 new OML-26/27
@@ -1359,9 +1508,9 @@ mod tests {
         // v0.26.0-beta (19 new vectors: D-18a carrier, D-22 expanded size and
         // the malformed-merge syntax errors, all in alias-expansion.json, and
         // the rest of the v0.26.0 additions), 331 -> 338 via v0.26.0-beta ->
-        // v0.27.0-beta (7 new empty-merge-sequence vectors in alias-expansion.json).
+        // v0.27.0-beta (7 new empty-merge-sequence vectors in alias-expansion.json), 338 -> 367 via v0.27.0-beta -> v0.33.0-beta (7 repeated-label path, 10 input-size, 7 OML-29, 5 XML-null vectors).
         let vectors = iter_vectors(&suite_dir());
-        assert_eq!(vectors.len(), 338);
+        assert_eq!(vectors.len(), 367);
     }
 
     /// Full-suite regression guard: runs every real vector through every
@@ -1369,8 +1518,8 @@ mod tests {
     /// `main`/`main_with_dir` is process-entry-point code). The counts are
     /// freshly measured, not computed by hand.
     ///
-    /// Spec v0.28.0-beta, diagnostics compared as (path, code) sets:
-    /// 310 pass, 0 fail, 28 skip of 338.
+    /// Spec v0.33.0-beta, diagnostics compared as (path, code) sets:
+    /// 339 pass, 0 fail, 28 skip of 367.
     ///
     /// - the 28 skips are E-20 "not yet implemented", never a documented
     ///   divergence: the `extensions-osd-oml` vectors (extension not
@@ -1407,12 +1556,18 @@ mod tests {
     /// and a merge sequence of sequences parsed OK. Implementing D-18a, D-22
     /// and the merge-shape syntax errors brings it to (297, 0, 34). At v0.27.0-beta the 7 new empty-merge-sequence vectors
     /// passed with no change: (304, 0, 34). v0.28.0-beta adds no vectors (DIV-5).
+    /// At v0.33.0-beta, before any change, the baseline was (318, 21, 28) of
+    /// 367: 5 repeated-label path vectors (E-10), 7 OML-29 vectors, 5 over-cap
+    /// input-size vectors (D-23) and 4 XML null-write vectors (C-10) failed, and
+    /// the 5 at-cap input-size vectors passed falsely (the runner ignored
+    /// `declared_max_input_bytes`, E-20a). Implementing them brings it to
+    /// (339, 0, 28).
     #[test]
     fn full_suite_counts_match_the_measured_baseline() {
         let (passed, failed, skipped) = run_all(&suite_dir());
         assert_eq!(
             (passed, failed, skipped),
-            (310, 0, 28),
+            (339, 0, 28),
             "vector pass/fail/skip counts changed -- if this is an intentional fix or a new \
              vector, update the pinned baseline; if not, something regressed"
         );
@@ -1828,11 +1983,11 @@ mod tests {
                 // the limit it declares, never the port's own default.
                 assert_eq!(r.status, Status::Pass, "{}: {}", v["name"], r.message);
                 limits += 1;
+                let name = v["name"].as_str().unwrap();
                 assert!(
-                    v["name"]
-                        .as_str()
-                        .unwrap()
-                        .starts_with("document-model/limits/")
+                    name.starts_with("document-model/limits/")
+                        || name.starts_with("document-model/input-size/"),
+                    "{name}"
                 );
             } else if EXTENSION_OPERATIONS.contains(&op) {
                 ext += 1;
@@ -1848,7 +2003,8 @@ mod tests {
                 assert_ne!(r.status, Status::Skip, "{}: unexplained skip", v["name"]);
             }
         }
-        assert_eq!((limits, alias, ext), (6, 42, 28));
+        // 6 declared-limit vectors and 10 input-size vectors (D-23).
+        assert_eq!((limits, alias, ext), (16, 42, 28));
     }
 
     /// The declared limits must reach the reader: the one-past vectors only

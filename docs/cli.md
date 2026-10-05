@@ -24,6 +24,21 @@ errors as structured JSON on stderr instead of plain text. Exit codes: `0`
 success, `1` a conformance/adjustment failure the command itself reports,
 `2` a usage or parse error.
 
+Every subcommand that reads a Document (`format`, `convert`, `check`,
+`validate`, `infer`) accepts `--max-input-bytes N` (1 to 1 GiB, default 64
+MiB): an input of more than N bytes is refused with
+`document.limit.input-size` at `$` (spec D-23), exit `2`. The count is bytes of
+the input as received, a leading BOM included, taken before decoding; the CLI
+stops reading at N + 1 bytes. The message says how to raise it:
+
+```text
+error: input exceeds the maximum input size (40 bytes); use --max-input-bytes N to raise it
+```
+<!-- doc-illustrative -->
+
+Schema files (`--schema`, the `schema` subcommands) are not Documents and are
+not bounded by it.
+
 ## `format`
 
 Canonicalizes an OML document -- the only format with no other
@@ -58,11 +73,14 @@ silent write; `--report` prints the adjustment report to stderr;
 `--result-format {text,json,oml}` controls how a report (or `--schema`
 outcome) is rendered. Each adjustment carries the spec's section 8.3.8 code
 (`format.value-stringified`, `format.string-line-break-char`,
-`format.temporal-stringified`, `format.interleaving-lost`, ...), except
-`null.omitted` (an XML null written as an empty element), which the spec has
-no code for. Through 0.7.0-alpha `format.value-stringified` was spelled
-`value.stringified` and `format.string-line-break-char` was spelled
-`string.line-break-char`; a script matching the old output must change.
+`format.temporal-stringified`, `format.interleaving-lost`, ...). Through
+0.7.0-alpha `format.value-stringified` was spelled `value.stringified` and
+`format.string-line-break-char` was spelled `string.line-break-char`; a
+script matching the old output must change. Through 0.8.0-alpha an XML null
+was written as an empty element with a `null.omitted` warning; from
+0.9.0-alpha `convert --to xml` fails on a null leaf (exit 2, spec C-10),
+`--strict` or not, and `check --to xml` reports it as an error entry with
+code `write.unsupported-value` (see [XML](formats/xml.md#null-has-no-xml-form)).
 
 ## `check`
 

@@ -175,7 +175,7 @@ add("test_oml.test_nested_braces_arbitrary_depth", "OML: nested braces at arbitr
     "oml_roundtrip", input='a: { b: { c: { d: "leaf" } } }',
     expected=enc(read_oml('a: { b: { c: { d: "leaf" } } }')))
 add("test_oml.test_inline_brace_style_with_semicolons", "OML: inline brace style with semicolon separators",
-    "oml_roundtrip", input='{ a: 1; b: 2 }', expected=enc(read_oml('{ a: 1; b: 2 }')))
+    "oml_roundtrip", input='a: 1; b: 2', expected=enc(read_oml('a: 1; b: 2')))
 
 OML_ERROR_CASES = [
     ("a: `", "stray character backtick is a ParseError", "test_oml.test_stray_character_is_a_parse_error"),

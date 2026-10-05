@@ -1,5 +1,83 @@
 # Changelog
 
+## 0.9.0-alpha
+
+Adopts omnist-spec v0.33.0-beta (the pin was v0.28.0-beta; the spec changelog
+from v0.29.0 to v0.33.0-beta was read) and closes omnist-rs#193, #194 and #197.
+Vectors 339 pass, 0 fail, 28 skip of 367 (was 310 / 0 / 28 of 338; before any
+change the adoption measured 318 / 21 / 28); fixtures 19 / 19.
+
+Minor bump of the alpha, as 0.7.0-alpha and 0.8.0-alpha were: a new field on
+the public `Limits` struct, a new default limit that refuses input the previous
+release read, new rejections (a braced top-level node, a 4-quote multiline
+close, an XML null) and a removed report code, all observable by a caller. The
+`[workspace]` crates move together.
+
+**Behaviour changes a caller can observe:**
+
+- **Every reader refuses an input of more than 64 MiB by default**
+  (`document.limit.input-size` at `$`, spec D-23). Through 0.8.0-alpha a reader
+  took any size. Raise it with `Limits::max_input_bytes` or the CLI's
+  `--max-input-bytes N`. The default and what it costs (measured per codec) are
+  in `docs/limitations.md`.
+- **The XML writer fails on a null leaf** (`write.unsupported-value` at its
+  Document path, spec C-10), `strict` or not. Through 0.8.0-alpha it wrote an
+  empty element and reported `null.omitted`, a code the spec never had; the
+  code is removed.
+- **Paths index every occurrence of a repeated label, the first included**
+  (`$.item[0]`, `$.item[1]`; a label that occurs once has no index; spec E-10).
+  The first occurrence used to carry the bare path. This changes the `path` of
+  validate and materialize errors, of `WriteReport` adjustments and write
+  errors, and of the XML reader's report.
+- **OML**: a separator after the colon of an edge is skipped (`a:` newline `1`,
+  `a: ;1`, spec OML-29), which was a syntax error; a multiline string closes at
+  the first run of three quotes, so `a: """x""""` is now
+  `parse.unterminated-string` at the leftover quote instead of the string `x"`
+  (#193); a top-level braced node `{a: 1}` is `parse.unexpected-token` at 1:1
+  instead of a document (#194).
+- **TOML**: `toml_edit`'s recursion cap is `document.limit.depth` at `$`. A table
+  header deeper than 80 levels panicked the reader (#197); inline tables and
+  arrays past the cap, and dotted keys, were `parse.codec-syntax`.
+
+Added:
+
+- **`Limits::max_input_bytes: u64`** (`with_max_input_bytes`,
+  `effective_max_input_bytes`; `0` selects `DEFAULT_MAX_INPUT_BYTES`, 64 MiB;
+  at most `MAX_INPUT_BYTES_CEILING`, 1 GiB, refused by `validate` like the other
+  ceilings), `limits::input_size_error`, `Limits::check_input_len` and
+  `formats::xml::read_xml_with_schema_and_limits`. Bytes, not characters, a BOM
+  counted, checked before decoding or parsing and ahead of every other
+  diagnostic; exactly the maximum is accepted. Checked by every `read_*` and
+  `read_*_with`, `read_xml_report`, `read_xml_with_schema` and
+  `Doc::from_format` (which bounds a registered format too).
+  `read_oml`, which returns a `ParseError`, reports it at `1:1`.
+- **CLI `--max-input-bytes N`** on `format`, `convert`, `check`, `validate` and
+  `infer` (1 to 1 GiB). Files and stdin are read through a reader limited to
+  N + 1 bytes, so an oversized input is refused without buffering the rest, and
+  the refusal says how to raise the limit. `omnist_cli::read_document_bytes_with`
+  and `read_oml_bytes_with` take `Limits` and check the byte length before the
+  D-14 decoding. OSD schema files are not Documents and stay unbounded (D-25).
+- **Runner (E-20a)**: `declared_max_input_bytes` reaches the readers, and a
+  vector with any other `declared_*` key, or one the runner does not honour on
+  its operation or format, is an E-20 skip, never a run against the default. The
+  five at-cap input-size vectors passed falsely before this.
+- **C-9** (writers refuse a string with no UTF-8 encoding) is vacuous here: a
+  Rust `String` always encodes and no library API takes bytes, an `OsString` or a
+  `Cow<[u8]>`. The audit and a tripwire test (`omnist/tests/c9_vacuous.rs`) are
+  documented in `docs/limitations.md`.
+
+Fixed:
+
+- OML-29, E-10 (above), #193, #194 and #197 (above).
+- The CLI's own hostile-bytes test now tolerates a broken pipe: its 200 MB input
+  is cut off at 64 MiB + 1 by design.
+
+Performance (E-10 paths, a 202k-edge document, release, best of 25):
+`check_xml` 37 ms before, 44 ms after (a second per-node pass counts a label's
+occurrences; the scan now reuses one path buffer instead of building a `String`
+per edge); `validate` 43 ms before, 36 ms after; JSON and YAML check and write
+within noise.
+
 ## 0.8.0-alpha
 
 Two diagnostics fixes from omnist-rs#182 (items 2 and 3; item 1 shipped in

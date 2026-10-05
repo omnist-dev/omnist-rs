@@ -27,9 +27,8 @@ TOML has no `null` at all. Writing a node that contains a null fails the write
 unconditionally with `write.unsupported-value` (spec sections 8.3.8 and 8.3.9),
 whatever `strict` says: dropping the field, as this port once did and recorded
 as a `null.omitted` warning, erased the edge's existence with no trace on
-read-back (omnist-rs#160 retired that behaviour). `null.omitted` is now emitted
-only by the XML writer, and is not a spec code; see
-[XML](xml.md#null-is-written-as-an-empty-element-nullomitted-is-not-a-spec-code).
+read-back (omnist-rs#160 retired that behaviour). The XML writer refuses a
+null the same way (spec C-10); see [XML](xml.md#null-has-no-xml-form).
 
 ## Integer digit cap, and a real, external `i64` ceiling from `toml_edit`
 

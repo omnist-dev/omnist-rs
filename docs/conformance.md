@@ -3,8 +3,8 @@
 This port has its own conformance-test harness (`tools/conformance/`)
 against [omnist-spec](https://github.com/omnist-dev/omnist-spec), the
 language-agnostic upstream specification. It vendors omnist-spec as a
-pinned git submodule (`vendor/omnist-spec`, currently commit `1a7d0de`,
-the `v0.28.0-beta` tag) and
+pinned git submodule (`vendor/omnist-spec`, currently commit `64cbb68`,
+the `v0.33.0-beta` tag) and
 runs entirely against this crate's own library code -- it does not depend
 on the Python or TypeScript ports' implementations.
 
@@ -17,7 +17,7 @@ reporting rule:
 - **Track 1** (`vendor/omnist-spec/conformance/fixtures/`, directory-per-fixture,
   11 operations): **19 passed, 0 failed, 0 skipped**.
 - **Track 2** (`vendor/omnist-spec/test-suite/`, JSON-vector suite, 14-operation
-  vocabulary): **310 passed, 0 failed, 28 skipped** (of 338 vectors),
+  vocabulary): **339 passed, 0 failed, 28 skipped** (of 367 vectors),
   **diagnostics compared as `(path, code)` sets** (section 8.5.2), not in
   code-agnostic mode. The runner exits non-zero on any failing vector and
   never on skips (E-22); it has no list of tolerated failures.
@@ -37,6 +37,25 @@ All 28 skips are one spec category, E-20 "not yet implemented"; none is an
 E-21 documented divergence. The 6 `document-model/limits` vectors were skips
 through 0.6.1-alpha (304 / 0 / 34); the limits became runtime-configurable in
 0.7.0-alpha and they now run and pass (310 / 0 / 28).
+
+**Adopting v0.33.0-beta (0.9.0-alpha).** The suite grew from 338 to 367 vectors
+(7 repeated-label path vectors, 10 input-size vectors, 7 OML-29 vectors, 5 XML
+null vectors) and the pin moved from v0.28.0-beta. Before any change the runner
+reported 318 pass / 21 fail / 28 skip, and the 21 were: 5 repeated-label paths
+(E-10: the first occurrence carried no index, DIV-16), 7 OML-29 (a separator
+after the colon, DIV-20), 5 over-cap input-size vectors (D-23, DIV-17) and 4
+XML null writes (C-10, DIV-23). The 5 at-cap input-size vectors passed falsely
+at that point, because the runner ignored `declared_max_input_bytes`: it passed
+the vector against the port's own default, which E-20a forbids. The runner now
+passes the declared maximum through `Limits::max_input_bytes`, and a vector
+carrying any other `declared_*` key, or one the runner does not honour on its
+operation or format, is an E-20 skip rather than a run against the default.
+After the adoption: 339 / 0 / 28, and the 28 skips are the same OSD-OML
+extension vectors as before. Two further rules have no vector: C-9 (a writer
+refuses a string with no UTF-8 encoding) is vacuous here, see
+[Limitations](limitations.md#c-9-writers-refuse-a-string-with-no-utf-8-encoding-vacuous-here),
+and the two OML reader fixes of omnist-rs#193 and #194 are pinned by unit
+tests only (no vector covers them).
 
 Earlier history: (v0.28.0-beta adds no vectors (still 338): its four programmatic-schema
 rules, S-8's `$` path, S-22, S-23 and OSD-16/S-24, are pinned by no vector

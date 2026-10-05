@@ -1005,10 +1005,10 @@ impl Schema {
             .raw_edges()
             .expect("is_leaf() false implies raw_edges() succeeds");
         let mut counts: IndexMap<&str, usize> = IndexMap::new();
-        for (label, i, child_id) in &edges {
+        for (label, index, child_id) in &edges {
             *counts.entry(*label).or_insert(0) += 1;
             let base = path.len();
-            crate::report::push_child_path(path, label, *i);
+            crate::report::push_child_path(path, label, *index);
             match rec.field(label) {
                 None => res.add(
                     path.as_str(),

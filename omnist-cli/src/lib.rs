@@ -37,6 +37,7 @@ use std::io::{self, Read, Write};
 use clap::{Parser, Subcommand, ValueEnum};
 use omnist::document::{Doc, Value};
 use omnist::error::ParseError;
+use omnist::limits::{DEFAULT_MAX_INPUT_BYTES, Limits, MAX_INPUT_BYTES_CEILING};
 use omnist::schema::Schema;
 use omnist::{OmnistError, WriteError, WriteReport};
 
@@ -127,6 +128,10 @@ pub struct FormatArgs {
     /// Output destination file path (defaults to standard output if omitted).
     #[arg(short, long)]
     pub output: Option<String>,
+    /// Refuse a document of more than N bytes (default 64 MiB; bytes, not
+    /// characters, a BOM counted) with `document.limit.input-size`.
+    #[arg(long = "max-input-bytes", value_name = "N", value_parser = parse_max_input_bytes)]
+    pub max_input_bytes: Option<u64>,
     /// Emit structured JSON output.
     #[arg(long)]
     pub json: bool,
@@ -164,6 +169,10 @@ pub struct ConvertArgs {
     /// Output destination file path (defaults to standard output if omitted).
     #[arg(short, long)]
     pub output: Option<String>,
+    /// Refuse a document of more than N bytes (default 64 MiB; bytes, not
+    /// characters, a BOM counted) with `document.limit.input-size`.
+    #[arg(long = "max-input-bytes", value_name = "N", value_parser = parse_max_input_bytes)]
+    pub max_input_bytes: Option<u64>,
     /// Emit structured JSON output.
     #[arg(long)]
     pub json: bool,
@@ -186,6 +195,10 @@ pub struct CheckArgs {
     /// Format for adjustment report output (`text`, `json`, `oml`).
     #[arg(long = "result-format", value_enum, default_value_t = ResultFormat::Text)]
     pub result_format: ResultFormat,
+    /// Refuse a document of more than N bytes (default 64 MiB; bytes, not
+    /// characters, a BOM counted) with `document.limit.input-size`.
+    #[arg(long = "max-input-bytes", value_name = "N", value_parser = parse_max_input_bytes)]
+    pub max_input_bytes: Option<u64>,
     /// Emit structured JSON output.
     #[arg(long)]
     pub json: bool,
@@ -205,6 +218,10 @@ pub struct ValidateArgs {
     /// Format for validation result output (`text`, `json`, `oml`).
     #[arg(long = "result-format", value_enum, default_value_t = ResultFormat::Text)]
     pub result_format: ResultFormat,
+    /// Refuse a document of more than N bytes (default 64 MiB; bytes, not
+    /// characters, a BOM counted) with `document.limit.input-size`.
+    #[arg(long = "max-input-bytes", value_name = "N", value_parser = parse_max_input_bytes)]
+    pub max_input_bytes: Option<u64>,
     /// Emit structured JSON output.
     #[arg(long)]
     pub json: bool,
@@ -231,6 +248,10 @@ pub struct InferArgs {
     /// Output destination file path (defaults to standard output if omitted).
     #[arg(short, long)]
     pub output: Option<String>,
+    /// Refuse a document of more than N bytes (default 64 MiB; bytes, not
+    /// characters, a BOM counted) with `document.limit.input-size`.
+    #[arg(long = "max-input-bytes", value_name = "N", value_parser = parse_max_input_bytes)]
+    pub max_input_bytes: Option<u64>,
     /// Emit structured JSON output.
     #[arg(long)]
     pub json: bool,
@@ -358,6 +379,55 @@ pub struct SchemaPairArgs {
 // I/O plumbing
 // ---------------------------------------------------------------------------
 
+/// The `--max-input-bytes` value parser: an integer from 1 to the library's
+/// ceiling (`0` is refused here, where it would read as "no input").
+fn parse_max_input_bytes(text: &str) -> Result<u64, String> {
+    let n: u64 = text
+        .parse()
+        .map_err(|_| format!("{text:?} is not an integer of at least 1"))?;
+    if n == 0 {
+        return Err("must be at least 1".to_string());
+    }
+    if n > MAX_INPUT_BYTES_CEILING {
+        return Err(format!("{n} exceeds the ceiling {MAX_INPUT_BYTES_CEILING}"));
+    }
+    Ok(n)
+}
+
+/// The refusal's hint: how to raise the maximum from the command line.
+const RAISE_HINT: &str = "use --max-input-bytes N to raise it";
+
+/// The [`Limits`] a reading command runs under: the default, with the
+/// maximum input size from `--max-input-bytes` when given.
+fn limits_for(max_input_bytes: Option<u64>) -> Limits {
+    Limits::default().with_max_input_bytes(max_input_bytes.unwrap_or(DEFAULT_MAX_INPUT_BYTES))
+}
+
+/// Read the bytes of a Document input (a file, or stdin for `-`), stopping
+/// as soon as more than `limits`' maximum input size has been seen (D-23):
+/// at most max + 1 bytes are ever buffered. Prints the failure and returns
+/// the exit code: an I/O error as [`io_fail`], an oversized input as the
+/// `document.limit.input-size` refusal.
+fn read_document_input(path: &str, limits: &Limits, json: bool) -> Result<Vec<u8>, i32> {
+    let max = limits.effective_max_input_bytes();
+    let mut bytes = Vec::new();
+    let read = if path == "-" {
+        io::stdin()
+            .take(max + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| format!("{e} (reading stdin)"))
+    } else {
+        std::fs::File::open(path)
+            .and_then(|f| f.take(max + 1).read_to_end(&mut bytes))
+            .map_err(|e| format!("{path}: {e}"))
+    };
+    read.map_err(|e| io_fail(json, &e))?;
+    limits
+        .check_input_len(bytes.len() as u64, RAISE_HINT)
+        .map_err(|e| generic_fail(json, &e.into()))?;
+    Ok(bytes)
+}
+
 /// Read the raw bytes of `path` (or stdin for `-`). On failure, the message
 /// names the path (mirroring Python's `OSError` string, which embeds the
 /// filename) rather than a bare OS message with no context.
@@ -398,26 +468,55 @@ pub fn decode_input(bytes: Vec<u8>) -> Result<String, ParseError> {
     })
 }
 
+/// The spec's code for a D-23 failure (section 8.3.2).
+const INPUT_SIZE: &str = "document.limit.input-size";
+
 /// The spec's code for a D-14 failure (section 8.3.1).
 pub const INVALID_ENCODING: &str = "parse.invalid-encoding";
 
 /// Decode `bytes` (D-14) and read them as a Document in `fmt`, exactly as
 /// the `convert`, `check`, `validate` and `infer` commands do after reading
 /// their input file or stdin. `schema` is the optional XML schema hint.
+/// Under the default [`Limits`]; see [`read_document_bytes_with`].
 pub fn read_document_bytes(
     fmt: Fmt,
     bytes: Vec<u8>,
     schema: Option<&omnist::schema::Schema>,
 ) -> Result<Doc, OmnistError> {
+    read_document_bytes_with(fmt, bytes, schema, &Limits::default())
+}
+
+/// [`read_document_bytes`] under explicit [`Limits`]. The maximum input size
+/// (D-23) is checked on the length of `bytes` first, before the D-14
+/// decoding, so `document.limit.input-size` is reported ahead of
+/// `parse.invalid-encoding`.
+pub fn read_document_bytes_with(
+    fmt: Fmt,
+    bytes: Vec<u8>,
+    schema: Option<&omnist::schema::Schema>,
+    limits: &Limits,
+) -> Result<Doc, OmnistError> {
+    limits.check_input_len(bytes.len() as u64, RAISE_HINT)?;
     let text = decode_input(bytes)?;
-    read_by_fmt(fmt, &text, schema)
+    read_by_fmt(fmt, &text, schema, limits)
 }
 
 /// Decode `bytes` (D-14) and read them as OML, as `format` does. Unlike
 /// [`read_document_bytes`] with [`Fmt::Oml`], this keeps the raw tree.
+/// Under the default [`Limits`]; see [`read_oml_bytes_with`].
 pub fn read_oml_bytes(bytes: Vec<u8>) -> Result<omnist::document::RawNode, OmnistError> {
+    read_oml_bytes_with(bytes, &Limits::default())
+}
+
+/// [`read_oml_bytes`] under explicit [`Limits`], with the input size checked
+/// before decoding as in [`read_document_bytes_with`].
+pub fn read_oml_bytes_with(
+    bytes: Vec<u8>,
+    limits: &Limits,
+) -> Result<omnist::document::RawNode, OmnistError> {
+    limits.check_input_len(bytes.len() as u64, RAISE_HINT)?;
     let text = decode_input(bytes)?;
-    omnist::oml::read_oml_with(&text, &omnist::limits::Limits::default())
+    omnist::oml::read_oml_with(&text, limits)
 }
 
 /// Decode `bytes` (D-14) and parse them as OSD, as every `schema` command
@@ -491,6 +590,10 @@ fn extract_errors(e: &OmnistError) -> Vec<(String, String, String)> {
         OmnistError::Parse(pe) if pe.code == INVALID_ENCODING => {
             vec![(pe.position(), pe.code.clone(), pe.message.clone())]
         }
+        // D-23: the size refusal is likewise one fixed diagnostic, `$`.
+        OmnistError::Document(de) if de.code.as_deref() == Some(INPUT_SIZE) => {
+            vec![(de.path.clone(), INPUT_SIZE.to_string(), de.message.clone())]
+        }
         _ => vec![],
     }
 }
@@ -558,18 +661,22 @@ fn read_by_fmt(
     fmt: Fmt,
     text: &str,
     schema: Option<&omnist::schema::Schema>,
+    limits: &Limits,
 ) -> Result<Doc, OmnistError> {
     match fmt {
-        Fmt::Json => omnist::formats::json::read_json(text),
-        Fmt::Yaml => omnist::formats::yaml::read_yaml(text),
-        Fmt::Toml => omnist::formats::toml::read_toml(text),
+        Fmt::Json => omnist::formats::json::read_json_with(text, limits),
+        Fmt::Yaml => omnist::formats::yaml::read_yaml_with(
+            text,
+            &omnist::formats::yaml::YamlReadOptions::default().with_limits(*limits),
+        ),
+        Fmt::Toml => omnist::formats::toml::read_toml_with(text, limits),
         Fmt::Xml => match schema {
-            Some(s) => omnist::formats::xml::read_xml_with_schema(text, s),
-            None => omnist::formats::xml::read_xml(text),
+            Some(s) => omnist::formats::xml::read_xml_with_schema_and_limits(text, s, limits),
+            None => omnist::formats::xml::read_xml_with(text, limits),
         },
         Fmt::Oml => {
-            let raw = omnist::oml::read_oml_with(text, &omnist::limits::Limits::default())?;
-            Ok(Doc::from_raw(raw)?)
+            let raw = omnist::oml::read_oml_with(text, limits)?;
+            Doc::from_raw_with(raw, limits).map_err(Into::into)
         }
     }
 }
@@ -764,11 +871,12 @@ fn parse_schema_file(path: &str, json: bool) -> Result<Schema, i32> {
 // ---------------------------------------------------------------------------
 
 fn cmd_format(args: FormatArgs) -> i32 {
-    let bytes = match read_bytes(&args.input) {
+    let limits = limits_for(args.max_input_bytes);
+    let bytes = match read_document_input(&args.input, &limits, args.json) {
         Ok(b) => b,
-        Err(e) => return io_fail(args.json, &e),
+        Err(code) => return code,
     };
-    let raw = match read_oml_bytes(bytes) {
+    let raw = match read_oml_bytes_with(bytes, &limits) {
         Ok(r) => r,
         Err(e) => return generic_fail(args.json, &e),
     };
@@ -808,9 +916,10 @@ fn cmd_convert(args: ConvertArgs) -> i32 {
             2,
         );
     }
-    let bytes = match read_bytes(&args.input) {
+    let limits = limits_for(args.max_input_bytes);
+    let bytes = match read_document_input(&args.input, &limits, args.json) {
         Ok(b) => b,
-        Err(e) => return io_fail(args.json, &e),
+        Err(code) => return code,
     };
     let schema = match args.schema.as_deref() {
         Some(path) => match parse_schema_file(path, args.json) {
@@ -819,7 +928,7 @@ fn cmd_convert(args: ConvertArgs) -> i32 {
         },
         None => None,
     };
-    let mut doc = match read_document_bytes(args.from, bytes, schema.as_ref()) {
+    let mut doc = match read_document_bytes_with(args.from, bytes, schema.as_ref(), &limits) {
         Ok(d) => d,
         Err(e) => return generic_fail(args.json, &e),
     };
@@ -874,11 +983,12 @@ fn cmd_convert(args: ConvertArgs) -> i32 {
 }
 
 fn cmd_check(args: CheckArgs) -> i32 {
-    let bytes = match read_bytes(&args.input) {
+    let limits = limits_for(args.max_input_bytes);
+    let bytes = match read_document_input(&args.input, &limits, args.json) {
         Ok(b) => b,
-        Err(e) => return io_fail(args.json, &e),
+        Err(code) => return code,
     };
-    let doc = match read_document_bytes(args.from, bytes, None) {
+    let doc = match read_document_bytes_with(args.from, bytes, None, &limits) {
         Ok(d) => d,
         Err(e) => return generic_fail(args.json, &e),
     };
@@ -902,11 +1012,12 @@ fn cmd_validate(args: ValidateArgs) -> i32 {
         Ok(s) => s,
         Err(code) => return code,
     };
-    let bytes = match read_bytes(&args.input) {
+    let limits = limits_for(args.max_input_bytes);
+    let bytes = match read_document_input(&args.input, &limits, args.json) {
         Ok(b) => b,
-        Err(e) => return io_fail(args.json, &e),
+        Err(code) => return code,
     };
-    let doc = match read_document_bytes(args.from, bytes, Some(&schema)) {
+    let doc = match read_document_bytes_with(args.from, bytes, Some(&schema), &limits) {
         Ok(d) => d,
         Err(e) => return generic_fail(args.json, &e),
     };
@@ -937,13 +1048,14 @@ fn cmd_infer(args: InferArgs) -> i32 {
     if args.arrays {
         return fail(args.json, ARRAYS_OSD_ONLY_MSG, &[], 2);
     }
+    let limits = limits_for(args.max_input_bytes);
     let mut docs = Vec::with_capacity(args.input.len());
     for path in &args.input {
-        let bytes = match read_bytes(path) {
+        let bytes = match read_document_input(path, &limits, args.json) {
             Ok(b) => b,
-            Err(e) => return io_fail(args.json, &e),
+            Err(code) => return code,
         };
-        match read_document_bytes(args.from, bytes, None) {
+        match read_document_bytes_with(args.from, bytes, None, &limits) {
             Ok(d) => docs.push(d),
             Err(e) => return generic_fail(args.json, &e),
         }
@@ -1156,6 +1268,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_byte_readers_refuse_an_oversized_input_before_decoding() {
+        let limits = Limits::default().with_max_input_bytes(5);
+        // Invalid UTF-8 and oversized: the size comes first (D-23).
+        let e = read_document_bytes_with(Fmt::Json, vec![0xff; 6], None, &limits).unwrap_err();
+        assert!(e.to_string().contains("maximum input size"), "{e}");
+        let e = read_oml_bytes_with(vec![0xff; 6], &limits).unwrap_err();
+        assert!(e.to_string().contains("--max-input-bytes"), "{e}");
+        // Exactly the maximum is accepted.
+        assert!(read_oml_bytes_with(b"a: 1 ".to_vec(), &limits).is_ok());
+    }
+
+    #[test]
     fn version_line_includes_crate_version() {
         assert_eq!(version_line(), format!("omnist {}", omnist::VERSION));
     }
@@ -1173,6 +1297,7 @@ mod tests {
             arrays: false,
             output: None,
             json: false,
+            max_input_bytes: None,
         });
         assert_eq!(code_ok, 0);
 
@@ -1182,6 +1307,7 @@ mod tests {
             arrays: false,
             output: None,
             json: true,
+            max_input_bytes: None,
         });
         assert_eq!(code_compact, 0);
 
@@ -1191,6 +1317,7 @@ mod tests {
             arrays: true,
             output: None,
             json: false,
+            max_input_bytes: None,
         });
         assert_eq!(code_arrays, 2);
 
@@ -1200,6 +1327,7 @@ mod tests {
             arrays: false,
             output: None,
             json: false,
+            max_input_bytes: None,
         });
         assert_eq!(code_missing, 2);
 
@@ -1212,6 +1340,7 @@ mod tests {
             arrays: false,
             output: None,
             json: false,
+            max_input_bytes: None,
         });
         assert_eq!(code_parse_err, 2);
     }

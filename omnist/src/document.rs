@@ -658,17 +658,14 @@ impl<'a> Cursor<'a> {
     pub fn edges(&self) -> Result<Vec<(String, Cursor<'a>)>, DocumentError> {
         match &self.doc.entry(self.id).data {
             NodeData::Internal(edges) => {
-                let mut counts: IndexMap<&str, usize> = IndexMap::new();
                 let mut out = Vec::with_capacity(edges.len());
-                for (label, child) in edges {
-                    let i = *counts.entry(label.as_str()).or_insert(0);
-                    counts.insert(label.as_str(), i + 1);
-                    let cp = crate::report::child_path(&self.path, label, i);
+                for (label, index, child) in with_occurrence_indices(edges) {
+                    let cp = crate::report::child_path(&self.path, label, index);
                     out.push((
-                        label.clone(),
+                        label.to_string(),
                         Cursor {
                             doc: self.doc,
-                            id: *child,
+                            id: child,
                             path: cp,
                         },
                     ));
@@ -693,18 +690,11 @@ impl<'a> Cursor<'a> {
         }
     }
 
-    pub(crate) fn raw_edges(&self) -> Result<Vec<(&'a str, usize, NodeId)>, DocumentError> {
+    /// Each edge's label, its E-10 index (`Some(i)` exactly when the label
+    /// occurs more than once in this node) and its `NodeId`.
+    pub(crate) fn raw_edges(&self) -> Result<Vec<RawEdge<'a>>, DocumentError> {
         match &self.doc.entry(self.id).data {
-            NodeData::Internal(edges) => {
-                let mut counts: IndexMap<&str, usize> = IndexMap::new();
-                let mut out = Vec::with_capacity(edges.len());
-                for (label, child) in edges {
-                    let i = *counts.entry(label.as_str()).or_insert(0);
-                    counts.insert(label.as_str(), i + 1);
-                    out.push((label.as_str(), i, *child));
-                }
-                Ok(out)
-            }
+            NodeData::Internal(edges) => Ok(with_occurrence_indices(edges).collect()),
             NodeData::Leaf(_) => Err(DocumentError::new(&self.path, "a leaf has no edges")),
         }
     }
@@ -860,6 +850,10 @@ impl Doc {
     /// Mirrors Python's `Doc.from_format(name, text)`.
     pub fn from_format(name: &str, text: &str) -> Result<Doc, crate::error::OmnistError> {
         let fmt = crate::registry::get_format(name)?;
+        // D-23: the default maximum bounds a registered (plugin) format too,
+        // whose reader is not ours to change; the built-in readers repeat
+        // the same first check themselves.
+        crate::limits::Resolved::DEFAULT.check_input_size(text.len())?;
         (fmt.read)(text)
     }
 
@@ -922,6 +916,30 @@ fn push_raw(arena: &mut Arena, node: RawNode, depth: usize) -> Result<NodeId, Do
             push(arena, NodeData::Internal(out), depth, "$")
         }
     }
+}
+
+/// A node's edge for a path-buffer walker: label, E-10 index, child.
+pub(crate) type RawEdge<'a> = (&'a str, Option<usize>, NodeId);
+
+/// Pairs every edge of a node with its E-10 index: `Some(i)`, the 0-based
+/// position among the node's edges of the same label, when the label occurs
+/// more than once in the node, `None` when it occurs once. One counting pass
+/// plus one assigning pass, one small map per node.
+fn with_occurrence_indices(
+    edges: &[(String, NodeId)],
+) -> impl Iterator<Item = (&str, Option<usize>, NodeId)> {
+    let mut counts: IndexMap<&str, (usize, usize)> = IndexMap::new();
+    for (label, _) in edges {
+        counts.entry(label.as_str()).or_insert((0, 0)).0 += 1;
+    }
+    edges.iter().map(move |(label, child)| {
+        let (total, seen) = counts
+            .get_mut(label.as_str())
+            .expect("every label was counted");
+        let index = crate::report::occurrence_index(*seen, *total);
+        *seen += 1;
+        (label.as_str(), index, *child)
+    })
 }
 
 /// Prefixes the path of an over-long-integer error with the edge it

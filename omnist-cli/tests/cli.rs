@@ -56,7 +56,10 @@ fn run_stdin_bytes(args: &[&str], stdin: &[u8]) -> Run {
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
     let mut child = cmd.spawn().expect("failed to spawn omnist binary");
-    child.stdin.take().unwrap().write_all(stdin).unwrap();
+    // D-23: the CLI stops reading at the maximum input size plus one byte, so
+    // a writer of more than that (the 200 MB hostile input below) can get a
+    // broken pipe. That is the behaviour under test, not a failure.
+    let _ = child.stdin.take().unwrap().write_all(stdin);
     let output = child.wait_with_output().expect("failed to wait on child");
     Run {
         stdout: String::from_utf8(output.stdout).unwrap(),
@@ -1688,6 +1691,9 @@ fn hostile_bytes_never_panic_on_any_read_surface() {
         .collect();
     let deep_yaml_mixed = format!("{}{}", "- ".repeat(30_000), "[".repeat(500));
     let deep_json_obj = "{\"a\":".repeat(50_000);
+    // omnist-rs#197: toml_edit's recursion cap on a table header carries no
+    // span and used to panic the reader.
+    let deep_toml_header = format!("[{}]\n", vec!["a"; 200].join("."));
     let inputs: Vec<(&str, Vec<u8>)> = vec![
         ("empty", vec![]),
         ("bom only", b"\xef\xbb\xbf".to_vec()),
@@ -1701,6 +1707,7 @@ fn hostile_bytes_never_panic_on_any_read_surface() {
         ("deep yaml block maps", deep_yaml_maps.into_bytes()),
         ("deep yaml flow after block", deep_yaml_mixed.into_bytes()),
         ("deep json objects", deep_json_obj.into_bytes()),
+        ("deep toml header", deep_toml_header.into_bytes()),
         (
             "high code points",
             "\u{10FFFF}\u{10FFFF}: \u{10FFFF}\n".into(),

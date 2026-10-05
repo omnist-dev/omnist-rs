@@ -2,7 +2,7 @@
 
 ```toml
 [dependencies]
-omnist = "0.8.0-alpha"
+omnist = "0.9.0-alpha"
 ```
 <!-- doc-illustrative -->
 
