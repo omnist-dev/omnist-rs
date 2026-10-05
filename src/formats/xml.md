@@ -90,8 +90,21 @@ parse time.
 
 Writing a non-string scalar (`bool`/`int`/`float`) to XML now honestly
 reports it: XML has no native typed literals, so it reads back as a
-string, not its original type (`check_xml`'s `value.stringified`
-adjustment).
+string, not its original type (`check_xml`'s `format.value-stringified`
+adjustment; named `value.stringified` through 0.7.0-alpha, renamed to the
+code the spec's section 8.3.8 names).
+
+## `null` is written as an empty element: `null.omitted` is not a spec code
+
+A `null` leaf is written as an empty element, which reads back as the empty
+string, and the write records a `null.omitted` warning. **`null.omitted` is
+not in the spec's section 8.3.8 table**: the taxonomy has no code for a null
+written as an empty XML element, so this port keeps its own and documents it
+here (spec D-11-style disclosure) rather than inventing a `format.*` name for
+the spec. It appears in `WriteReport` adjustments and in the CLI's `--report`
+and `check` output. It is the one adjustment code this port emits that is not
+in the taxonomy; it will be renamed or removed when the spec decides how this
+case is reported.
 
 ## Schema-guided pretyping (spec §2.2 / issue #114)
 

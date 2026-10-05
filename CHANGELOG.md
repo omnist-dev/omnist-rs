@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.8.0-alpha
+
+Two diagnostics fixes from omnist-rs#182 (items 2 and 3; item 1 shipped in
+0.7.0-alpha). Spec pin unchanged (v0.28.0-beta); vectors 310 pass, 0 fail, 28
+skip of 338; fixtures 19 / 19.
+
+Minor bump of the alpha: the renamed report codes are user-visible output of
+the public `WriteReport` and of the CLI's `--report` and `check`, so a caller
+matching the old strings breaks. The previous release took a minor for new
+public API and a changed error path; this one changes an output contract and
+an error path, and adds no API.
+
+**Breaking output change: two `WriteReport` adjustment codes are renamed to
+the codes the spec's section 8.3.8 names.** They appear in
+`Adjustment::code`, in the CLI's `--report` output and in `check` output:
+
+| through 0.7.0-alpha | from 0.8.0-alpha |
+|---|---|
+| `value.stringified` (XML: a non-string scalar written as text) | `format.value-stringified` |
+| `string.line-break-char` (YAML: U+0085 in a label or value) | `format.string-line-break-char` |
+
+No vector pins either (a `write` vector comparing `(path, code)` would have
+failed). The third non-taxonomy code, **`null.omitted`** (an XML null written
+as an empty element), is **unchanged**: section 8.3.8 has no code for it, so
+this port does not invent one. It is now documented as a known non-taxonomy
+code (`docs/formats/xml.md`), and a spec issue is the next step; the TOML page
+no longer claims TOML emits it (TOML null fails the write, since
+omnist-rs#160).
+
+Fixed:
+
+- **YAML `document.unlabeled-element` for a non-string mapping key in a nested
+  mapping carries that mapping's Document path** (it was `$` at every depth).
+  `a: {on: 1}` is `$.a`, `a:\n  b:\n    1: x` is `$.a.b`, and a mapping
+  inside a sequence follows E-10 (the index only when the label repeats):
+  `a: [{on: 1}]` is `$.a`, `a: [{x: 1}, {on: 1}]` is `$.a[1]`. The top-level
+  behaviour (`$`, pinned by the `norway-problem` vector) is unchanged. An
+  over-long integer used as a key (`document.limit.int-digits`) carries the
+  same path. The path is threaded through the untyped tree as a lazy chain,
+  rendered only when an error needs it, so a document that never errs pays no
+  allocation for it.
+
 ## 0.7.0-alpha
 
 Makes the three safety limits of the spec's section 2.4 runtime-configurable

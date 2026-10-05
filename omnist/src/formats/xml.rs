@@ -883,6 +883,11 @@ fn scan_xml_cursor(
 
 fn scan_leaf(scalar: &Scalar, path: &str, rep: &mut WriteReport) {
     match scalar {
+        // `null.omitted` is NOT a code of the spec's section 8.3.8 table: the
+        // taxonomy has none for a null written as an empty element (which
+        // reads back as the empty string). This port keeps its own and
+        // documents it (docs/formats/xml.md) rather than inventing a
+        // `format.*` name; a spec issue decides what replaces it.
         Scalar::Null => rep.add(
             path,
             "null.omitted",
@@ -903,7 +908,7 @@ fn scan_leaf(scalar: &Scalar, path: &str, rep: &mut WriteReport) {
         | Scalar::Time(_)
         | Scalar::Datetime(_) => rep.add(
             path,
-            "value.stringified",
+            "format.value-stringified",
             "non-string scalar written as text (reads back as a string)",
             Severity::Warning,
         ),

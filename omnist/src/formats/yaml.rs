@@ -647,7 +647,7 @@ pub fn read_yaml_with(text: &str, options: &YamlReadOptions) -> Result<Doc, Omni
     ));
     let resolved = resolve_merges(&raw, 0, limits.max_depth)?;
     let mut guard = IntGuard::new(limits.max_int_digits);
-    let value = raw_to_value(&resolved, &mut guard)?;
+    let value = raw_to_value(&resolved, &Trail::Root, &mut guard)?;
     let doc = Doc::of_resolved(&value, limits).map_err(|e| limits.whole_document(e))?;
     // A duplicate key keeps its last value, which can drop an over-cap
     // literal the tree held a placeholder for.
@@ -775,15 +775,48 @@ fn merge_source_entries(
     }
 }
 
+/// Where [`raw_to_value`] is in the tree, as a Document path, kept as a
+/// linked chain and rendered only when a diagnostic needs it (a path string
+/// per node would cost an allocation per scalar of a large document that
+/// never errs).
+enum Trail<'a> {
+    /// The document root, `$`.
+    Root,
+    /// A mapping entry's label under the parent position.
+    Key(&'a Trail<'a>, &'a str),
+    /// The `i`-th of a label's repeated edges under the parent position
+    /// (E-10: only when the label occurs more than once, i.e. the sequence
+    /// has more than one item).
+    Index(&'a Trail<'a>, usize),
+}
+
+impl Trail<'_> {
+    /// The Document path of this position (`$`, `$.a`, `$.a[1].b`).
+    fn render(&self) -> String {
+        match self {
+            Trail::Root => "$".to_string(),
+            Trail::Key(parent, key) => crate::document::join(&parent.render(), key),
+            Trail::Index(parent, i) => format!("{}[{i}]", parent.render()),
+        }
+    }
+}
+
 /// Turn a (merge-resolved) [`Raw`] tree into a [`Value`], applying scalar-tag
-/// resolution to every leaf along the way.
-fn raw_to_value(node: &Raw, guard: &mut IntGuard) -> Result<Value, OmnistError> {
+/// resolution to every leaf along the way. `trail` is where `node` sits, so a
+/// diagnostic about it (a non-string mapping key) carries its Document path.
+fn raw_to_value(node: &Raw, trail: &Trail<'_>, guard: &mut IntGuard) -> Result<Value, OmnistError> {
     match node {
         Raw::Scalar(text, style, tag) => Ok(scalar_to_value(text, *style, tag.as_ref(), guard)?),
         Raw::Sequence(items) => {
             let mut out = Vec::with_capacity(items.len());
-            for item in items {
-                out.push(raw_to_value(item, guard)?);
+            for (i, item) in items.iter().enumerate() {
+                // E-10: no index when the label occurs once.
+                let value = if items.len() == 1 {
+                    raw_to_value(item, trail, guard)?
+                } else {
+                    raw_to_value(item, &Trail::Index(trail, i), guard)?
+                };
+                out.push(value);
             }
             Ok(Value::Array(out))
         }
@@ -808,7 +841,7 @@ fn raw_to_value(node: &Raw, guard: &mut IntGuard) -> Result<Value, OmnistError> 
                             // limit is what refuses it, not the missing label.
                             Value::Int(i) if int_exceeds(&i, guard.max()) => {
                                 return Err(DocumentError::with_code(
-                                    "$",
+                                    trail.render(),
                                     "document.limit.int-digits",
                                     crate::formats::int_cap::over_cap_message(
                                         "invalid YAML: ",
@@ -819,13 +852,11 @@ fn raw_to_value(node: &Raw, guard: &mut IntGuard) -> Result<Value, OmnistError> 
                             }
                             other => {
                                 // `document.unlabeled-element`: the key has no
-                                // string label to become an edge. The path is
-                                // `$` at every depth -- this stage works on the
-                                // untyped Raw tree and does not track Document
-                                // paths (see the note on nested keys in the
-                                // changelog).
+                                // string label to become an edge. Its path is
+                                // that of the mapping the key is in (`$` for
+                                // the top-level mapping).
                                 return Err(DocumentError::with_code(
-                                    "$",
+                                    trail.render(),
                                     "document.unlabeled-element",
                                     format!(
                                         "object key {} is not a string",
@@ -848,7 +879,8 @@ fn raw_to_value(node: &Raw, guard: &mut IntGuard) -> Result<Value, OmnistError> 
                 // Last-duplicate-key-wins, matching json.rs's IndexMap::insert
                 // semantics and PyYAML's own dict-construction behavior
                 // (confirmed live: `yaml.safe_load("a: 1\\na: 2\\n") == {'a': 2}`).
-                map.insert(key, raw_to_value(v, guard)?);
+                let value = raw_to_value(v, &Trail::Key(trail, &key), guard)?;
+                map.insert(key, value);
             }
             Ok(Value::Object(map))
         }
@@ -1261,7 +1293,7 @@ fn check_yaml_grouped(grouped: &Value) -> WriteReport {
         crate::formats::Visited::Edge { label } if label.contains('\u{0085}') => {
             rep.add(
                 path,
-                "string.line-break-char",
+                "format.string-line-break-char",
                 "label contains U+0085 (NEL); written double-quoted to round-trip correctly",
                 Severity::Warning,
             );
@@ -1271,7 +1303,7 @@ fn check_yaml_grouped(grouped: &Value) -> WriteReport {
         } if s.contains('\u{0085}') => {
             rep.add(
                 path,
-                "string.line-break-char",
+                "format.string-line-break-char",
                 "value contains U+0085 (NEL); written double-quoted to round-trip correctly",
                 Severity::Warning,
             );
@@ -2021,6 +2053,79 @@ mod tests {
         );
     }
 
+    /// `(code, path)` of the Document error `read_yaml` raises for `text`.
+    fn doc_diag(text: &str) -> (String, String) {
+        use OmnistError as E;
+        let err = read_yaml(text).unwrap_err();
+        let E::Document(e) = err else { panic!() };
+        (e.code.unwrap_or_default(), e.path)
+    }
+
+    fn unlabeled(path: &str) -> (String, String) {
+        ("document.unlabeled-element".to_string(), path.to_string())
+    }
+
+    #[test]
+    fn a_non_string_key_in_the_top_level_mapping_is_at_the_root() {
+        // Pinned by `formats-yaml/sharp-edges/norway-problem-...`.
+        assert_eq!(doc_diag("on: 1\n"), unlabeled("$"));
+        assert_eq!(doc_diag("a: 1\n1: x\n"), unlabeled("$"));
+        assert_eq!(doc_diag("~: x\n"), unlabeled("$"));
+    }
+
+    #[test]
+    fn a_non_string_key_in_a_nested_mapping_carries_that_mapping_s_path() {
+        assert_eq!(doc_diag("a: {on: 1}\n"), unlabeled("$.a"));
+        assert_eq!(doc_diag("a:\n  on: 1\n"), unlabeled("$.a"));
+        assert_eq!(
+            doc_diag("a:\n  b:\n    c:\n      1: x\n"),
+            unlabeled("$.a.b.c")
+        );
+        assert_eq!(doc_diag("x: 1\na:\n  y: 2\n  no: 3\n"), unlabeled("$.a"));
+        // A label that needs quoting in a Document path.
+        assert_eq!(doc_diag("\"a b\": {on: 1}\n"), unlabeled("$[\"a b\"]"));
+    }
+
+    #[test]
+    fn a_non_string_key_in_a_mapping_inside_a_sequence_follows_e10() {
+        // E-10: the index is present when the label occurs more than once in
+        // its node, absent when it occurs exactly once.
+        assert_eq!(doc_diag("a: [{on: 1}]\n"), unlabeled("$.a"));
+        assert_eq!(doc_diag("a: [{x: 1}, {on: 1}]\n"), unlabeled("$.a[1]"));
+        assert_eq!(doc_diag("a: [{on: 1}, {x: 1}]\n"), unlabeled("$.a[0]"));
+        assert_eq!(
+            doc_diag("a: [{x: 1}, {y: 2}, {z: 3}, {on: 1}]\n"),
+            unlabeled("$.a[3]")
+        );
+        // Deeper: a sequence under a nested key, then a mapping inside it.
+        assert_eq!(
+            doc_diag("a:\n  b:\n    - {x: 1}\n    - {c: {on: 1}}\n"),
+            unlabeled("$.a.b[1].c")
+        );
+    }
+
+    #[test]
+    fn a_non_string_key_reached_again_through_a_merge_is_reported_where_first_written() {
+        // The anchored mapping is itself a node of the document, so it is the
+        // first place the key is met; the merge into `m` does not move it.
+        assert_eq!(
+            doc_diag("base: &b {on: 1}\nm:\n  <<: *b\n"),
+            unlabeled("$.base")
+        );
+    }
+
+    #[test]
+    fn an_over_long_integer_key_in_a_nested_mapping_carries_the_mapping_s_path() {
+        let options =
+            YamlReadOptions::default().with_limits(Limits::default().with_max_int_digits(3));
+        let err = read_yaml_with("a: {b: {1000: x}}\n", &options).unwrap_err();
+        assert!(
+            matches!(&err, OmnistError::Document(e)
+                if e.code.as_deref() == Some("document.limit.int-digits") && e.path == "$.a.b"),
+            "got {err:?}"
+        );
+    }
+
     #[test]
     fn an_over_long_integer_used_as_a_key_is_refused_by_the_digit_limit() {
         // Not as a missing label: the digit limit is what refuses it.
@@ -2571,7 +2676,7 @@ mod tests {
         let mut rep = WriteReport::new();
         let text = write_yaml(&doc, false, Some(&mut rep)).unwrap();
         assert_eq!(rep.len(), 1);
-        assert_eq!(rep.adjustments()[0].code, "string.line-break-char");
+        assert_eq!(rep.adjustments()[0].code, "format.string-line-break-char");
         let back = read_yaml(&text).unwrap();
         assert_eq!(
             *back.root().get_one("s").unwrap().value().unwrap(),
@@ -2776,7 +2881,7 @@ mod tests {
         let mut rep = WriteReport::new();
         let text = write_yaml(&doc, false, Some(&mut rep)).unwrap();
         assert_eq!(rep.len(), 1);
-        assert_eq!(rep.adjustments()[0].code, "string.line-break-char");
+        assert_eq!(rep.adjustments()[0].code, "format.string-line-break-char");
         let back = read_yaml(&text).unwrap();
         assert_eq!(
             *back.root().get_one(&label).unwrap().value().unwrap(),

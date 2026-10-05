@@ -69,7 +69,7 @@ pub enum Severity {
 pub struct Adjustment {
     /// Same path style as validation, e.g. `"$.order.total"`.
     pub path: String,
-    /// Stable, machine-checkable code, e.g. `"null.omitted"`.
+    /// Stable, machine-checkable code, e.g. `"format.value-stringified"`.
     pub code: String,
     /// Human-readable sentence.
     pub message: String,
