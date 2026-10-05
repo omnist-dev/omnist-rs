@@ -7,15 +7,18 @@
 //!
 //! | Limit | Default | Ceiling | Field |
 //! |---|---|---|---|
-//! | Nesting depth | [`DEFAULT_MAX_DEPTH`] (200) | [`MAX_DEPTH_CEILING`] (1 000) | [`Limits::max_depth`] |
+//! | Nesting depth | [`DEFAULT_MAX_DEPTH`] (200) | [`MAX_DEPTH_CEILING`] (250) | [`Limits::max_depth`] |
 //! | Node count (containers) | [`DEFAULT_MAX_NODES`] (1 000 000) | [`MAX_NODES_CEILING`] (10 000 000) | [`Limits::max_nodes`] |
 //! | Integer digits | [`DEFAULT_MAX_INT_DIGITS`] (4 300) | [`MAX_INT_DIGITS_CEILING`] (43 000) | [`Limits::max_int_digits`] |
 //!
 //! The default of each is the spec's reference default; the ceilings are
 //! this port's own (the spec recommends none for these three): a limit is a
 //! denial-of-service bound, not a tuning knob without an upper end, and the
-//! depth ceiling in particular keeps the recursive readers and writers well
-//! inside a thread's stack.
+//! depth ceiling in particular keeps the recursive readers inside a thread's
+//! stack: measured with a 2 MB thread stack, the JSON, OML, YAML and XML
+//! readers and `Doc` handle 300 levels in a debug build and 1 000 in a
+//! release build, but overflow at 400 in debug, so 250 is safe in both
+//! profiles. A caller on a smaller stack than 2 MB must lower the depth.
 //!
 //! As for [`crate::formats::yaml::YamlReadOptions`], `0` selects the default
 //! (a zero or unset value never widens a limit) and a value above its
@@ -49,7 +52,7 @@ use num_bigint::BigInt;
 /// The reference default for the maximum nesting depth (spec section 2.4).
 pub const DEFAULT_MAX_DEPTH: u32 = 200;
 /// The largest maximum nesting depth [`Limits::validate`] accepts.
-pub const MAX_DEPTH_CEILING: u32 = 1_000;
+pub const MAX_DEPTH_CEILING: u32 = 250;
 /// The reference default for the maximum node count (spec section 2.4).
 pub const DEFAULT_MAX_NODES: u32 = 1_000_000;
 /// The largest maximum node count [`Limits::validate`] accepts.
@@ -79,7 +82,7 @@ pub struct Limits {
     /// deeper is refused with `document.limit.depth`.
     ///
     /// `0` selects [`DEFAULT_MAX_DEPTH`] (200); values above
-    /// [`MAX_DEPTH_CEILING`] (1 000) are rejected by [`Limits::validate`].
+    /// [`MAX_DEPTH_CEILING`] (250) are rejected by [`Limits::validate`].
     pub max_depth: u32,
     /// The maximum number of nodes (containers) one Document may hold. A
     /// document with exactly this many is accepted, one more is refused with

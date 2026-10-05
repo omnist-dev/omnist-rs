@@ -68,7 +68,7 @@ impl Limits {
 }
 
 pub const DEFAULT_MAX_DEPTH: u32 = 200;
-pub const MAX_DEPTH_CEILING: u32 = 1_000;
+pub const MAX_DEPTH_CEILING: u32 = 250;
 pub const DEFAULT_MAX_NODES: u32 = 1_000_000;
 pub const MAX_NODES_CEILING: u32 = 10_000_000;
 pub const DEFAULT_MAX_INT_DIGITS: u32 = 4_300;

@@ -19,7 +19,7 @@ Added:
   defaulting to 200, 1,000,000 and 4,300, the spec's reference defaults), in
   the style of `YamlReadOptions`: `#[non_exhaustive]`, `with_*` builders,
   `effective_*`, `validate`. `0` selects the default (a zero or unset value
-  never widens a limit); a value above its ceiling (1,000, 10,000,000 and
+  never widens a limit); a value above its ceiling (250, 10,000,000 and
   43,000, this port's own, since the spec recommends none for these three) is
   refused, not clamped. The ceilings and defaults are public constants. D-10
   (finite) and D-11 (documented, in `docs/limitations.md`) are met.
@@ -48,6 +48,10 @@ Changed:
   over-cap literal is replaced by a placeholder and never converted).
   A syntax error anywhere in the input now wins over an over-long integer
   (previously whichever came first in the text).
+- **The CLI reads OML with `read_oml_with`**, so a limit violation in OML input
+  prints a Document path (`$: nesting exceeds the maximum depth (200)`), like the
+  other formats; syntax errors stay `line:col`. The depth ceiling is 250: a 2 MB
+  thread stack was measured to overflow at 400 levels in a debug build.
 - **A node is a container in `Doc` and in the OML reader**, as D-9 counts them
   (and as the YAML reader has since 0.6.1-alpha): `Doc` counted every leaf,
   and the OML parser counted every scalar value, so `a: 1` / `b: 2` was

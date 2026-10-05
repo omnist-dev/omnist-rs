@@ -54,7 +54,7 @@ Every limit below is finite, documented here, and reported with its
 
 | Limit | Default | Configurable |
 |---|---|---|
-| Maximum nesting depth | 200 | yes: `Limits::max_depth` (`0` = default, at most 1,000) |
+| Maximum nesting depth | 200 | yes: `Limits::max_depth` (`0` = default, at most 250) |
 | Maximum node count | 1,000,000 (a node is a container, not a key or a scalar value) | yes: `Limits::max_nodes` (`0` = default, at most 10,000,000) |
 | Maximum integer digits | 4,300 | yes: `Limits::max_int_digits` (`0` = default, at most 43,000) |
 | Maximum alias expansion factor (YAML) | **50** | yes: `YamlReadOptions::max_alias_expansion` (`0` = default, at most 10000) |
@@ -67,9 +67,11 @@ by `YamlReadOptions::with_limits` (for `read_yaml_with`) and by
 defaults, unchanged. As for the YAML options, `0` selects the default (a zero
 or unset value never widens a limit) and a value above its ceiling is refused,
 not clamped, by `Limits::validate` (an uncoded `DocumentError`). The ceilings
-are this port's own, because the spec recommends none for these three; they
-keep the recursive readers well inside a thread's stack and bound the work a
-caller can opt into. A limit equal to the document's depth, node count or
+are this port's own, because the spec recommends none for these three; the
+depth ceiling is what the recursive readers survive on a 2 MB thread stack in
+a debug build (measured: 300 levels pass, 400 overflow; a release build passes
+1,000), and all three bound the work a caller can opt into. On a smaller stack,
+lower the depth. A limit equal to the document's depth, node count or
 digit length accepts it and one past refuses it. A `Doc` remembers the limits
 it was built under, so a later `add` or `set` enforces the same ones.
 `write_oml` and the other writers, which take a bare `RawNode` or an existing

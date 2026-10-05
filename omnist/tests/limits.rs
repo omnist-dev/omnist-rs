@@ -136,7 +136,7 @@ fn ceilings_are_accepted_and_one_past_is_refused_not_clamped() {
     for (bad, name) in [
         (
             Limits::default().with_max_depth(MAX_DEPTH_CEILING + 1),
-            "max_depth 1001 exceeds the ceiling 1000",
+            "max_depth 251 exceeds the ceiling 250",
         ),
         (
             Limits::default().with_max_nodes(MAX_NODES_CEILING + 1),
@@ -739,10 +739,10 @@ fn of_with_enforces_the_limits() {
 
 #[test]
 fn a_document_remembers_the_limits_it_was_built_under() {
-    // Built with a depth of 300, a later add at depth 250 is within its own
+    // Built with a depth of 250, a later add at depth 250 is within its own
     // limit; a default-limit document refuses the same add.
-    let wide = Limits::default().with_max_depth(300);
-    let mut doc = Doc::from_raw_with(nest_raw(250), &wide).unwrap();
+    let wide = Limits::default().with_max_depth(250);
+    let mut doc = Doc::from_raw_with(nest_raw(225), &wide).unwrap();
     let mut default_doc = Doc::from_raw(nest_raw(200)).unwrap();
     let deepest = |d: &Doc, levels: usize| {
         let mut c = d.root();
@@ -751,7 +751,7 @@ fn a_document_remembers_the_limits_it_was_built_under() {
         }
         (c.id(), c.path.clone())
     };
-    let (id, path) = deepest(&doc, 250);
+    let (id, path) = deepest(&doc, 225);
     assert!(
         doc.add(id, &path, "b", &Value::Object(Default::default()))
             .is_ok()
