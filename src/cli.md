@@ -24,6 +24,21 @@ errors as structured JSON on stderr instead of plain text. Exit codes: `0`
 success, `1` a conformance/adjustment failure the command itself reports,
 `2` a usage or parse error.
 
+Every subcommand that reads a Document (`format`, `convert`, `check`,
+`validate`, `infer`) accepts `--max-input-bytes N` (1 to 1 GiB, default 64
+MiB): an input of more than N bytes is refused with
+`document.limit.input-size` at `$` (spec D-23), exit `2`. The count is bytes of
+the input as received, a leading BOM included, taken before decoding; the CLI
+stops reading at N + 1 bytes. The message says how to raise it:
+
+```text
+error: input exceeds the maximum input size (40 bytes); use --max-input-bytes N to raise it
+```
+<!-- doc-illustrative -->
+
+Schema files (`--schema`, the `schema` subcommands) are not Documents and are
+not bounded by it.
+
 ## `format`
 
 Canonicalizes an OML document -- the only format with no other

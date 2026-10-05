@@ -57,10 +57,11 @@ Every limit below is finite, documented here, and reported with its
 | Maximum nesting depth | 200 | yes: `Limits::max_depth` (`0` = default, at most 250) |
 | Maximum node count | 1,000,000 (a node is a container, not a key or a scalar value) | yes: `Limits::max_nodes` (`0` = default, at most 10,000,000) |
 | Maximum integer digits | 4,300 | yes: `Limits::max_int_digits` (`0` = default, at most 43,000) |
+| Maximum input size (bytes, D-23) | **64 MiB** (67,108,864 bytes) | yes: `Limits::max_input_bytes` (`0` = default, at most 1 GiB); CLI `--max-input-bytes N` |
 | Maximum alias expansion factor (YAML) | **50** | yes: `YamlReadOptions::max_alias_expansion` (`0` = default, at most 10000) |
 | Maximum expanded size (YAML, inputs with an alias or merge key) | **1,000,000** value slots | yes: `YamlReadOptions::max_expanded_slots` (`0` = default, at most 10,000,000) |
 
-The first three are `omnist::limits::Limits`, taken by the explicit-limits
+The first four are `omnist::limits::Limits`, taken by the explicit-limits
 readers `read_oml_with`, `read_json_with`, `read_toml_with`, `read_xml_with`,
 by `YamlReadOptions::with_limits` (for `read_yaml_with`) and by
 `Doc::from_raw_with` / `Doc::of_with`; the plain `read_*` functions use the
@@ -121,6 +122,74 @@ spec's own 1,000-service x 60-key compose example (`W` = 62,063) is accepted
 omnist-rs#189). A malformed merge (a scalar
 merge value, a scalar or sequence member of a merge sequence, an alias to a
 sequence of scalars) is `parse.codec-syntax` and wins over both limits.
+
+## Maximum input size (D-23, D-24)
+
+The spec says an implementation SHOULD enforce a finite maximum input size in
+bytes (D-23), names no default (D-24), and asks the implementer to measure the
+slowest codec at the size chosen. This port enforces one, **64 MiB** by default
+(the same number the Python port chose), configurable with
+`Limits::max_input_bytes` and, on the command line, `--max-input-bytes N` on
+`format`, `convert`, `check`, `validate` and `infer`.
+
+- **Bytes, not characters**: `é` is two, and a leading byte-order mark is three,
+  because the length is taken before the mark is stripped (D-15) and before any
+  decoding or parsing. An input of exactly the maximum is accepted, one byte
+  more is refused with `document.limit.input-size` at `$`.
+- **First**: the check precedes every other diagnostic, so an oversized input
+  that is also invalid UTF-8, malformed or doubly BOM-marked reports
+  `document.limit.input-size`. It covers all five formats, an alias-free YAML
+  input included, and `Doc::from_format` for a registered (plugin) format too.
+  `read_oml`, which returns a `ParseError`, reports it at `1:1`; every other
+  reader, and `read_oml_with`, report the `DocumentError` form with path `$`.
+- **Streaming**: the CLI reads a file or stdin through a reader limited to the
+  maximum plus one byte, so it refuses an oversized input after reading
+  max + 1 bytes rather than buffering the rest. The refusal says how to raise
+  the limit.
+- **Not bounded**: an OSD schema text (D-25 asks for a schema-size bound but
+  gives it no code and no vector; the CLI's schema files and `--schema` are
+  read whole), and a Document built from native values (it has no input bytes).
+
+**Why 64 MiB, and what it costs.** The cap bounds parse cost; it does not make
+a parse fast. Measured on 2026-10-05 (release build, one run each, a flat
+mapping of integer entries filling 64 MiB; TOML and YAML also measured at
+8 and 16 MiB and scale about linearly): OML 2.4 s and 0.5 GB peak, XML 7.1 s and 0.6 GB, JSON 6.1 s
+and 1.0 GB, TOML 15.8 s and 2.5 GB, YAML 18.8 s and 2.7 GB. The spec says an
+implementation SHOULD NOT exceed 10 MiB without such a measurement; this one is
+above it and has it, but a deployment that reads untrusted TOML or YAML on a
+small host should set a lower maximum (the same inputs at 10 MiB: TOML 2.1 s
+and 0.43 GB, YAML 2.7 s and 0.46 GB, the others under 1.3 s and 0.17 GB). Before 0.9.0-alpha a reader took any size, so a caller
+that reads more than 64 MiB now has to raise the limit explicitly: that is a
+behaviour change, not only a new option.
+
+## C-9: writers refuse a string with no UTF-8 encoding (vacuous here)
+
+Spec C-9 (v0.32.0-beta) says every writer MUST fail with
+`write.unsupported-value` when a Document holds a string value or an edge label
+with no UTF-8 encoding. In this port the rule cannot fire. A Rust `String`,
+`&str` and `char` always encode, so no Document, `RawNode` or `Value` can hold
+such a string, and every API that takes text takes `&str` or `String`. The
+audit of 2026-10-05 found:
+
+- **No library entry point takes bytes**, an `OsString` or a `Cow<[u8]>`. The
+  only byte entry points are the CLI crate's `read_document_bytes(_with)`,
+  `read_oml_bytes(_with)` and `parse_schema_bytes`, which decode with
+  `String::from_utf8` and refuse invalid input with `parse.invalid-encoding`
+  (D-14), never repairing it.
+- **No lossy conversion on input.** No production code calls
+  `String::from_utf8_lossy` on bytes that could be invalid, `to_string_lossy`,
+  or an `_unchecked` constructor, except two `from_utf8_lossy` calls in the XML
+  reader, which work on slices of an already valid `&str` cut at ASCII
+  delimiters (a CDATA body, an attribute value) and so never see an invalid
+  byte. Every reader refuses a lone surrogate escape (JSON `\ud800`, TOML,
+  OML, YAML, XML `&#xD800;`) as a syntax error and never turns one into
+  `U+FFFD`, which is the Go-style bug.
+- A tripwire test (`omnist/tests/c9_vacuous.rs`) fails if a new lossy
+  conversion appears in production code, so a future route is audited, not
+  silent.
+
+No vector pins C-9 (an input is UTF-8 text or `bytes_hex`, neither of which can
+carry a surrogate), so the ledger's row for it is "vacuous" for this port.
 
 ## `Scalar::Int` is arbitrary-precision (issue #104)
 

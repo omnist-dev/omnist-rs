@@ -566,6 +566,10 @@ fn parse_content(
                 }
             }
             Event::CData(e) => {
+                // C-9 audit: the reader is `Reader::from_str` over a valid
+                // `&str` and a CDATA body is cut at ASCII delimiters, so
+                // this is always valid UTF-8 and the lossy form never
+                // inserts a U+FFFD (docs/limitations.md, omnist/tests/c9_vacuous.rs).
                 text.push_str(&String::from_utf8_lossy(e.as_ref()));
             }
             Event::Eof => {
@@ -653,6 +657,8 @@ fn record_elem_diagnostics(
 /// well-formedness is checked by the reader.
 fn refuse_attribute_entities(e: &quick_xml::events::BytesStart<'_>, refusal: &mut Refusal) {
     for attr in e.attributes().filter_map(Result::ok) {
+        // C-9 audit: an attribute value is a slice of the valid `&str`
+        // source cut at quotes, so this never inserts a U+FFFD.
         let value = String::from_utf8_lossy(&attr.value);
         let mut rest: &str = &value;
         while let Some(at) = rest.find('&') {

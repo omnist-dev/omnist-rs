@@ -55,17 +55,27 @@ them for later `add`/`set`.
 
 ```rust
 #[non_exhaustive]
-pub struct Limits { pub max_depth: u32, pub max_nodes: u32, pub max_int_digits: u32 }
+pub struct Limits {
+    pub max_depth: u32,
+    pub max_nodes: u32,
+    pub max_int_digits: u32,
+    pub max_input_bytes: u64,
+}
 
 impl Limits {
     pub fn with_max_depth(self, n: u32) -> Self;
     pub fn with_max_nodes(self, n: u32) -> Self;
     pub fn with_max_int_digits(self, n: u32) -> Self;
+    pub fn with_max_input_bytes(self, n: u64) -> Self;
     pub fn effective_max_depth(&self) -> u32;
     pub fn effective_max_nodes(&self) -> u32;
     pub fn effective_max_int_digits(&self) -> u32;
+    pub fn effective_max_input_bytes(&self) -> u64;
     pub fn validate(&self) -> Result<(), DocumentError>;
+    pub fn check_input_len(&self, len: u64, hint: &str) -> Result<(), DocumentError>;
 }
+
+pub fn input_size_error(max_input_bytes: u64, hint: &str) -> DocumentError;
 
 pub const DEFAULT_MAX_DEPTH: u32 = 200;
 pub const MAX_DEPTH_CEILING: u32 = 250;
@@ -73,12 +83,18 @@ pub const DEFAULT_MAX_NODES: u32 = 1_000_000;
 pub const MAX_NODES_CEILING: u32 = 10_000_000;
 pub const DEFAULT_MAX_INT_DIGITS: u32 = 4_300;
 pub const MAX_INT_DIGITS_CEILING: u32 = 43_000;
+pub const DEFAULT_MAX_INPUT_BYTES: u64 = 64 * 1024 * 1024;
+pub const MAX_INPUT_BYTES_CEILING: u64 = 1 << 30;
 ```
 <!-- doc-illustrative -->
 
-The three universal limits of spec section 2.4. `0` selects the default; a
-value above its ceiling is refused by `validate`, which every `*_with` entry
-point calls first. The explicit-limits readers are
+The three universal limits of spec section 2.4 and the maximum input size of
+D-23 (bytes of the input as received, BOM counted, checked first by every
+reader: an input of exactly the maximum is accepted, one byte more is refused
+with `document.limit.input-size` at `$`). `0` selects the default; a value
+above its ceiling is refused by `validate`, which every `*_with` entry point
+calls first. `Doc::from_format` applies the default maximum to a registered
+format as well. The explicit-limits readers are
 `oml::read_oml_with`, `formats::json::read_json_with`,
 `formats::toml::read_toml_with`, `formats::xml::read_xml_with`, and
 `formats::yaml::read_yaml_with` with `YamlReadOptions::with_limits`; the plain
