@@ -850,6 +850,10 @@ impl Doc {
     /// Mirrors Python's `Doc.from_format(name, text)`.
     pub fn from_format(name: &str, text: &str) -> Result<Doc, crate::error::OmnistError> {
         let fmt = crate::registry::get_format(name)?;
+        // D-23: the default maximum bounds a registered (plugin) format too,
+        // whose reader is not ours to change; the built-in readers repeat
+        // the same first check themselves.
+        crate::limits::Resolved::DEFAULT.check_input_size(text.len())?;
         (fmt.read)(text)
     }
 

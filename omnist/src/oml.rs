@@ -126,6 +126,11 @@ enum OmlReadError {
 }
 
 fn read_oml_resolved(text: &str, limits: &Resolved) -> Result<RawNode, OmlReadError> {
+    // D-23: the size is checked first, on the input as received (BOM
+    // counted), ahead of every other diagnostic. `read_oml` reports it at 1:1.
+    limits
+        .check_input_size(text.len())
+        .map_err(|d| OmlReadError::Limit(d, 1, 1))?;
     // D-15/D-21: one leading BOM is stripped, a second is rejected at 1:1
     // This is the only place OML strips it (see `crate::bom`).
     let text = crate::bom::strip_leading_bom(text).map_err(|_| {

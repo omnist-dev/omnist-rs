@@ -86,6 +86,8 @@ pub fn read_json_with(text: &str, limits: &Limits) -> Result<Doc, OmnistError> {
 }
 
 fn read_json_resolved(text: &str, limits: Resolved) -> Result<Doc, OmnistError> {
+    // D-23: first, on the input as received (BOM counted).
+    limits.check_input_size(text.len())?;
     // D-15/D-21: one leading BOM is stripped, a second is rejected at 1:1
     // (`parse.codec-syntax`, E-24) before the scanner sees the text.
     let text = crate::bom::strip_leading_bom(text)

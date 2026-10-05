@@ -56,7 +56,10 @@ fn run_stdin_bytes(args: &[&str], stdin: &[u8]) -> Run {
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
     let mut child = cmd.spawn().expect("failed to spawn omnist binary");
-    child.stdin.take().unwrap().write_all(stdin).unwrap();
+    // D-23: the CLI stops reading at the maximum input size plus one byte, so
+    // a writer of more than that (the 200 MB hostile input below) can get a
+    // broken pipe. That is the behaviour under test, not a failure.
+    let _ = child.stdin.take().unwrap().write_all(stdin);
     let output = child.wait_with_output().expect("failed to wait on child");
     Run {
         stdout: String::from_utf8(output.stdout).unwrap(),

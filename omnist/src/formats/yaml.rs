@@ -605,6 +605,12 @@ pub fn read_yaml(text: &str) -> Result<Doc, OmnistError> {
 /// are out of range.
 pub fn read_yaml_with(text: &str, options: &YamlReadOptions) -> Result<Doc, OmnistError> {
     options.validate()?;
+    // D-23: the size is checked first, on the input as received (BOM
+    // counted), for every YAML input, an alias-free one included.
+    options
+        .limits
+        .resolve_validated()
+        .check_input_size(text.len())?;
     // D-15/D-21: one leading BOM is stripped, a second is rejected at 1:1.
     // Without this pre-check yaml-rust2 would swallow (or keep) the second
     // mark silently; YAML 1.2 itself admits a leading BOM, so the library

@@ -237,6 +237,8 @@ fn read_xml_raw(
     mut report: Option<&mut WriteReport>,
     limits: &ResolvedLimits,
 ) -> Result<RawNode, OmnistError> {
+    // D-23: first, on the input as received (BOM counted).
+    limits.check_input_size(text.len())?;
     // D-15/D-21: one leading BOM is stripped, a second is rejected at 1:1
     // (`parse.codec-syntax`, E-24). XML 1.0 admits a leading BOM, so
     // quick_xml would otherwise discard a second one silently.
@@ -422,10 +424,20 @@ pub fn read_xml_report(text: &str, report: Option<&mut WriteReport>) -> Result<D
 /// Parse XML text into a [`Doc`] with schema-guided pretyping of boolean,
 /// integer, and number scalar fields (spec §2.2 / issue #114).
 pub fn read_xml_with_schema(text: &str, schema: &Schema) -> Result<Doc, OmnistError> {
-    let raw = read_xml_raw(text, None, &ResolvedLimits::DEFAULT)?;
+    read_xml_with_schema_and_limits(text, schema, &Limits::default())
+}
+
+/// [`read_xml_with_schema`] under explicit [`Limits`] (see [`read_xml_with`]
+/// for what each limit governs here).
+pub fn read_xml_with_schema_and_limits(
+    text: &str,
+    schema: &Schema,
+    limits: &Limits,
+) -> Result<Doc, OmnistError> {
+    let resolved = limits.resolve()?;
+    let raw = read_xml_raw(text, None, &resolved)?;
     let pretyped = xml_pretype(raw, schema, &FieldType::Ref(schema.root().clone()));
-    let doc = Doc::from_raw(pretyped)?;
-    Ok(doc)
+    Ok(Doc::from_raw_resolved(pretyped, resolved)?)
 }
 
 /// An element is a node (a container) from its first child element on:
