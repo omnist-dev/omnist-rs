@@ -3,8 +3,8 @@
 This port has its own conformance-test harness (`tools/conformance/`)
 against [omnist-spec](https://github.com/omnist-dev/omnist-spec), the
 language-agnostic upstream specification. It vendors omnist-spec as a
-pinned git submodule (`vendor/omnist-spec`, currently commit `1a7d0de`,
-the `v0.28.0-beta` tag) and
+pinned git submodule (`vendor/omnist-spec`, currently commit `64cbb68`,
+the `v0.33.0-beta` tag) and
 runs entirely against this crate's own library code -- it does not depend
 on the Python or TypeScript ports' implementations.
 

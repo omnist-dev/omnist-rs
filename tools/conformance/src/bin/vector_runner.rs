@@ -1345,7 +1345,7 @@ mod tests {
     }
 
     #[test]
-    fn vector_count_is_338() {
+    fn vector_count_is_367() {
         // 204 -> 249 via the submodule pin bump v0.9.1-beta -> v0.19.0-beta,
         // 249 -> 273 via v0.19.0-beta -> v0.21.0-beta (14 new bytes_hex D-14
         // vectors, 4 new OSD-15 canonical-output vectors, 5 new OML-26/27
@@ -1359,9 +1359,9 @@ mod tests {
         // v0.26.0-beta (19 new vectors: D-18a carrier, D-22 expanded size and
         // the malformed-merge syntax errors, all in alias-expansion.json, and
         // the rest of the v0.26.0 additions), 331 -> 338 via v0.26.0-beta ->
-        // v0.27.0-beta (7 new empty-merge-sequence vectors in alias-expansion.json).
+        // v0.27.0-beta (7 new empty-merge-sequence vectors in alias-expansion.json), 338 -> 367 via v0.27.0-beta -> v0.33.0-beta (7 repeated-label path, 10 input-size, 7 OML-29, 5 XML-null vectors).
         let vectors = iter_vectors(&suite_dir());
-        assert_eq!(vectors.len(), 338);
+        assert_eq!(vectors.len(), 367);
     }
 
     /// Full-suite regression guard: runs every real vector through every

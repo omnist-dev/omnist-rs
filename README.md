@@ -37,6 +37,6 @@ This repository follows a strict spec-first methodology. `vendor/omnist-spec` is
 
 **`v0.8.0-alpha`.**
 
-- **Conformance Harness**: Track 1 (CLI fixtures) **19 / 19 (100%) PASS**. Track 2 (JSON test vectors, spec v0.28.0-beta, (path, code) comparison) **310 / 338 PASS, 0 fails, 28 skips**.
+- **Conformance Harness**: Track 1 (CLI fixtures) **19 / 19 (100%) PASS**. Track 2 (JSON test vectors, spec v0.33.0-beta, (path, code) comparison) **310 / 338 PASS, 0 fails, 28 skips**.
 - **Testing**: **1,318 tests passing**, 0 failures — unit tests plus `proptest`-based property fuzzing across every format reader.
 - **Code Coverage**: **100% lines, 100% branches** (`cargo llvm-cov --workspace --fail-under-lines 100`, gated in CI).
