@@ -1704,3 +1704,24 @@ fn read_xml_with_schema_and_limits_validates_the_limits_and_applies_them() {
     assert!(e.to_string().contains("maximum input size"), "{e}");
     assert!(read_xml_with_schema_and_limits("<a>x</a>", &schema, &Limits::default()).is_ok());
 }
+
+/// E-10 for the reader's report, in the library's own build (the integration
+/// tests link a separate instance of the reader): the first of a repeated
+/// element is indexed once a later sibling shows the label repeats, for an
+/// empty element and for one with children, and a nested diagnostic follows.
+#[test]
+fn the_report_indexes_the_first_of_a_repeated_element() {
+    let cases: &[(&str, &[&str])] = &[
+        ("<r><a x=\"1\"/><a/></r>", &["$.r.a[0]"]),
+        ("<r><a x=\"1\"></a><a/></r>", &["$.r.a[0]"]),
+        ("<r><a><k x=\"1\"/></a><a/></r>", &["$.r.a[0].k"]),
+        ("<r><a/><a x=\"1\"/></r>", &["$.r.a[1]"]),
+        ("<r><a x=\"1\"/></r>", &["$.r.a"]),
+    ];
+    for (text, expect) in cases {
+        let mut rep = WriteReport::new();
+        read_xml_report(text, Some(&mut rep)).unwrap();
+        let got: Vec<&str> = rep.iter().map(|a| a.path.as_str()).collect();
+        assert_eq!(&got, expect, "{text}");
+    }
+}

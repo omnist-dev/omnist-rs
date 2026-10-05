@@ -1475,6 +1475,24 @@ mod tests {
         assert!(r.message.contains("bytes input"), "{}", r.message);
     }
 
+    /// E-10 for the XML reader's report as the runner drives it (the runner
+    /// links the library as a dependency, a separate build from the
+    /// library's own tests): the first of a repeated element is indexed.
+    #[test]
+    fn the_xml_report_indexes_the_first_of_a_repeated_element() {
+        let mut rep = WriteReport::new();
+        read_xml_report(
+            "<r><a x=\"1\"/><a/><b><c x=\"1\"></c></b></r>",
+            Some(&mut rep),
+        )
+        .unwrap();
+        let paths: Vec<&str> = rep.adjustments().iter().map(|a| a.path.as_str()).collect();
+        assert_eq!(paths, vec!["$.r.a[0]", "$.r.b.c"]);
+        let mut rep = WriteReport::new();
+        read_xml_report("<r><a><k x=\"1\"/></a><a/></r>", Some(&mut rep)).unwrap();
+        assert_eq!(rep.adjustments()[0].path, "$.r.a[0].k");
+    }
+
     #[test]
     fn vector_count_is_367() {
         // 204 -> 249 via the submodule pin bump v0.9.1-beta -> v0.19.0-beta,

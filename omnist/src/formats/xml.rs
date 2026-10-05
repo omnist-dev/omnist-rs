@@ -563,11 +563,11 @@ fn parse_content(
                     text.push(c);
                 }
             }
+            // C-9 audit: the reader is `Reader::from_str` over a valid `&str`
+            // and a CDATA body is cut at ASCII delimiters, so the lossy form
+            // below never inserts a U+FFFD (docs/limitations.md,
+            // omnist/tests/c9_vacuous.rs).
             Event::CData(e) => {
-                // C-9 audit: the reader is `Reader::from_str` over a valid
-                // `&str` and a CDATA body is cut at ASCII delimiters, so
-                // this is always valid UTF-8 and the lossy form never
-                // inserts a U+FFFD (docs/limitations.md, omnist/tests/c9_vacuous.rs).
                 text.push_str(&String::from_utf8_lossy(e.as_ref()));
             }
             Event::Eof => {
