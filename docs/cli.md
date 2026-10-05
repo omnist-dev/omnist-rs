@@ -58,11 +58,14 @@ silent write; `--report` prints the adjustment report to stderr;
 `--result-format {text,json,oml}` controls how a report (or `--schema`
 outcome) is rendered. Each adjustment carries the spec's section 8.3.8 code
 (`format.value-stringified`, `format.string-line-break-char`,
-`format.temporal-stringified`, `format.interleaving-lost`, ...), except
-`null.omitted` (an XML null written as an empty element), which the spec has
-no code for. Through 0.7.0-alpha `format.value-stringified` was spelled
-`value.stringified` and `format.string-line-break-char` was spelled
-`string.line-break-char`; a script matching the old output must change.
+`format.temporal-stringified`, `format.interleaving-lost`, ...). Through
+0.7.0-alpha `format.value-stringified` was spelled `value.stringified` and
+`format.string-line-break-char` was spelled `string.line-break-char`; a
+script matching the old output must change. Through 0.8.0-alpha an XML null
+was written as an empty element with a `null.omitted` warning; from
+0.9.0-alpha `convert --to xml` fails on a null leaf (exit 2, spec C-10),
+`--strict` or not, and `check --to xml` reports it as an error entry with
+code `write.unsupported-value` (see [XML](formats/xml.md#null-has-no-xml-form)).
 
 ## `check`
 

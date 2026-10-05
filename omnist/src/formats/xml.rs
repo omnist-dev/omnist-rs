@@ -935,6 +935,24 @@ fn scan_xml_cursor(
                 );
                 return Ok(());
             }
+            // C-10: XML has no null token, and the empty element `<a/>` reads
+            // back as the empty string, so a written null would be
+            // indistinguishable from the different, valid Document holding
+            // "". Fails unconditionally, like TOML's null.
+            if matches!(scalar, Scalar::Null) {
+                let detail = "null has no XML representation (XML has no null token, and an \
+                              empty element reads back as the empty string)";
+                if fail_fast {
+                    return Err(crate::report::unsupported_value_error(path, detail));
+                }
+                rep.add(
+                    path.as_str(),
+                    "write.unsupported-value",
+                    detail,
+                    Severity::Error,
+                );
+                return Ok(());
+            }
             scan_leaf(scalar, path, rep);
         }
     }
@@ -943,17 +961,8 @@ fn scan_xml_cursor(
 
 fn scan_leaf(scalar: &Scalar, path: &str, rep: &mut WriteReport) {
     match scalar {
-        // `null.omitted` is NOT a code of the spec's section 8.3.8 table: the
-        // taxonomy has none for a null written as an empty element (which
-        // reads back as the empty string). This port keeps its own and
-        // documents it (docs/formats/xml.md) rather than inventing a
-        // `format.*` name; a spec issue decides what replaces it.
-        Scalar::Null => rep.add(
-            path,
-            "null.omitted",
-            "null written as an empty element",
-            Severity::Warning,
-        ),
+        // A null never reaches this function: `scan_xml_cursor` fails the
+        // write (C-10), or records the failure for `check_xml`, first.
         // omnist-rs#86: read_xml no longer infers scalar kind from
         // element-text shape, so a non-string scalar written to XML (XML
         // has no native typed literals -- everything is text) now reads
@@ -972,7 +981,7 @@ fn scan_leaf(scalar: &Scalar, path: &str, rep: &mut WriteReport) {
             "non-string scalar written as text (reads back as a string)",
             Severity::Warning,
         ),
-        Scalar::Str(_) => {}
+        Scalar::Null | Scalar::Str(_) => {}
     }
     // `string.cr_normalized` retired (spec Sec8.3.8, issue #162): a
     // literal CR is no longer written raw and reported lossy -- it is
