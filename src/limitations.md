@@ -216,6 +216,19 @@ Fixed; see each format's own page for anything still worth knowing:
   digit limit counts the decimal digits of the value (spec D-28).
   No format has a 64-bit ceiling on read or on write.
 
+## TOML integers past 64 bits: cost of reading them
+
+`toml_edit` refuses an integer past 64 bits, so the reader finds those literals
+itself (see [TOML](formats/toml.md)). Doing that one literal per reparse was
+quadratic: in a release build, an array of N copies of a 20-digit integer took
+10.6 s at N = 4,000 (84 KB), 38 s at 8,000, 147 s at 16,000 and 324 s at 32,000,
+where the previous release refused the first such literal at once. A single scan
+now finds every such literal and the text is parsed once more, so the cost is
+linear: 20,000 big integers in an array, 20,000 inline tables each holding one,
+and 20,000 `1e999` floats read together in 0.41 s (release; the test
+`many_big_integers_read_in_linear_time` bounds it at 60 s in a debug build). Before the
+fix the same three shapes at 6,000 each took 282 s.
+
 ## Temporal kinds have no arithmetic
 
 `Scalar`/`Value` carry real `Date(String)`/`Time(String)`/`Datetime(String)`
