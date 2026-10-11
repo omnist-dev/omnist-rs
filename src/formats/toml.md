@@ -50,7 +50,9 @@ its place, parses again, and puts the real value back by offset when it builds
 the Document. A decimal literal already longer than the limit in its own
 spelling is not converted at all; a placeholder stands in for it, so it is
 refused without paying the superlinear conversion. A syntax error elsewhere
-in the text still wins over a limit.
+in the text still wins over a limit. The literals are found in one scan, so the
+cost stays linear however many there are (a literal the scan misses is found
+from the parser's refusal instead, one reparse each).
 
 Python's `tomllib` exempts hex, octal and binary literals from CPython's
 4,300-digit string-conversion guard; this port does not, because D-28 counts

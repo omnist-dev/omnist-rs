@@ -224,6 +224,15 @@ fn read_toml_resolved(text: &str, limits: Resolved) -> Result<Doc, OmnistError> 
     let mut guard = IntGuard::new(limits.max_int_digits);
     let mut lexemes: HashMap<usize, Value> = HashMap::new();
     let mut patched = text.to_string();
+    // Every number `toml_edit` would refuse is read and stood in for up front,
+    // in one scan, so the loop below reparses O(1) times however many there
+    // are (one reparse per literal made a hostile file quadratic).
+    for (start, end) in prescan_numbers(text) {
+        if let Some(value) = number_value(&text[start..end], &mut guard) {
+            blank(&mut patched, start, end, &value);
+            lexemes.insert(start, value);
+        }
+    }
     let value = loop {
         match toml_edit::Document::parse(patched.as_str()) {
             Ok(parsed) => break table_like_to_value(parsed.as_table(), &lexemes)?,
@@ -239,14 +248,7 @@ fn read_toml_resolved(text: &str, limits: Resolved) -> Result<Doc, OmnistError> 
                 let Some((start, end, value)) = recover_number(&patched, &e, &mut guard) else {
                     return Err(toml_parse_error(&patched, &e, &limits));
                 };
-                let placeholder = if matches!(value, Value::Float(_)) {
-                    "0.0"
-                } else {
-                    "0"
-                };
-                let mut blank = String::from(placeholder);
-                blank.push_str(&" ".repeat(end - start - placeholder.len()));
-                patched.replace_range(start..end, &blank);
+                blank(&mut patched, start, end, &value);
                 lexemes.insert(start, value);
             }
         }
@@ -312,9 +314,33 @@ fn recover_number(
     }
     let start = e.span()?.start;
     let len = text[start..]
-        .find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '+' | '-' | '.')))
+        .find(|c: char| !is_number_char(c))
         .unwrap_or(text.len() - start);
-    let lexeme = &text[start..start + len];
+    let value = number_value(&text[start..start + len], guard)?;
+    Some((start, start + len, value))
+}
+
+fn is_number_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '_' | '+' | '-' | '.')
+}
+
+/// Replaces `start..end` of `patched` by a same-width stand-in for `value`
+/// (`0.0` for a float, `0` for an integer, padded with spaces).
+fn blank(patched: &mut String, start: usize, end: usize, value: &Value) {
+    let placeholder = if matches!(value, Value::Float(_)) {
+        "0.0"
+    } else {
+        "0"
+    };
+    let mut filler = String::from(placeholder);
+    filler.push_str(&" ".repeat(end - start - placeholder.len()));
+    patched.replace_range(start..end, &filler);
+}
+
+/// The value of a number literal `toml_edit` cannot hold: an integer past 64
+/// bits in any radix, or a float whose magnitude overflows. `None` for
+/// anything else, including a malformed literal.
+fn number_value(lexeme: &str, guard: &mut IntGuard) -> Option<Value> {
     let cleaned: String = lexeme.chars().filter(|&c| c != '_').collect();
     let (neg, body) = match cleaned.strip_prefix('-') {
         Some(rest) => (true, rest),
@@ -326,18 +352,99 @@ fn recover_number(
         Some("0b") => 2,
         _ => 10,
     };
-    let value = if radix == 10 && body.contains(['.', 'e', 'E']) {
-        Value::Float(cleaned.parse().ok()?)
+    if radix == 10 && body.contains(['.', 'e', 'E']) {
+        return Some(Value::Float(cleaned.parse().ok()?));
+    }
+    let digits = if radix == 10 { body } else { &body[2..] };
+    let magnitude = if radix == 10 && digits.len() > guard.max() {
+        guard.placeholder()
     } else {
-        let digits = if radix == 10 { body } else { &body[2..] };
-        let magnitude = if radix == 10 && digits.len() > guard.max() {
-            guard.placeholder()
-        } else {
-            BigInt::parse_bytes(digits.as_bytes(), radix)?
-        };
-        Value::Int(if neg { -magnitude } else { magnitude })
+        BigInt::parse_bytes(digits.as_bytes(), radix)?
     };
-    Some((start, start + len, value))
+    Some(Value::Int(if neg { -magnitude } else { magnitude }))
+}
+
+static NUMBER_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(concat!(
+        r"^(?:[+-]?(?:0|[1-9](?:_?[0-9])*)",
+        r"|0x[0-9A-Fa-f](?:_?[0-9A-Fa-f])*",
+        r"|0o[0-7](?:_?[0-7])*",
+        r"|0b[01](?:_?[01])*",
+        r"|[+-]?(?:0|[1-9](?:_?[0-9])*)(?:\.[0-9](?:_?[0-9])*)?(?:[eE][+-]?[0-9](?:_?[0-9])*)?)$"
+    ))
+    .unwrap()
+});
+
+/// The byte ranges of the value-position number literals in `text` that
+/// `toml_edit` would refuse, found in one scan: a well-formed integer long
+/// enough to leave 64 bits, or a well-formed float that overflows to an
+/// infinity. Strings and comments are skipped, and so are keys (a token
+/// before `=` or `.`, anything outside a value). A literal it misses is still
+/// found by the one-at-a-time recovery after a failed parse; a well-formed
+/// literal it does take has the same value `toml_edit` would have given it.
+fn prescan_numbers(text: &str) -> Vec<(usize, usize)> {
+    let b = text.as_bytes();
+    let mut out = Vec::new();
+    let (mut i, mut depth, mut value) = (0, 0usize, false);
+    while i < b.len() {
+        match b[i] {
+            b'#' => {
+                while i < b.len() && b[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            q @ (b'"' | b'\'') => {
+                let multi = b[i..].starts_with(&[q, q, q]);
+                i += if multi { 3 } else { 1 };
+                while i < b.len() {
+                    if q == b'"' && b[i] == b'\\' {
+                        i += 2;
+                    } else if multi && b[i..].starts_with(&[q, q, q]) {
+                        i += 3;
+                        break;
+                    } else if !multi && (b[i] == q || b[i] == b'\n') {
+                        i += 1;
+                        break;
+                    } else {
+                        i += 1;
+                    }
+                }
+                continue;
+            }
+            b'=' if depth == 0 => value = true,
+            b'[' | b'{' if value => depth += 1,
+            b']' | b'}' if value => depth = depth.saturating_sub(1),
+            b'\n' if depth == 0 => value = false,
+            c if value && is_number_char(char::from(c)) => {
+                let start = i;
+                while i < b.len() && is_number_char(char::from(b[i])) {
+                    i += 1;
+                }
+                let lexeme = &text[start..i];
+                let after = text[i..].trim_start_matches([' ', '\t']);
+                let is_key = after.starts_with('=');
+                if !is_key && NUMBER_RE.is_match(lexeme) {
+                    let prefixed = ["0x", "0o", "0b"].iter().any(|p| lexeme.starts_with(p));
+                    let float = !prefixed && lexeme.contains(['.', 'e', 'E']);
+                    let take = if float {
+                        lexeme
+                            .replace('_', "")
+                            .parse::<f64>()
+                            .is_ok_and(f64::is_infinite)
+                    } else {
+                        lexeme.len() >= 18
+                    };
+                    if take {
+                        out.push((start, i));
+                    }
+                }
+                continue;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    out
 }
 
 /// Converts a `toml_edit` table (top-level document or inline table) into a
@@ -1469,6 +1576,66 @@ mod tests {
         );
         // And a float that merely underflows is still a finite zero.
         assert_eq!(scalar_at("a = 1e-999\n", "a"), Scalar::Float(0.0));
+    }
+
+    #[test]
+    fn many_big_integers_read_in_linear_time() {
+        // One reparse per refused literal made this quadratic: 8,000 of them
+        // took 38 s in a release build. Now one scan finds them all.
+        let n = 20_000;
+        let big = "99999999999999999999";
+        let start = std::time::Instant::now();
+        let array = format!("a = [{}]\n", vec![big; n].join(", "));
+        assert_eq!(read_toml(&array).unwrap().root().count("a"), n);
+        let tables: String = (0..n)
+            .map(|i| format!("t{i} = {{ x = {big} }}\n"))
+            .collect();
+        assert!(read_toml(&tables).is_ok());
+        let floats = format!("f = [{}]\n", vec!["1e999"; n].join(", "));
+        assert!(read_toml(&floats).is_ok());
+        // Generous: a debug build does all three in about a second.
+        assert!(start.elapsed().as_secs() < 20, "{:?}", start.elapsed());
+    }
+
+    #[test]
+    fn the_big_number_scan_skips_keys_strings_comments_and_headers() {
+        let big = "99999999999999999999";
+        let text = format!(
+            "# {big}\n\
+             {big} = 1\n\
+             k = \"{big}\" # {big}\n\
+             s = '{big}'\n\
+             m = \"\"\"\n{big} \\\" {big}\n\"\"\"\n\
+             e = \"a\\\\\"\n\
+             l = '''\n{big}\n'''\n\
+             [88888888888888888888]\n\
+             v = {big}\n\
+             [[x]]\n\
+             w = [\n  {big},\n  {{ {big} = 2, y = {big} }},\n  1e999,\n]\n"
+        );
+        let doc = read_toml(&text).unwrap();
+        // The key is a key, still spelled out; the strings are strings.
+        assert_eq!(scalar_at(&text, big), Scalar::Int(1.into()));
+        assert_eq!(scalar_at(&text, "k"), Scalar::Str(big.to_string()));
+        assert_eq!(scalar_at(&text, "s"), Scalar::Str(big.to_string()));
+        let h = doc.root().get_one("88888888888888888888").unwrap();
+        assert_eq!(h.get_one("v").unwrap().value().unwrap().to_string(), big);
+        // Unbalanced closers and a stray quote never panic the scan.
+        for bad in ["a = ]]]\n", "a = \"", "a = '''", "a = \"\\"] {
+            assert!(read_toml(bad).is_err());
+        }
+    }
+
+    #[test]
+    fn an_overflowing_float_with_a_long_spelling_reads_as_an_infinity() {
+        // A float literal with more characters than the digit limit used to
+        // be mistaken for an over-long integer.
+        let limits = crate::limits::Limits::default().with_max_int_digits(30);
+        let doc = read_toml_with("k = 1.0000000000000000000000000001e999\n", &limits).unwrap();
+        assert_eq!(
+            *doc.root().get_one("k").unwrap().value().unwrap(),
+            Scalar::Float(f64::INFINITY)
+        );
     }
 
     #[test]

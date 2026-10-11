@@ -34,6 +34,18 @@ together.
   `1e999` and `-1e999` read as the infinities (D-29).
 - **The XML writer reports a `date`, `time` or `datetime` leaf as
   `format.temporal-stringified`** (E-5) instead of `format.value-stringified`.
+- **TOML number recovery is linear**: every integer past 64 bits and every
+  overflowing float is found in one scan, not one reparse each (that was
+  quadratic, 282 s for 18,000 literals). A float whose spelling is longer than
+  `max_int_digits` and that overflows (`1.0000000000000000000000000001e999` at a
+  limit of 30) reads as an infinity; the previous release looped on it.
+- **An array of arrays holding an integer past 64 bits** is
+  `document.unlabeled-element` (an array of arrays has no labeled-edge form),
+  where 0.9.0-alpha reported `document.limit.int-digits` at read time for one
+  over the limit. Both refuse the input.
+- A YAML document with both a repeated key and a `!!omap`, `!!pairs` or `!!set`
+  tag reports the tag (`format.tag-forbidden`), not the repeat; the spec does not
+  order the two.
 
 **Tooling**: Track 1 compares a lint finding's `code` exactly (spec 8.3.7,
 omnist-rs#200); Track 2 passes `compact` (E-35) to the OML writer. The parity
