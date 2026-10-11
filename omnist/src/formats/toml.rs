@@ -1294,30 +1294,23 @@ mod tests {
 
     // ------------------------------------------------------------ integer cap
 
-    fn int_at(text: &str, label: &str) -> BigInt {
-        match read_toml(text)
+    /// The scalar a TOML text holds at a top-level label.
+    fn scalar_at(text: &str, label: &str) -> Scalar {
+        read_toml(text)
             .unwrap()
             .root()
             .get_one(label)
             .unwrap()
             .value()
-        {
-            Ok(Scalar::Int(i)) => i.clone(),
-            other => panic!("expected an integer, got {other:?}"),
-        }
+            .unwrap()
+            .clone()
     }
 
-    fn float_at(text: &str, label: &str) -> f64 {
-        match read_toml(text)
-            .unwrap()
-            .root()
-            .get_one(label)
-            .unwrap()
-            .value()
-        {
-            Ok(Scalar::Float(x)) => *x,
-            other => panic!("expected a float, got {other:?}"),
-        }
+    /// The integer a TOML text holds at `x`, as its decimal digits.
+    fn int_at(text: &str, label: &str) -> String {
+        let got = scalar_at(text, label);
+        assert!(matches!(got, Scalar::Int(_)), "{got:?}");
+        got.to_string()
     }
 
     fn assert_int_digits(err: &OmnistError, path: &str) {
@@ -1335,10 +1328,11 @@ mod tests {
         // D-2: integers are arbitrary precision, so a literal `toml_edit`
         // cannot hold in 64 bits still reads, exactly, up to the digit limit.
         let digits = "9".repeat(4300);
-        let got = int_at(&format!("x = {digits}\n"), "x");
-        assert_eq!(got.to_string(), digits);
-        let neg = int_at(&format!("x = -{digits}\n"), "x");
-        assert_eq!(neg.to_string(), format!("-{digits}"));
+        assert_eq!(int_at(&format!("x = {digits}\n"), "x"), digits);
+        assert_eq!(
+            int_at(&format!("x = -{digits}\n"), "x"),
+            format!("-{digits}")
+        );
     }
 
     #[test]
@@ -1356,8 +1350,8 @@ mod tests {
     fn a_long_binary_literal_within_the_decimal_limit_reads() {
         // 4,301 binary digits are about 1,295 decimal digits: within the limit.
         let text = format!("x = 0b{}\n", "1".repeat(4301));
-        let got = int_at(&text, "x");
-        assert_eq!(got.bits(), 4301);
+        let expected: BigInt = (BigInt::from(1) << 4301) - 1;
+        assert_eq!(scalar_at(&text, "x"), Scalar::Int(expected));
     }
 
     #[test]
@@ -1371,22 +1365,19 @@ mod tests {
     #[test]
     fn integer_beyond_64_bits_reads_exactly_in_every_radix() {
         let big = "9223372036854775808"; // i64::MAX + 1
-        assert_eq!(int_at(&format!("x = {big}\n"), "x").to_string(), big);
+        assert_eq!(int_at(&format!("x = {big}\n"), "x"), big);
         assert_eq!(
-            int_at("x = -9223372036854775809\n", "x").to_string(),
+            int_at("x = -9223372036854775809\n", "x"),
             "-9223372036854775809"
         );
+        assert_eq!(int_at("x = 9_223_372_036_854_775_808\n", "x"), big);
+        assert_eq!(int_at("x = +9223372036854775808\n", "x"), big);
         assert_eq!(
-            int_at("x = 9_223_372_036_854_775_808\n", "x").to_string(),
-            big
-        );
-        assert_eq!(int_at("x = +9223372036854775808\n", "x").to_string(), big);
-        assert_eq!(
-            int_at("x = 0xFFFFFFFFFFFFFFFFFF\n", "x").to_string(),
+            int_at("x = 0xFFFFFFFFFFFFFFFFFF\n", "x"),
             "4722366482869645213695"
         );
         assert_eq!(
-            int_at("x = 0o7777777777777777777777\n", "x").to_string(),
+            int_at("x = 0o7777777777777777777777\n", "x"),
             "73786976294838206463"
         );
         assert_eq!(
@@ -1458,14 +1449,26 @@ mod tests {
     #[test]
     fn an_overflowing_float_reads_as_an_infinity() {
         // D-29.
-        assert_eq!(float_at("a = 1e999\n", "a"), f64::INFINITY);
-        assert_eq!(float_at("a = -1e999\n", "a"), f64::NEG_INFINITY);
-        assert_eq!(float_at("a = +1e999\n", "a"), f64::INFINITY);
-        assert_eq!(float_at("a = 1.5e999\n", "a"), f64::INFINITY);
-        assert_eq!(float_at("a = 1_0e9_99\n", "a"), f64::INFINITY);
-        assert_eq!(float_at("a = [1e999]\n", "a"), f64::INFINITY);
+        assert_eq!(scalar_at("a = 1e999\n", "a"), Scalar::Float(f64::INFINITY));
+        assert_eq!(
+            scalar_at("a = -1e999\n", "a"),
+            Scalar::Float(f64::NEG_INFINITY)
+        );
+        assert_eq!(scalar_at("a = +1e999\n", "a"), Scalar::Float(f64::INFINITY));
+        assert_eq!(
+            scalar_at("a = 1.5e999\n", "a"),
+            Scalar::Float(f64::INFINITY)
+        );
+        assert_eq!(
+            scalar_at("a = 1_0e9_99\n", "a"),
+            Scalar::Float(f64::INFINITY)
+        );
+        assert_eq!(
+            scalar_at("a = [1e999]\n", "a"),
+            Scalar::Float(f64::INFINITY)
+        );
         // And a float that merely underflows is still a finite zero.
-        assert_eq!(float_at("a = 1e-999\n", "a"), 0.0);
+        assert_eq!(scalar_at("a = 1e-999\n", "a"), Scalar::Float(0.0));
     }
 
     #[test]

@@ -2047,13 +2047,6 @@ mod tests {
         assert_eq!(*doc.root().value().unwrap(), Scalar::Null);
     }
 
-    fn syntax_err(text: &str) -> ParseError {
-        match read_yaml(text).unwrap_err() {
-            OmnistError::Parse(p) => p,
-            other => panic!("expected a syntax error, got {other:?}"),
-        }
-    }
-
     #[test]
     fn a_repeated_mapping_key_is_a_syntax_error() {
         // C-12: block, flow, nested, in a sequence element, and quoted.
@@ -2066,9 +2059,12 @@ mod tests {
             "a: 1\na: [2, 3]\n",
             "p: &p {x: 1}\nq: {a: 1, <<: *p, a: 2}\n",
         ] {
-            let e = syntax_err(text);
-            assert_eq!(e.code, "parse.codec-syntax", "{text:?}");
-            assert!(e.message.contains("duplicate mapping key"), "{text:?}");
+            let e = read_yaml(text).unwrap_err();
+            assert!(
+                matches!(&e, OmnistError::Parse(p)
+                    if p.code == "parse.codec-syntax" && p.message.contains("duplicate mapping key")),
+                "{text:?}: {e:?}"
+            );
         }
     }
 
@@ -2089,13 +2085,6 @@ mod tests {
         );
     }
 
-    fn forbidden(text: &str) -> DocumentError {
-        match read_yaml(text).unwrap_err() {
-            OmnistError::Document(d) => d,
-            other => panic!("expected format.tag-forbidden, got {other:?}"),
-        }
-    }
-
     #[test]
     fn omap_pairs_and_set_are_refused_with_tag_forbidden_at_the_root() {
         // C-13: whatever the node kind or position, path `$`, not a syntax error.
@@ -2109,10 +2098,14 @@ mod tests {
             "a:\n  b: !!set {x}\n",
             "t: !!set x\n",
         ] {
-            let d = forbidden(text);
-            assert_eq!(d.code.as_deref(), Some("format.tag-forbidden"), "{text:?}");
-            assert_eq!(d.path, "$", "{text:?}");
-            assert!(d.message.contains("!!"), "{text:?}");
+            let e = read_yaml(text).unwrap_err();
+            assert!(
+                matches!(&e, OmnistError::Document(d)
+                    if d.code.as_deref() == Some("format.tag-forbidden")
+                        && d.path == "$"
+                        && d.message.contains("!!")),
+                "{text:?}: {e:?}"
+            );
         }
         // A plain sequence of single-entry mappings is just a sequence.
         assert!(read_yaml("t:\n  - {k: 1}\n  - {j: 2}\n").is_ok());
@@ -2130,13 +2123,15 @@ mod tests {
         let doc = read_yaml("q: {!!str <<: 2}\n").unwrap();
         let q = doc.root().get_one("q").unwrap();
         assert_eq!(q.labels(), vec!["<<".to_string()]);
-        // A merge-tagged merge key is held to the same shape rule.
-        assert_eq!(
-            syntax_err("q: {!!merge <<: 1}\n").code,
-            "parse.codec-syntax"
-        );
+        // A merge-tagged merge key is held to the same shape rule, and
         // `!!merge` on anything but `<<` is still not a supported tag.
-        assert_eq!(syntax_err("q: !!merge x\n").code, "parse.codec-syntax");
+        for text in ["q: {!!merge <<: 1}\n", "q: !!merge x\n"] {
+            let e = read_yaml(text).unwrap_err();
+            assert!(
+                matches!(&e, OmnistError::Parse(p) if p.code == "parse.codec-syntax"),
+                "{text:?}: {e:?}"
+            );
+        }
     }
 
     #[test]
