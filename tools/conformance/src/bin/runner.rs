@@ -498,21 +498,22 @@ fn run_lint(dir: &Path) -> CaseResult {
     // per §6.11 -- a direct ordered-list comparison (not set/unordered) is
     // itself part of the conformance check, not just convenient.
     //
-    // `code` itself is deliberately excluded from the comparison tuple
-    // below: per docs/conformance-harness.md ("lint findings' code field is
-    // compared code-agnostically", mirroring §8.5.2 rule 4 for Track 2's
-    // diagnostics), a fixture's expected.json may still carry the
-    // pre-§8.3-namespacing bare code (`unreachable-record`) recorded against
-    // the reference implementation, while an implementation that has
-    // already adopted §8.3's namespaced codes (`lint.unreachable-record`)
-    // must not be marked failing for that -- `severity` and `location` are
-    // the real comparison; `code` stays informational until omnist-spec's
-    // D-4 closes.
+    // `code` is compared exactly (docs/conformance-harness.md, "`lint`
+    // findings' `code` field is compared exactly", §8.3.7): §8.3 is
+    // mandatory, a lint code is `lint.<name>` (`lint.unreachable-record`),
+    // and a wrong one is a failure. `message` is never compared.
     let findings = lint(&schema);
-    let actual_ok = findings.is_empty();
-    let actual: Vec<(&str, String)> = findings
+    // `ok` is false iff any warning-severity finding is present.
+    let actual_ok = !findings.iter().any(|f| f.severity == "warning");
+    let actual: Vec<(String, String, String)> = findings
         .iter()
-        .map(|f| (f.severity, f.location.clone()))
+        .map(|f| {
+            (
+                f.code.to_string(),
+                f.severity.to_string(),
+                f.location.clone(),
+            )
+        })
         .collect();
 
     let expected_text = match read_required(dir, "expected.json") {
@@ -527,35 +528,26 @@ fn run_lint(dir: &Path) -> CaseResult {
         .get("ok")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let expected: Vec<(String, String)> = expected_json
+    let field = |f: &serde_json::Value, key: &str| {
+        f.get(key)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+    let expected: Vec<(String, String, String)> = expected_json
         .get("findings")
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default()
-        .into_iter()
-        .map(|f| {
-            (
-                f.get("severity")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-                f.get("location")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-            )
-        })
-        .collect();
-    let actual_owned: Vec<(String, String)> = actual
         .iter()
-        .map(|(s, l)| (s.to_string(), l.clone()))
+        .map(|f| (field(f, "code"), field(f, "severity"), field(f, "location")))
         .collect();
 
-    if actual_ok == expected_ok && actual_owned == expected {
+    if actual_ok == expected_ok && actual == expected {
         pass()
     } else {
         fail(format!(
-            "expected ok={expected_ok} findings={expected:?}, got ok={actual_ok} findings={actual_owned:?}"
+            "expected ok={expected_ok} findings (code, severity, location)={expected:?}, got ok={actual_ok} findings={actual:?}"
         ))
     }
 }
@@ -1627,6 +1619,37 @@ mod tests {
         .unwrap();
         let r = run_lint(&tmp);
         assert_eq!(r.status, Status::Fail);
+    }
+
+    #[test]
+    fn lint_compares_the_code_exactly() {
+        // §8.3.7 / docs/conformance-harness.md: a wrong code, or the old
+        // bare spelling, fails even when severity and location agree.
+        let schema =
+            "record Orphan {\n    \"x\": string,\n}\nrecord R {\n    \"n\": integer,\n}\nroot R\n";
+        let run = |name: &str, code: &str| {
+            let tmp = std::env::temp_dir().join(format!("conformance-runner-lint-code-{name}"));
+            let _ = std::fs::remove_dir_all(&tmp);
+            std::fs::create_dir_all(&tmp).unwrap();
+            std::fs::write(tmp.join("input.osd"), schema).unwrap();
+            std::fs::write(
+                tmp.join("expected.json"),
+                format!(
+                    r#"{{"ok": false, "findings": [{{"code": "{code}", "severity": "warning", "location": "Orphan", "message": "ignored"}}]}}"#
+                ),
+            )
+            .unwrap();
+            run_lint(&tmp)
+        };
+        assert_eq!(run("right", "lint.unreachable-record").status, Status::Pass);
+        let wrong = run("wrong", "lint.something-else");
+        assert_eq!(wrong.status, Status::Fail);
+        assert!(
+            wrong.message.contains("lint.something-else"),
+            "{}",
+            wrong.message
+        );
+        assert_eq!(run("bare", "unreachable-record").status, Status::Fail);
     }
 
     // --- run_operation: FAIL-branch coverage (distinct from calling a

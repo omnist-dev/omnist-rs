@@ -385,19 +385,26 @@
       "module": "test_oml.test_inline_brace_style_with_semicolons",
       "note": "OML: inline brace style with semicolon separators",
       "kind": "oml_roundtrip",
-      "input": "a: 1; b: 2",
+      "input": "x: { a: 1; b: 2 }",
       "expected": {
         "$edges": [
           [
-            "a",
+            "x",
             {
-              "$int": 1
-            }
-          ],
-          [
-            "b",
-            {
-              "$int": 2
+              "$edges": [
+                [
+                  "a",
+                  {
+                    "$int": 1
+                  }
+                ],
+                [
+                  "b",
+                  {
+                    "$int": 2
+                  }
+                ]
+              ]
             }
           ]
         ]

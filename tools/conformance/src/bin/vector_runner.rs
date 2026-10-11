@@ -92,7 +92,7 @@ use omnist::formats::yaml::{YamlReadOptions, read_yaml_with, write_yaml};
 use omnist::infer::infer_with_report;
 use omnist::limits::Limits;
 use omnist::materialize::materialize;
-use omnist::oml::{read_oml, read_oml_with, write_oml};
+use omnist::oml::{read_oml, read_oml_with, write_oml, write_oml_compact};
 use omnist::ops::{compatible_with, equivalent, extract, is_empty, lint};
 use omnist::osd::{parse_schema, to_osd};
 use omnist::report::WriteReport;
@@ -732,6 +732,21 @@ fn run_write(v: &Json) -> VResult {
     let format = input["format"].as_str().unwrap_or("oml");
     let raw = decode_document(&input["document"]);
     let strict = input["strict"].as_bool().unwrap_or(false);
+    // E-35: `compact` asks OML for its one-line layout. A runner MUST pass it
+    // to the OML writer and MUST NOT ignore it; a vector MUST NOT set it on
+    // any other format, so one that does is malformed, not runnable.
+    let compact = match input.get("compact") {
+        None => false,
+        Some(c) => match c.as_bool() {
+            Some(c) => c,
+            None => return fail("`compact` is not a boolean (E-35)"),
+        },
+    };
+    if compact && format != "oml" {
+        return fail(format!(
+            "`compact` is meaningful only for the oml format, not {format:?} (E-35)"
+        ));
+    }
     let doc = match Doc::from_raw(raw) {
         Ok(d) => d,
         Err(e) => return fail(format!("Doc::from_raw failed: {e}")),
@@ -749,6 +764,7 @@ fn run_write(v: &Json) -> VResult {
         // (`document.rs`) the real CLI's `convert` path relies on --
         // see omnist-rs#99, the first OML write vectors this suite has
         // ever had.
+        "oml" if compact => write_oml_compact(&doc.to_raw()),
         "oml" => write_oml(&doc.to_raw(), 2),
         other => return fail(format!("unknown format {other:?}")),
     };
@@ -1494,7 +1510,7 @@ mod tests {
     }
 
     #[test]
-    fn vector_count_is_367() {
+    fn vector_count_is_522() {
         // 204 -> 249 via the submodule pin bump v0.9.1-beta -> v0.19.0-beta,
         // 249 -> 273 via v0.19.0-beta -> v0.21.0-beta (14 new bytes_hex D-14
         // vectors, 4 new OSD-15 canonical-output vectors, 5 new OML-26/27
@@ -1508,9 +1524,9 @@ mod tests {
         // v0.26.0-beta (19 new vectors: D-18a carrier, D-22 expanded size and
         // the malformed-merge syntax errors, all in alias-expansion.json, and
         // the rest of the v0.26.0 additions), 331 -> 338 via v0.26.0-beta ->
-        // v0.27.0-beta (7 new empty-merge-sequence vectors in alias-expansion.json), 338 -> 367 via v0.27.0-beta -> v0.33.0-beta (7 repeated-label path, 10 input-size, 7 OML-29, 5 XML-null vectors).
+        // v0.27.0-beta (7 new empty-merge-sequence vectors in alias-expansion.json), 338 -> 367 via v0.27.0-beta -> v0.33.0-beta (7 repeated-label path, 10 input-size, 7 OML-29, 5 XML-null vectors), 367 -> 522 via v0.33.0-beta -> v0.34.0-beta (the C-12, C-13, D-27, D-28, D-29, E-5 and E-35 vectors).
         let vectors = iter_vectors(&suite_dir());
-        assert_eq!(vectors.len(), 367);
+        assert_eq!(vectors.len(), 522);
     }
 
     /// Full-suite regression guard: runs every real vector through every
@@ -1518,8 +1534,8 @@ mod tests {
     /// `main`/`main_with_dir` is process-entry-point code). The counts are
     /// freshly measured, not computed by hand.
     ///
-    /// Spec v0.33.0-beta, diagnostics compared as (path, code) sets:
-    /// 339 pass, 0 fail, 28 skip of 367.
+    /// Spec v0.34.0-beta, diagnostics compared as (path, code) sets:
+    /// 494 pass, 0 fail, 28 skip of 522.
     ///
     /// - the 28 skips are E-20 "not yet implemented", never a documented
     ///   divergence: the `extensions-osd-oml` vectors (extension not
@@ -1561,13 +1577,18 @@ mod tests {
     /// input-size vectors (D-23) and 4 XML null-write vectors (C-10) failed, and
     /// the 5 at-cap input-size vectors passed falsely (the runner ignored
     /// `declared_max_input_bytes`, E-20a). Implementing them brings it to
-    /// (339, 0, 28).
+    /// (339, 0, 28). At v0.34.0-beta, before any change, the baseline was
+    /// (467, 27, 28) of 522: TOML integers past 64 bits and `1e999` (4,
+    /// D-2/D-28/D-29), 6 YAML duplicate keys (C-12), 2 `!!merge` and 6
+    /// `!!omap`/`!!pairs`/`!!set` vectors (D-27, C-13), 4 XML temporal leaves
+    /// (E-5) and the 5 OML compact vectors (E-35, the runner dropped the key).
+    /// Implementing them brings it to (494, 0, 28).
     #[test]
     fn full_suite_counts_match_the_measured_baseline() {
         let (passed, failed, skipped) = run_all(&suite_dir());
         assert_eq!(
             (passed, failed, skipped),
-            (339, 0, 28),
+            (494, 0, 28),
             "vector pass/fail/skip counts changed -- if this is an intentional fix or a new \
              vector, update the pinned baseline; if not, something regressed"
         );
@@ -1986,6 +2007,8 @@ mod tests {
                 let name = v["name"].as_str().unwrap();
                 assert!(
                     name.starts_with("document-model/limits/")
+                        || name.starts_with("document-model/limits-codecs/")
+                        || name.starts_with("document-model/limits-literals/")
                         || name.starts_with("document-model/input-size/"),
                     "{name}"
                 );
@@ -2003,8 +2026,9 @@ mod tests {
                 assert_ne!(r.status, Status::Skip, "{}: unexplained skip", v["name"]);
             }
         }
-        // 6 declared-limit vectors and 10 input-size vectors (D-23).
-        assert_eq!((limits, alias, ext), (16, 42, 28));
+        // 6 declared-limit vectors, 10 input-size vectors (D-23) and 42 more
+        // limit vectors across the codecs and the literals (D-28, D-29).
+        assert_eq!((limits, alias, ext), (58, 42, 28));
     }
 
     /// The declared limits must reach the reader: the one-past vectors only
@@ -2562,6 +2586,58 @@ mod tests {
             "expect": {"ok": true}
         });
         assert_eq!(dispatch(&v).status, Status::Fail);
+    }
+
+    #[test]
+    fn run_write_oml_passes_compact_to_the_writer() {
+        // E-35: the one-line layout, edges separated by `;`.
+        let v = |compact: serde_json::Value, text: &str| {
+            json!({
+                "operation": "write",
+                "input": {
+                    "format": "oml",
+                    "compact": compact,
+                    "document": {"edges": [
+                        ["a", {"scalar": {"kind": "integer", "value": 1}}],
+                        ["b", {"scalar": {"kind": "integer", "value": 2}}]
+                    ]}
+                },
+                "expect": {"ok": true, "text": text}
+            })
+        };
+        assert_eq!(dispatch(&v(json!(true), "a: 1; b: 2")).status, Status::Pass);
+        // Dropping the key (here: false) compares the expanded layout, which
+        // is not the compact text.
+        assert_eq!(
+            dispatch(&v(json!(false), "a: 1; b: 2")).status,
+            Status::Fail
+        );
+        assert_eq!(
+            dispatch(&v(
+                json!(false),
+                "a: 1
+b: 2"
+            ))
+            .status,
+            Status::Pass
+        );
+    }
+
+    #[test]
+    fn run_write_rejects_a_malformed_compact_key() {
+        // Not a boolean, and set on a format other than OML (E-35).
+        for (format, compact) in [("oml", json!("yes")), ("json", json!(true))] {
+            let v = json!({
+                "operation": "write",
+                "input": {
+                    "format": format,
+                    "compact": compact,
+                    "document": {"edges": [["a", {"scalar": {"kind": "integer", "value": 1}}]]}
+                },
+                "expect": {"ok": true}
+            });
+            assert_eq!(dispatch(&v).status, Status::Fail, "{format}");
+        }
     }
 
     #[test]
