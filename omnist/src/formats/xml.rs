@@ -974,15 +974,18 @@ fn scan_leaf(scalar: &Scalar, path: &str, rep: &mut WriteReport) {
         // (the old shape-based coercion happened to undo this on read);
         // now reported like every other type-losing write, matching
         // Python's identical fix (`omnist#288`, `value.stringified`).
-        Scalar::Bool(_)
-        | Scalar::Int(_)
-        | Scalar::Float(_)
-        | Scalar::Date(_)
-        | Scalar::Time(_)
-        | Scalar::Datetime(_) => rep.add(
+        Scalar::Bool(_) | Scalar::Int(_) | Scalar::Float(_) => rep.add(
             path,
             "format.value-stringified",
             "non-string scalar written as text (reads back as a string)",
+            Severity::Warning,
+        ),
+        // E-5: a leaf takes one of the two codes, the temporal one for the
+        // three temporal kinds and the value one for the rest -- never both.
+        Scalar::Date(_) | Scalar::Time(_) | Scalar::Datetime(_) => rep.add(
+            path,
+            "format.temporal-stringified",
+            "date/time/datetime written as its ISO-8601 text (reads back as a string)",
             Severity::Warning,
         ),
         Scalar::Null | Scalar::Str(_) => {}

@@ -666,6 +666,40 @@ fn bool_and_float_scalars_are_also_flagged_value_stringified() {
 }
 
 #[test]
+fn temporal_leaves_are_flagged_temporal_stringified_and_never_value_stringified() {
+    // E-5: one code per leaf, the temporal one for date, time and datetime.
+    let doc = Doc::from_raw(edges(vec![(
+        "r",
+        edges(vec![
+            ("d", RawNode::Leaf(Scalar::Date("2024-01-15".into()))),
+            ("t", RawNode::Leaf(Scalar::Time("10:30:00".into()))),
+            (
+                "dt",
+                RawNode::Leaf(Scalar::Datetime("2024-01-15T10:30:00".into())),
+            ),
+            ("n", leaf_int(1)),
+        ]),
+    )]))
+    .unwrap();
+    let rep = check_xml(&doc);
+    let got: Vec<(String, String)> = rep
+        .adjustments()
+        .iter()
+        .map(|a| (a.path.clone(), a.code.clone()))
+        .collect();
+    let temporal = "format.temporal-stringified".to_string();
+    assert_eq!(
+        got,
+        vec![
+            ("$.r.d".to_string(), temporal.clone()),
+            ("$.r.t".to_string(), temporal.clone()),
+            ("$.r.dt".to_string(), temporal),
+            ("$.r.n".to_string(), "format.value-stringified".to_string()),
+        ]
+    );
+}
+
+#[test]
 fn a_string_that_looks_like_a_number_is_not_flagged() {
     // A `Scalar::Str` is never flagged `format.value-stringified` -- it's already
     // a string, nothing is being stringified. This is true regardless of
