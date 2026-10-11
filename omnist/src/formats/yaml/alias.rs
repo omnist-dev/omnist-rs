@@ -67,7 +67,6 @@
 use std::collections::HashMap;
 
 use yaml_rust2::parser::Event;
-use yaml_rust2::scanner::TScalarStyle;
 
 use crate::error::{DocumentError, OmnistError, ParseError};
 
@@ -170,10 +169,6 @@ pub(super) struct AliasCheck {
 
 fn sub1(x: u64) -> u64 {
     x.saturating_sub(1)
-}
-
-fn is_merge_key(text: &str, style: TScalarStyle, tagged: bool) -> bool {
-    text == "<<" && style == TScalarStyle::Plain && !tagged
 }
 
 impl AliasCheck {
@@ -377,7 +372,7 @@ impl AliasCheck {
             Event::SequenceEnd | Event::MappingEnd => self.end(at),
             Event::Scalar(text, style, aid, tag) => {
                 let pos = self.pos();
-                if pos == Pos::Key && is_merge_key(text, *style, tag.is_some()) {
+                if pos == Pos::Key && super::is_merge_scalar(text, *style, tag.as_ref()) {
                     // The `<<` entry is one written slot, whatever it holds.
                     let p = self.stack.last_mut().expect("a key has a parent mapping");
                     p.s = p.s.saturating_add(1);
@@ -427,6 +422,7 @@ impl AliasCheck {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use yaml_rust2::scanner::TScalarStyle;
 
     const AT: (usize, usize) = (1, 1);
 

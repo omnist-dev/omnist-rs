@@ -185,6 +185,10 @@ struct Builder {
     /// [`crate::document::MAX_DEPTH`]: `document.limit.depth` at `$`. Like
     /// `error`, once set the receiver stops building.
     self_reference: Option<DocumentError>,
+    /// Set when a node is tagged `!!pairs`, `!!omap` or `!!set` (C-13):
+    /// `format.tag-forbidden` at `$`. Like `error`, once set the receiver
+    /// stops building.
+    tag_forbidden: Option<DocumentError>,
 }
 
 impl Builder {
@@ -198,6 +202,7 @@ impl Builder {
             node_count: 0,
             error: None,
             self_reference: None,
+            tag_forbidden: None,
         }
     }
 
@@ -278,7 +283,7 @@ impl Builder {
         // document is already rejected, and continuing to clone/insert
         // subsequent alias references would just keep paying the same
         // amplified cost this guard exists to avoid.
-        if self.error.is_some() || self.self_reference.is_some() {
+        if self.error.is_some() || self.self_reference.is_some() || self.tag_forbidden.is_some() {
             return;
         }
         match ev {
@@ -290,6 +295,13 @@ impl Builder {
                 1 => self.docs.push(self.doc_stack.pop().unwrap().0),
                 _ => unreachable!("a single document's stack never nests more than one root"),
             },
+            Event::SequenceStart(_, Some(ref tag))
+            | Event::MappingStart(_, Some(ref tag))
+            | Event::Scalar(_, _, _, Some(ref tag))
+                if is_forbidden_tag(Some(tag)) =>
+            {
+                self.tag_forbidden = Some(tag_forbidden_error(tag));
+            }
             Event::SequenceStart(..) | Event::MappingStart(..) if self.too_deep() => {
                 // Nesting this far past the depth cap is rejected here,
                 // while the tree is still shallow enough to drop: yaml-rust2
@@ -632,6 +644,9 @@ pub fn read_yaml_with(text: &str, options: &YamlReadOptions) -> Result<Doc, Omni
     for (ev, mark) in events {
         builder.on_event(ev, mark);
     }
+    if let Some(e) = builder.tag_forbidden {
+        return Err(e.into());
+    }
     if let Some(e) = builder.self_reference {
         return Err(e.into());
     }
@@ -655,8 +670,8 @@ pub fn read_yaml_with(text: &str, options: &YamlReadOptions) -> Result<Doc, Omni
     let mut guard = IntGuard::new(limits.max_int_digits);
     let value = raw_to_value(&resolved, &Trail::Root, &mut guard)?;
     let doc = Doc::of_resolved(&value, limits).map_err(|e| limits.whole_document(e))?;
-    // A duplicate key keeps its last value, which can drop an over-cap
-    // literal the tree held a placeholder for.
+    // A placeholder for an over-cap literal that never reached the Document
+    // is still a limit error (D-13).
     guard.finish(&limits)?;
     Ok(doc)
 }
@@ -697,10 +712,24 @@ fn resolve_mapping(
 ) -> Result<Vec<(Raw, Raw)>, OmnistError> {
     let mut merged_from: Vec<(Raw, Raw)> = Vec::new();
     let mut own: Vec<(Raw, Raw)> = Vec::new();
+    let mut written: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for (k, v) in entries {
         if is_merge_key(k) {
             merged_from.extend(merge_source_entries(v, depth, max_depth)?);
         } else {
+            // C-12: a key written twice in one mapping is malformed YAML
+            // (`a` and `"a"` are one key). A key a merge supplies is not a
+            // repeat of one written here: the written one overrides it.
+            if let Some(label) = scalar_key_text(k)
+                && !written.insert(label)
+            {
+                return Err(ParseError::codec_syntax(
+                    1,
+                    1,
+                    format!("invalid YAML: duplicate mapping key {label:?}"),
+                )
+                .into());
+            }
             own.push((
                 resolve_merges(k, depth + 1, max_depth)?,
                 resolve_merges(v, depth + 1, max_depth)?,
@@ -724,8 +753,7 @@ fn resolve_mapping(
     }
     // The mapping's own entries: a key a merge already supplied keeps the
     // merged key's position but takes the local value; any other key is
-    // appended. An explicit duplicate among the own keys is left for
-    // `raw_to_value`'s last-wins, exactly like `json.rs`'s reader.
+    // appended. A key written twice among the own keys was refused above.
     for (k, v) in own {
         match scalar_key_text(&k).and_then(|label| position.get(label).copied()) {
             Some(at) => result[at].1 = v,
@@ -745,12 +773,48 @@ fn scalar_key_text(k: &Raw) -> Option<&str> {
     }
 }
 
-/// Is `k` an (unquoted) `<<` merge-key marker? A *quoted* `"<<"` is a literal
-/// string key, not a merge marker -- matches PyYAML's resolver, which only
-/// assigns the `tag:yaml.org,2002:merge` tag to a plain-style scalar spelled
-/// exactly `<<`.
+/// Whether a scalar is a merge key (D-27): a plain `<<`, or a `<<` tagged
+/// `!!merge` (`tag:yaml.org,2002:merge`) in any style. A quoted `<<` and a
+/// `!!str <<` are the string `<<`, an ordinary key: an explicit tag decides
+/// what a `<<` is, as YAML 1.1 resolves the merge key by its tag.
+fn is_merge_scalar(text: &str, style: TScalarStyle, tag: Option<&Tag>) -> bool {
+    text == "<<"
+        && match tag {
+            None => style == TScalarStyle::Plain,
+            Some(t) => is_yaml_tag(t, "merge"),
+        }
+}
+
+/// Whether `tag` is the standard YAML tag `!!suffix` (`tag:yaml.org,2002:suffix`).
+fn is_yaml_tag(tag: &Tag, suffix: &str) -> bool {
+    tag.handle == "tag:yaml.org,2002:" && tag.suffix == suffix
+}
+
+/// Whether `tag` is one of the three collection tags C-13 refuses: `!!pairs`,
+/// `!!omap` and `!!set`, on a node of any kind.
+fn is_forbidden_tag(tag: Option<&Tag>) -> bool {
+    tag.is_some_and(|t| {
+        t.handle == "tag:yaml.org,2002:" && matches!(t.suffix.as_str(), "pairs" | "omap" | "set")
+    })
+}
+
+/// The `format.tag-forbidden` refusal (C-13): well-formed YAML outside the
+/// supported profile, so not a syntax error. Its path is `$`.
+fn tag_forbidden_error(tag: &Tag) -> DocumentError {
+    DocumentError::with_code(
+        "$",
+        "format.tag-forbidden",
+        format!(
+            "the YAML tag '!!{}' is outside the supported profile (use a plain sequence or \
+             mapping instead)",
+            tag.suffix
+        ),
+    )
+}
+
+/// Is `k` a `<<` merge-key marker? See [`is_merge_scalar`].
 fn is_merge_key(k: &Raw) -> bool {
-    matches!(k, Raw::Scalar(s, TScalarStyle::Plain, None) if s == "<<")
+    matches!(k, Raw::Scalar(s, style, tag) if is_merge_scalar(s, *style, tag.as_ref()))
 }
 
 /// The `(key, value)` pairs a merge key's value contributes: a mapping
@@ -882,9 +946,8 @@ fn raw_to_value(node: &Raw, trail: &Trail<'_>, guard: &mut IntGuard) -> Result<V
                         .into());
                     }
                 };
-                // Last-duplicate-key-wins, matching json.rs's IndexMap::insert
-                // semantics and PyYAML's own dict-construction behavior
-                // (confirmed live: `yaml.safe_load("a: 1\\na: 2\\n") == {'a': 2}`).
+                // No key repeats here: `resolve_mapping` refused a repeated
+                // key (C-12) before this tree was built.
                 let value = raw_to_value(v, &Trail::Key(trail, &key), guard)?;
                 map.insert(key, value);
             }
@@ -1984,15 +2047,96 @@ mod tests {
         assert_eq!(*doc.root().value().unwrap(), Scalar::Null);
     }
 
+    fn syntax_err(text: &str) -> ParseError {
+        match read_yaml(text).unwrap_err() {
+            OmnistError::Parse(p) => p,
+            other => panic!("expected a syntax error, got {other:?}"),
+        }
+    }
+
     #[test]
-    fn duplicate_mapping_keys_last_value_wins() {
-        let doc = read_yaml("a: 1\nb: 2\na: 3\n").unwrap();
-        let root = doc.root();
-        assert_eq!(root.labels(), vec!["a".to_string(), "b".to_string()]);
+    fn a_repeated_mapping_key_is_a_syntax_error() {
+        // C-12: block, flow, nested, in a sequence element, and quoted.
+        for text in [
+            "a: 1\nb: 2\na: 3\n",
+            "{a: 1, a: 2}\n",
+            "o:\n  k: 1\n  k: 2\n",
+            "m:\n  - {a: 1, a: 2}\n",
+            "a: 1\n\"a\": 2\n",
+            "a: 1\na: [2, 3]\n",
+            "p: &p {x: 1}\nq: {a: 1, <<: *p, a: 2}\n",
+        ] {
+            let e = syntax_err(text);
+            assert_eq!(e.code, "parse.codec-syntax", "{text:?}");
+            assert!(e.message.contains("duplicate mapping key"), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn the_same_key_in_two_mappings_or_differing_in_case_is_not_a_repeat() {
+        assert!(read_yaml("x: {a: 1}\ny: {a: 2}\n").is_ok());
+        assert!(read_yaml("a: 1\nA: 2\n").is_ok());
+        // A key a merge supplies is overridden by the one written, not a repeat.
+        let doc = read_yaml("p: &p {a: 1, b: 2}\nq: {<<: *p, a: 9}\n").unwrap();
+        let q = doc.root().get_one("q").unwrap();
         assert_eq!(
-            *root.get_one("a").unwrap().value().unwrap(),
-            Scalar::Int((3).into())
+            *q.get_one("a").unwrap().value().unwrap(),
+            Scalar::Int(9.into())
         );
+        assert_eq!(
+            *q.get_one("b").unwrap().value().unwrap(),
+            Scalar::Int(2.into())
+        );
+    }
+
+    fn forbidden(text: &str) -> DocumentError {
+        match read_yaml(text).unwrap_err() {
+            OmnistError::Document(d) => d,
+            other => panic!("expected format.tag-forbidden, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn omap_pairs_and_set_are_refused_with_tag_forbidden_at_the_root() {
+        // C-13: whatever the node kind or position, path `$`, not a syntax error.
+        for text in [
+            "t: !!omap [{k: 1}, {j: 2}]\n",
+            "t: !!pairs [{k: 1}, {k: 2}]\n",
+            "t: !!set {x, y}\n",
+            "t: !!set\n  ? x\n  ? y\n",
+            "t: !!omap []\n",
+            "!!omap [{k: 1}]\n",
+            "a:\n  b: !!set {x}\n",
+            "t: !!set x\n",
+        ] {
+            let d = forbidden(text);
+            assert_eq!(d.code.as_deref(), Some("format.tag-forbidden"), "{text:?}");
+            assert_eq!(d.path, "$", "{text:?}");
+            assert!(d.message.contains("!!"), "{text:?}");
+        }
+        // A plain sequence of single-entry mappings is just a sequence.
+        assert!(read_yaml("t:\n  - {k: 1}\n  - {j: 2}\n").is_ok());
+    }
+
+    #[test]
+    fn a_merge_tagged_merge_key_merges_and_a_str_tagged_one_does_not() {
+        // D-27.
+        let doc = read_yaml("p: &p {x: 1}\nq: {!!merge <<: *p, y: 2}\n").unwrap();
+        let q = doc.root().get_one("q").unwrap();
+        assert_eq!(q.labels(), vec!["x".to_string(), "y".to_string()]);
+        let doc = read_yaml("p: &p {x: 1}\nr: &r {y: 2}\nq: {!!merge <<: [*p, *r]}\n").unwrap();
+        let q = doc.root().get_one("q").unwrap();
+        assert_eq!(q.labels(), vec!["x".to_string(), "y".to_string()]);
+        let doc = read_yaml("q: {!!str <<: 2}\n").unwrap();
+        let q = doc.root().get_one("q").unwrap();
+        assert_eq!(q.labels(), vec!["<<".to_string()]);
+        // A merge-tagged merge key is held to the same shape rule.
+        assert_eq!(
+            syntax_err("q: {!!merge <<: 1}\n").code,
+            "parse.codec-syntax"
+        );
+        // `!!merge` on anything but `<<` is still not a supported tag.
+        assert_eq!(syntax_err("q: !!merge x\n").code, "parse.codec-syntax");
     }
 
     #[test]
