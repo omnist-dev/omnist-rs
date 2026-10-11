@@ -1,6 +1,6 @@
 # Limitations & stability
 
-## Alpha status: `0.9.0-alpha`, per this project's versioning rule
+## Alpha status: `0.10.0-alpha`, per this project's versioning rule
 
 The Rust port's first feature-complete milestone (issue #28) plus its own
 conformance-test harness against

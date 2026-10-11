@@ -60,7 +60,7 @@ Document-model decision (`Scalar` has exactly five variants, `Int` is
 [`limitations.md`](limitations.md#representational-limits-from-scalarint-being-i64)
 for the format-by-format table.
 
-## TOML's hex/octal/binary digit-cap (corrected finding, PR #21)
+## TOML's hex/octal/binary digit-cap
 
 **Python**: `tomllib` applies the 4300-digit cap to decimal literals
 (same `sys.set_int_max_str_digits` mechanism as JSON), but **exempts**
@@ -68,21 +68,15 @@ hex/octal/binary (power-of-two-base) literals from that cap entirely --
 confirmed live: `tomllib.loads("x = 0x" + "f"*10000)` parses with no
 error at all.
 
-**Rust**: applies the same `i64` bound to every radix uniformly, via
-`toml_edit`'s parser. Any oversized hex/octal/binary literal is rejected
-the same way an oversized decimal one is.
+**Rust**: applies the spec's rule (D-28) to every radix: the limit counts the
+decimal digits of the integer's **value**, so a 3,600-digit hex literal
+(about 4,335 decimal digits) is refused with `document.limit.int-digits` and
+a 4,301-digit binary literal (about 1,295) reads. `toml_edit` itself holds an
+integer in 64 bits, so the reader works out a literal it refuses and puts the
+value back (see [TOML](formats/toml.md)). The difference from Python is only
+that Python's radix exemption is not replicated.
 
-An earlier draft of PR #21 (and its module doc) incorrectly claimed hex
-literals hit the identical `ValueError` as decimal ones in Python -- that
-claim was wrong and was corrected mid-review once live-checked against
-`tomllib` directly. The corrected finding: Python's radix exemption is
-real, and this port does not replicate it, because `Scalar::Int` is
-`i64`-backed regardless of the literal's source radix -- there's no
-representational path for an "uncapped hex" literal past 64 bits in this
-port regardless of what the cap logic does.
-
-Permanent: yes, for the same reason as the general `i64` gap above --
-revisiting it would require a non-`i64` `Scalar::Int`.
+Permanent: yes. It follows the spec, not Python.
 
 ## Date-shaped strings as native temporal literals (TOML/YAML) -- resolved by issue #105
 
