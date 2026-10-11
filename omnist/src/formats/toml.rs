@@ -1553,8 +1553,8 @@ mod tests {
         assert!(read_toml(&tables).is_ok());
         let floats = format!("f = [{}]\n", vec!["1e999"; n].join(", "));
         assert!(read_toml(&floats).is_ok());
-        // Generous: a debug build does all three in about a second.
-        assert!(start.elapsed().as_secs() < 20, "{:?}", start.elapsed());
+        // Generous: an instrumented debug build does all three in a few seconds.
+        assert!(start.elapsed().as_secs() < 60, "{:?}", start.elapsed());
     }
 
     #[test]

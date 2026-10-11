@@ -34,7 +34,7 @@ together.
   `1e999` and `-1e999` read as the infinities (D-29).
 - **The XML writer reports a `date`, `time` or `datetime` leaf as
   `format.temporal-stringified`** (E-5) instead of `format.value-stringified`.
-- **TOML number recovery is linear**: every integer past 64 bits and every
+- **TOML number recovery is linear** (a fix included in this 0.10.0-alpha entry; the first draft of the TOML integer change reparsed once per literal): every integer past 64 bits and every
   overflowing float is found in one scan, not one reparse each (that was
   quadratic, 282 s for 18,000 literals). A float whose spelling is longer than
   `max_int_digits` and that overflows (`1.0000000000000000000000000001e999` at a

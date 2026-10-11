@@ -226,7 +226,7 @@ where the previous release refused the first such literal at once. A single scan
 now finds every such literal and the text is parsed once more, so the cost is
 linear: 20,000 big integers in an array, 20,000 inline tables each holding one,
 and 20,000 `1e999` floats read together in 0.41 s (release; the test
-`many_big_integers_read_in_linear_time` bounds it at 20 s in a debug build). Before the
+`many_big_integers_read_in_linear_time` bounds it at 60 s in a debug build). Before the
 fix the same three shapes at 6,000 each took 282 s.
 
 ## Temporal kinds have no arithmetic
