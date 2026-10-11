@@ -224,35 +224,21 @@ fn read_toml_resolved(text: &str, limits: Resolved) -> Result<Doc, OmnistError> 
     let mut guard = IntGuard::new(limits.max_int_digits);
     let mut lexemes: HashMap<usize, Value> = HashMap::new();
     let mut patched = text.to_string();
-    // Every number `toml_edit` would refuse is read and stood in for up front,
-    // in one scan, so the loop below reparses O(1) times however many there
-    // are (one reparse per literal made a hostile file quadratic).
+    // `toml_edit` holds an integer in 64 bits and refuses a number beyond that
+    // (or a float that overflows), with no value to read. Each such literal is
+    // read here instead (D-2, D-28, D-29), all in one scan, and stood in for by
+    // a small one of the same width, so every other offset keeps its place; the
+    // real value is swapped back in by offset when the tree is converted. One
+    // scan, not one reparse per literal, keeps a file full of them linear.
     for (start, end) in prescan_numbers(text) {
         if let Some(value) = number_value(&text[start..end], &mut guard) {
             blank(&mut patched, start, end, &value);
             lexemes.insert(start, value);
         }
     }
-    let value = loop {
-        match toml_edit::Document::parse(patched.as_str()) {
-            Ok(parsed) => break table_like_to_value(parsed.as_table(), &lexemes)?,
-            Err(e) => {
-                // `toml_edit` holds an integer in 64 bits and refuses a
-                // number beyond that, with no value to read. The literal is
-                // read here instead (D-2, D-28, D-29) and stood in for by a
-                // small one of the same width, so every other offset keeps
-                // its place and the parse can go on; the real value is
-                // swapped back in by offset when the tree is converted.
-                // Anything else, including a syntax error further on, is
-                // reported as it always was.
-                let Some((start, end, value)) = recover_number(&patched, &e, &mut guard) else {
-                    return Err(toml_parse_error(&patched, &e, &limits));
-                };
-                blank(&mut patched, start, end, &value);
-                lexemes.insert(start, value);
-            }
-        }
-    };
+    let parsed = toml_edit::Document::parse(patched.as_str())
+        .map_err(|e| toml_parse_error(&patched, &e, &limits))?;
+    let value = table_like_to_value(parsed.as_table(), &lexemes)?;
     Ok(Doc::of_resolved(&value, limits).map_err(|e| limits.whole_document(e))?)
 }
 
@@ -295,31 +281,6 @@ fn toml_recursion_error(limits: &Resolved) -> DocumentError {
     )
 }
 
-/// Reads the number literal `toml_edit` refused for being out of its 64-bit
-/// range: its byte range in `text` and its value. `None` when the failure is
-/// not an out-of-range number (or has no span to find one by).
-///
-/// An integer is arbitrary precision (D-2), whatever its radix, and the digit
-/// limit counts the decimal digits of its value (D-28), which the Document
-/// constructor checks; a decimal literal already past the limit in its own
-/// spelling is stood in for by the guard's placeholder instead of being
-/// converted. A float whose magnitude overflows reads as an infinity (D-29).
-fn recover_number(
-    text: &str,
-    e: &toml_edit::TomlError,
-    guard: &mut IntGuard,
-) -> Option<(usize, usize, Value)> {
-    if !e.message().contains("overflow") {
-        return None;
-    }
-    let start = e.span()?.start;
-    let len = text[start..]
-        .find(|c: char| !is_number_char(c))
-        .unwrap_or(text.len() - start);
-    let value = number_value(&text[start..start + len], guard)?;
-    Some((start, start + len, value))
-}
-
 fn is_number_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '_' | '+' | '-' | '.')
 }
@@ -337,7 +298,7 @@ fn blank(patched: &mut String, start: usize, end: usize, value: &Value) {
     patched.replace_range(start..end, &filler);
 }
 
-/// The value of a number literal `toml_edit` cannot hold: an integer past 64
+/// The value of a number literal `toml_edit` cannot hold (D-2, D-28, D-29): an integer past 64
 /// bits in any radix, or a float whose magnitude overflows. `None` for
 /// anything else, including a malformed literal.
 fn number_value(lexeme: &str, guard: &mut IntGuard) -> Option<Value> {
@@ -379,9 +340,8 @@ static NUMBER_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|
 /// `toml_edit` would refuse, found in one scan: a well-formed integer long
 /// enough to leave 64 bits, or a well-formed float that overflows to an
 /// infinity. Strings and comments are skipped, and so are keys (a token
-/// before `=` or `.`, anything outside a value). A literal it misses is still
-/// found by the one-at-a-time recovery after a failed parse; a well-formed
-/// literal it does take has the same value `toml_edit` would have given it.
+/// before `=` or `.`, anything outside a value). A well-formed literal it
+/// takes has the same value `toml_edit` would have given it.
 fn prescan_numbers(text: &str) -> Vec<(usize, usize)> {
     let b = text.as_bytes();
     let mut out = Vec::new();
