@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.10.0-alpha
+
+Adopts omnist-spec v0.34.0-beta (the pin was v0.33.0-beta) and closes
+omnist-rs#200. Vectors 494 pass, 0 fail, 28 skip of 522 (was 339 / 0 / 28 of
+367; before any change the adoption measured 467 / 27 / 28 of 522); fixtures
+19 / 19.
+
+Minor bump of the alpha, as 0.9.0-alpha was: new rejections (a repeated YAML
+key, a YAML `!!omap`, `!!pairs` or `!!set`), a new registered report code and a
+changed report code, all observable by a caller. The `[workspace]` crates move
+together.
+
+**Behaviour changes a caller can observe:**
+
+- **A YAML mapping that repeats a key is rejected** (`parse.codec-syntax`, spec
+  C-12), at any depth and in either style; `a` and `"a"` are one key. Through
+  0.9.0-alpha the last value won. JSON still keeps the last value in the first
+  position (C-11); a TOML table already refused a repeat. The position reported
+  is `1:1`.
+- **A YAML node tagged `!!omap`, `!!pairs` or `!!set` is refused** with the new
+  registered code `format.tag-forbidden` at `$` (a `DocumentError`, spec C-13),
+  where it used to read as a plain sequence or mapping.
+- **YAML merge keys are read by tag** (D-27): `!!merge <<` is a merge key, which
+  used to be `unsupported explicit tag '!!merge'`; `!!str <<` stays an ordinary
+  key.
+- **TOML integers beyond 64 bits read exactly**, in any radix (D-2), and the
+  digit limit counts the decimal digits of the value (D-28): a 3,600-digit hex
+  literal is `document.limit.int-digits` at its path, no longer a
+  `parse.codec-syntax` error; a 4,301-digit binary literal, about 1,295 decimal
+  digits, reads. A decimal literal between 20 digits and the limit used to be
+  `parse.codec-syntax` ("out of range for a 64-bit integer") and now reads.
+  `1e999` and `-1e999` read as the infinities (D-29).
+- **The XML writer reports a `date`, `time` or `datetime` leaf as
+  `format.temporal-stringified`** (E-5) instead of `format.value-stringified`.
+
+**Tooling**: Track 1 compares a lint finding's `code` exactly (spec 8.3.7,
+omnist-rs#200); Track 2 passes `compact` (E-35) to the OML writer. The parity
+corpus fixture `a: 1; b: 2` is `x: { a: 1; b: 2 }` again, restoring its brace
+coverage. `docs/formats/toml.md` says that TOML nested between about 81 levels
+and the configured maximum fails with `document.limit.depth` at `$`, because of
+`toml_edit`'s own limit.
+
 ## 0.9.0-alpha
 
 Adopts omnist-spec v0.33.0-beta (the pin was v0.28.0-beta; the spec changelog

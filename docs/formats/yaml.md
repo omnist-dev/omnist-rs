@@ -34,9 +34,15 @@ only applies to plain-style scalars).
 ## Merge keys (`<<`)
 
 `yaml_rust2` has no built-in merge-key support; this module implements the
-YAML merge-key spec directly (an unquoted `<<` key's value must be a
+YAML merge-key spec directly (a `<<` key's value must be a
 mapping or sequence of mappings; anything else is `parse.codec-syntax`, see
 the [alias expansion limit](#alias-expansion-limit-d-18-d-19-d-20)).
+
+An explicit tag decides what a `<<` is (D-27): a plain `<<` and a `<<` tagged
+`!!merge` are merge keys, with the same shape rule and the same alias
+accounting. A quoted `<<` and a `!!str <<` are the string `<<`, an ordinary
+key that merges nothing (`{!!str <<: *p}` is an edge `<<` holding a copy of
+`p`). A `!!merge` on anything but `<<` is not a supported tag.
 
 The order is normative (omnist-spec `formats/yaml.md`): merged entries come
 first, in source order (`<<: [*a, *b]` is `a`'s entries, then `b`'s -- never
@@ -45,6 +51,26 @@ one edge at the position of its first occurrence, carrying the mapping's own
 value when it writes one, otherwise the earliest alias's. A merged mapping's
 own `<<` is flattened first, so a grandparent's entries arrive before the
 parent's.
+
+## Duplicate keys are rejected (C-12)
+
+A mapping that writes the same key twice, in block or flow style and at any
+depth, fails the read with `parse.codec-syntax`: `a: 1` / `b: 2` / `a: 3` is
+an error, not the edges `a = 3, b = 2`. Keys compare as strings, so `a` and
+`"a"` are one key; the same key in two different mappings is fine; a key a
+merge key supplies is not a repeat of the same key written in the mapping,
+which overrides it. This is the opposite of JSON, where the last value wins
+(C-11). The position reported is `1:1`: the reader finds the repeat after
+the event stream has been built into a tree, which keeps no positions, and
+E-31 lets an implementation report that when it has no better one.
+
+## `!!omap`, `!!pairs` and `!!set` are refused (C-13)
+
+A node tagged `!!omap`, `!!pairs` or `!!set`, whatever its kind or content, is
+refused with the code `format.tag-forbidden` at path `$`. It is well-formed
+YAML outside the supported profile, so it is a `DocumentError` and not a
+syntax error. Write the plain sequence of single-key mappings, or the plain
+mapping, instead; every other tag keeps the reading it had.
 
 ## Byte-order marks
 

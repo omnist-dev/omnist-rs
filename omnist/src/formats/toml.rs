@@ -24,16 +24,9 @@
 //! * **Temporal canonicalization** (`format_datetime`) -- turning
 //!   `toml_edit`'s parsed `Date`/`Time`/`Datetime` structs into this port's
 //!   canonical ISO-string spelling (see "Native temporal types" below).
-//! * **Integer digit cap** -- `toml_edit` itself rejects any integer
-//!   literal that doesn't fit in `i64` with a generic "integer number
-//!   overflowed" parse error that discards the offending literal's text;
-//!   this module recovers the raw digit run from the error's byte span and
-//!   re-derives the same 4300-digit-cap-vs-genuine-overflow distinction
-//!   `json.rs`/`yaml.rs` already make (see "Integer digit cap" below for
-//!   why this needed hand-written recovery rather than being free from the
-//!   crate). The distinction is `Limits::max_int_digits` now, and the
-//!   over-cap error carries the integer's Document path, recovered by
-//!   blanking the literal and parsing again with spans kept.
+//! * **Big integers and overflowing floats** -- `toml_edit` holds an
+//!   integer in 64 bits; this module reads the literals it refuses itself
+//!   (see "Integers beyond 64 bits" below).
 //! * **Depth guard, shape-check reuse** -- see their own sections below.
 //!
 //! ## No `null` (the one unrepresentable-value case TOML has)
@@ -59,57 +52,31 @@
 //! `report` is supplied and even though the message never enters the
 //! accumulated `WriteReport`).
 //!
-//! ## Integer digit cap (omnist-ts#54 / json.rs / yaml.rs precedent) --
-//! **not** a natural 64-bit range check
+//! ## Integers beyond 64 bits (D-2, D-28) and overflowing floats (D-29)
 //!
-//! The issue's own framing floated "TOML integers are spec'd as 64-bit, so
-//! this may be a natural range check rather than the 4300-digit-cap
-//! mechanism used elsewhere" -- **live-checked against `tomllib` (Python's
-//! stdlib TOML reader, which `omnist.formats.read_toml` wraps directly) and
-//! found not to be the case**: `tomllib.loads("x = " + "9"*4300)` parses
-//! successfully to a full-precision Python `int` (no 64-bit truncation, no
-//! error) -- while `tomllib.loads("x = " + "9"*4301)` raises `ValueError:
-//! Exceeds the limit (4300 digits) for integer string conversion`, the
-//! *identical* CPython `int(str)`-conversion guard `read_json`'s comment
-//! documents (`sys.set_int_max_str_digits`), not a TOML-spec-mandated
-//! 64-bit bounds check at all -- **for decimal literals only**. Hex/octal/
-//! binary literals are a genuine exception, not a false one: live-confirmed
-//! `tomllib.loads("x = 0x" + "f" * 5000)` (and even 10000 `f`s) parses
-//! successfully with **no error at all**, matching CPython's own documented
-//! carve-out (`sys.set_int_max_str_digits` explicitly exempts power-of-two
-//! bases) -- an earlier draft of this comment claimed hex/octal/binary hit
-//! the identical digit-limit `ValueError`, which was wrong and has been
-//! corrected. So Python's TOML integer handling is `json.rs`'s/`yaml.rs`'s
-//! existing 4300-digit-cap pattern for decimal literals, and *uncapped* for
-//! hex/octal/binary.
+//! A TOML integer is arbitrary precision here, in every radix, and the digit
+//! limit counts the decimal digits of its value. `toml_edit` holds an
+//! integer in `i64` and refuses a longer literal with an "overflow" error
+//! that carries a byte span but no value. [`read_toml`] therefore reads such
+//! a literal itself (`recover_number`): sign, radix prefix, underscores and
+//! all. It replaces the literal in a copy of the text by a stand-in of the
+//! same width (`0`, or `0.0` for a float), parses again, and swaps the real
+//! value back in by byte offset when the `toml_edit` tree is converted. The
+//! copy keeps every other offset in place, so a syntax error anywhere in the
+//! text is still reported at its own position and still wins over a limit.
 //!
-//! This port does **not** replicate that decimal/non-decimal split: every
-//! radix goes through the same `toml_overflow_error` recovery and the same
-//! 4300-digit cap, because `toml_edit` itself enforces a strict `i64` range
-//! at parse time regardless of radix (see below) -- there is no path in this
-//! implementation for an oversized hex/octal/binary literal to reach
-//! `Scalar::Int` uncapped the way Python's arbitrary-precision `int` does.
-//! This is a **disclosed divergence from Python**, not parity: kept
-//! deliberately rather than special-cased away, because (a) TOML 1.0 itself
-//! specifies 64-bit signed integers and `toml_edit` enforces 64-bit bounds
-//! at parse time, so an "uncapped hex" path would still fail for anything
-//! over `i64::MAX`, and (b) capping the digit run uniformly preserves the
-//! same superlinear-conversion DoS protection `json.rs`/`yaml.rs` apply,
-//! without carving out a radix-specific exemption.
+//! A decimal literal already longer than the limit in its own spelling is not
+//! converted to a number: the shared [`IntGuard`] placeholder (`10^max`) goes
+//! in instead, so the Document constructor refuses it with
+//! `document.limit.int-digits` at the right path without the reader paying
+//! the superlinear digit-string conversion. Every other literal is converted
+//! exactly and checked by value (so `0xFFF` is four digits, 4095).
 //!
-//! Where this module's implementation had to diverge from `json.rs`'s
-//! straight-line reuse: **`toml_edit` itself enforces a strict 64-bit
-//! range** at parse time (`"9"*20` / `i64::MAX + 1` both fail with a
-//! generic "integer number overflowed" `TomlError` that does not expose the
-//! original digit run), which is *stricter* than Python's real behavior for
-//! anything between 20 and 4300 digits. To keep this port's observable
-//! integer-literal error behavior matching Python's (not `toml_edit`'s
-//! internal, incidentally-stricter parse limit), `toml_overflow_error`
-//! recovers the raw literal text from the failed parse's byte span
-//! (`TomlError::span`) and re-derives the digit count itself, producing the
-//! same two-tier message `json.rs`/`yaml.rs` give ("exceeds the 4300-digit
-//! cap" vs "out of range for a 64-bit integer") instead of surfacing
-//! `toml_edit`'s own message directly.
+//! A float literal that overflows `f64` (`1e999`) is refused by `toml_edit`
+//! the same way; it reads as an infinity (`str::parse::<f64>` gives one).
+//! This is a disclosed difference from Python only in that Python's
+//! `tomllib` exempts hex/octal/binary literals from CPython's 4,300-digit
+//! string-conversion guard, while this port applies D-28 to every radix.
 //!
 //! ## Native temporal types (the opposite direction from JSON's problem)
 //!
@@ -203,12 +170,13 @@ use crate::document::{Doc, Value};
 use crate::error::DocumentError;
 use crate::error::{OmnistError, ParseError};
 use crate::formats::float_fmt;
-use crate::formats::int_cap::out_of_range_message;
 use crate::formats::string_escape::{TOML_ESCAPES, write_quoted};
 use crate::formats::textpos::line_col_bytes;
-use crate::limits::{Limits, Resolved};
+use crate::limits::{IntGuard, Limits, Resolved};
 use crate::report::{Severity, WriteReport};
 use indexmap::IndexMap;
+use num_bigint::BigInt;
+use std::collections::HashMap;
 use toml_edit::{Item, TableLike};
 
 // Same guard, same constant as `json.rs`'s/`yaml.rs`'s -- see this
@@ -253,17 +221,41 @@ fn read_toml_resolved(text: &str, limits: Resolved) -> Result<Doc, OmnistError> 
     // makes that uniform and puts the position/code where the spec says.
     let text = crate::bom::strip_leading_bom(text)
         .map_err(|_| ParseError::codec_syntax(1, 1, crate::bom::DOUBLED_BOM_MESSAGE))?;
-    let parsed: toml_edit::DocumentMut = text
-        .parse()
-        .map_err(|e: toml_edit::TomlError| toml_parse_error(text, &e, &limits))?;
-    let value = table_like_to_value(parsed.as_table())?;
+    let mut guard = IntGuard::new(limits.max_int_digits);
+    let mut lexemes: HashMap<usize, Value> = HashMap::new();
+    let mut patched = text.to_string();
+    let value = loop {
+        match toml_edit::Document::parse(patched.as_str()) {
+            Ok(parsed) => break table_like_to_value(parsed.as_table(), &lexemes)?,
+            Err(e) => {
+                // `toml_edit` holds an integer in 64 bits and refuses a
+                // number beyond that, with no value to read. The literal is
+                // read here instead (D-2, D-28, D-29) and stood in for by a
+                // small one of the same width, so every other offset keeps
+                // its place and the parse can go on; the real value is
+                // swapped back in by offset when the tree is converted.
+                // Anything else, including a syntax error further on, is
+                // reported as it always was.
+                let Some((start, end, value)) = recover_number(&patched, &e, &mut guard) else {
+                    return Err(toml_parse_error(&patched, &e, &limits));
+                };
+                let placeholder = if matches!(value, Value::Float(_)) {
+                    "0.0"
+                } else {
+                    "0"
+                };
+                let mut blank = String::from(placeholder);
+                blank.push_str(&" ".repeat(end - start - placeholder.len()));
+                patched.replace_range(start..end, &blank);
+                lexemes.insert(start, value);
+            }
+        }
+    };
     Ok(Doc::of_resolved(&value, limits).map_err(|e| limits.whole_document(e))?)
 }
 
-/// Turns a `toml_edit` parse failure into this crate's [`ParseError`].
-/// Detects the crate's generic integer-overflow message specially (see
-/// this module's doc comment on the integer digit cap) and otherwise
-/// reports the crate's own message at the failure's line/column.
+/// Turns a `toml_edit` parse failure into this crate's [`ParseError`],
+/// reporting the crate's own message at the failure's line/column.
 fn toml_parse_error(text: &str, e: &toml_edit::TomlError, limits: &Resolved) -> OmnistError {
     // omnist-rs#197: `toml_edit`'s own recursion cap (about 80 levels) is
     // nesting past a bound, so it is `document.limit.depth` at `$`. Its error
@@ -281,9 +273,6 @@ fn toml_parse_error(text: &str, e: &toml_edit::TomlError, limits: &Resolved) -> 
     // seen carries one, but a missing one must never panic the reader on
     // hostile input (that was #197): fall back to the start of the input.
     let span = e.span().unwrap_or(0..0);
-    if e.message().contains("overflow") {
-        return toml_overflow_error(text, span, limits);
-    }
     let (line, col) = line_col_bytes(text, span.start);
     ParseError::codec_syntax(line, col, format!("invalid TOML: {}", e.message())).into()
 }
@@ -304,136 +293,67 @@ fn toml_recursion_error(limits: &Resolved) -> DocumentError {
     )
 }
 
-/// Recovers the raw digit run from an integer literal `toml_edit` refused
-/// to parse (its own error discards the literal's text), and re-derives
-/// `json.rs`/`yaml.rs`'s exact two-tier message: over the 4300-digit cap
-/// gets the security-motivated cap message; under the cap (but still not
-/// representable in `i64`, `toml_edit`'s actual failure condition) gets the
-/// "out of range for a 64-bit integer" message -- see this module's doc
-/// comment for why this recovery is needed at all, and for why this
-/// applies uniformly across radixes even though Python's own tomllib
-/// leaves hex/octal/binary literals uncapped (a disclosed divergence,
-/// not a parity claim).
-fn toml_overflow_error(text: &str, span: std::ops::Range<usize>, limits: &Resolved) -> OmnistError {
-    if overflow_digit_count(text, &span) > limits.max_int_digits {
-        return over_cap_integer_error(text, span.start, limits);
+/// Reads the number literal `toml_edit` refused for being out of its 64-bit
+/// range: its byte range in `text` and its value. `None` when the failure is
+/// not an out-of-range number (or has no span to find one by).
+///
+/// An integer is arbitrary precision (D-2), whatever its radix, and the digit
+/// limit counts the decimal digits of its value (D-28), which the Document
+/// constructor checks; a decimal literal already past the limit in its own
+/// spelling is stood in for by the guard's placeholder instead of being
+/// converted. A float whose magnitude overflows reads as an infinity (D-29).
+fn recover_number(
+    text: &str,
+    e: &toml_edit::TomlError,
+    guard: &mut IntGuard,
+) -> Option<(usize, usize, Value)> {
+    if !e.message().contains("overflow") {
+        return None;
     }
-    let (line, col) = line_col_bytes(text, span.start);
-    let raw = &text[span];
-    ParseError::codec_syntax(line, col, out_of_range_message("invalid TOML: ", raw)).into()
-}
-
-/// The digit count of the integer literal `toml_edit` refused to parse.
-fn overflow_digit_count(text: &str, span: &std::ops::Range<usize>) -> usize {
-    let digits: String = text[span.clone()]
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric())
-        .collect();
-    digits
-        .trim_start_matches("0x")
-        .trim_start_matches("0X")
-        .len()
-}
-
-/// Builds the `document.limit.int-digits` error for the over-cap integer
-/// literal starting at byte offset `at`, whose Document path `toml_edit`'s
-/// refusal did not give (it returns no tree). The literal is blanked to `0`
-/// (padded with spaces so every other span keeps its offset) and the text
-/// parsed again, now with spans kept, to find which node starts at `at`. If
-/// the blanked text still fails, that failure is returned instead: a syntax
-/// error elsewhere in the input wins over a limit, as everywhere else.
-fn over_cap_integer_error(text: &str, at: usize, limits: &Resolved) -> OmnistError {
-    let mut patched = text.to_string();
-    let mut start = at;
-    loop {
-        match toml_edit::Document::parse(blank_integer(&mut patched, start)) {
-            Ok(doc) => {
-                let path = find_integer(doc.as_table(), at, "$").unwrap_or("$".to_string());
-                return limits.int_digits_error(&path).into();
-            }
-            Err(e) => {
-                // No span (a recursion-cap error): not an overflow, so it
-                // falls through to `toml_parse_error`, which maps it.
-                let span = e.span().unwrap_or(0..0);
-                if e.message().contains("overflow")
-                    && overflow_digit_count(&patched, &span) > limits.max_int_digits
-                {
-                    // Another over-cap literal further on: blank it too, so
-                    // that a syntax error after it can still win.
-                    start = span.start;
-                    continue;
-                }
-                return toml_parse_error(&patched, &e, limits);
-            }
-        }
-    }
-}
-
-/// Blanks the integer literal starting at `start` in `patched` to `0` plus
-/// spaces (keeping every byte offset), returning the new text.
-fn blank_integer(patched: &mut String, start: usize) -> String {
-    let len = patched[start..]
-        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '+' || c == '-'))
-        .unwrap_or(patched.len() - start);
-    patched.replace_range(start..start + len, &format!("0{}", " ".repeat(len - 1)));
-    patched.clone()
-}
-
-/// The Document path of the integer starting at byte offset `target`.
-fn find_integer(t: &dyn TableLike, target: usize, path: &str) -> Option<String> {
-    for (k, item) in t.iter() {
-        let kp = crate::document::join(path, k);
-        let found = match item {
-            Item::Value(v) => find_integer_in_value(v, target, &kp),
-            Item::ArrayOfTables(a) => a
-                .iter()
-                .enumerate()
-                .find_map(|(i, t)| find_integer(t, target, &indexed(&kp, i, a.len()))),
-            other => other
-                .as_table_like()
-                .and_then(|t| find_integer(t, target, &kp)),
-        };
-        if found.is_some() {
-            return found;
-        }
-    }
-    None
-}
-
-fn find_integer_in_value(v: &toml_edit::Value, target: usize, path: &str) -> Option<String> {
-    match v {
-        toml_edit::Value::Integer(_) if v.span().map(|s| s.start) == Some(target) => {
-            Some(path.to_string())
-        }
-        toml_edit::Value::Array(arr) => arr
-            .iter()
-            .enumerate()
-            .find_map(|(i, e)| find_integer_in_value(e, target, &indexed(path, i, arr.len()))),
-        toml_edit::Value::InlineTable(t) => find_integer(t, target, path),
-        _ => None,
-    }
-}
-
-/// `path[i]` when the label repeats (`len > 1`), else `path` (E-10).
-fn indexed(path: &str, i: usize, len: usize) -> String {
-    if len > 1 {
-        format!("{path}[{i}]")
+    let start = e.span()?.start;
+    let len = text[start..]
+        .find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '+' | '-' | '.')))
+        .unwrap_or(text.len() - start);
+    let lexeme = &text[start..start + len];
+    let cleaned: String = lexeme.chars().filter(|&c| c != '_').collect();
+    let (neg, body) = match cleaned.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, cleaned.strip_prefix('+').unwrap_or(&cleaned)),
+    };
+    let radix = match body.get(..2) {
+        Some("0x") => 16,
+        Some("0o") => 8,
+        Some("0b") => 2,
+        _ => 10,
+    };
+    let value = if radix == 10 && body.contains(['.', 'e', 'E']) {
+        Value::Float(cleaned.parse().ok()?)
     } else {
-        path.to_string()
-    }
+        let digits = if radix == 10 { body } else { &body[2..] };
+        let magnitude = if radix == 10 && digits.len() > guard.max() {
+            guard.placeholder()
+        } else {
+            BigInt::parse_bytes(digits.as_bytes(), radix)?
+        };
+        Value::Int(if neg { -magnitude } else { magnitude })
+    };
+    Some((start, start + len, value))
 }
 
 /// Converts a `toml_edit` table (top-level document or inline table) into a
 /// [`Value::Object`], recursing into every entry.
-fn table_like_to_value(t: &dyn TableLike) -> Result<Value, ParseError> {
+fn table_like_to_value(
+    t: &dyn TableLike,
+    lexemes: &HashMap<usize, Value>,
+) -> Result<Value, ParseError> {
     let mut map = IndexMap::new();
     for (k, item) in t.iter() {
-        map.insert(k.to_string(), item_to_value(item)?);
+        map.insert(k.to_string(), item_to_value(item, lexemes)?);
     }
     Ok(Value::Object(map))
 }
 
-fn item_to_value(item: &Item) -> Result<Value, ParseError> {
+fn item_to_value(item: &Item, lexemes: &HashMap<usize, Value>) -> Result<Value, ParseError> {
     match item {
         // `Item::None` is only ever produced by `toml_edit`'s *mutation*
         // API (`Entry`/`Index::or_insert(Item::None)`, confirmed by reading
@@ -444,19 +364,27 @@ fn item_to_value(item: &Item) -> Result<Value, ParseError> {
         Item::None => unreachable!(
             "Item::None is only produced by toml_edit's mutation API, never by parsing text"
         ),
-        Item::Value(v) => toml_value_to_value(v),
-        Item::Table(t) => table_like_to_value(t),
+        Item::Value(v) => toml_value_to_value(v, lexemes),
+        Item::Table(t) => table_like_to_value(t, lexemes),
         Item::ArrayOfTables(arr) => {
             let mut out = Vec::with_capacity(arr.len());
             for t in arr.iter() {
-                out.push(table_like_to_value(t)?);
+                out.push(table_like_to_value(t, lexemes)?);
             }
             Ok(Value::Array(out))
         }
     }
 }
 
-fn toml_value_to_value(v: &toml_edit::Value) -> Result<Value, ParseError> {
+fn toml_value_to_value(
+    v: &toml_edit::Value,
+    lexemes: &HashMap<usize, Value>,
+) -> Result<Value, ParseError> {
+    // A number `toml_edit` refused (see `read_toml_resolved`) was read by
+    // this module and stood in for; its value is found again by offset.
+    if let Some(read) = v.span().and_then(|s| lexemes.get(&s.start)) {
+        return Ok(read.clone());
+    }
     match v {
         toml_edit::Value::String(s) => Ok(Value::Str(s.value().clone())),
         // `toml_edit`'s own `Integer` is `i64`-backed (the TOML 1.0 format
@@ -494,11 +422,11 @@ fn toml_value_to_value(v: &toml_edit::Value) -> Result<Value, ParseError> {
         toml_edit::Value::Array(arr) => {
             let mut out = Vec::with_capacity(arr.len());
             for item in arr.iter() {
-                out.push(toml_value_to_value(item)?);
+                out.push(toml_value_to_value(item, lexemes)?);
             }
             Ok(Value::Array(out))
         }
-        toml_edit::Value::InlineTable(it) => table_like_to_value(it),
+        toml_edit::Value::InlineTable(it) => table_like_to_value(it, lexemes),
     }
 }
 
@@ -903,7 +831,10 @@ mod tests {
             offset: None,
         };
         let v = toml_edit::Value::Datetime(toml_edit::Formatted::new(dt));
-        assert_eq!(toml_value_to_value(&v).unwrap(), Value::Str(String::new()));
+        assert_eq!(
+            toml_value_to_value(&v, &HashMap::new()).unwrap(),
+            Value::Str(String::new())
+        );
     }
 
     // ---------------------------------------------------------- reader: scalars
@@ -1363,72 +1294,181 @@ mod tests {
 
     // ------------------------------------------------------------ integer cap
 
-    #[test]
-    fn integer_at_4300_digits_reads_but_overflows_i64() {
-        // Live-confirmed: tomllib itself accepts a 4300-digit literal (no
-        // digit-cap error) but `toml_edit`'s own read-side integer type is
-        // i64-backed (see this module's doc comment) -- so this port's
-        // read still fails, just with the "out of range" message, not the
-        // "digit cap exceeded" one, matching json.rs's own precedent for
-        // the same representational gap. `Scalar::Int` itself is
-        // arbitrary-precision (`BigInt`, issue #104) -- the ceiling here is
-        // `toml_edit`'s, not this crate's own representation.
-        let text = format!("x = {}\n", "9".repeat(4300));
-        let err = read_toml(&text).unwrap_err();
-        assert!(matches!(err, OmnistError::Parse(ref e) if e.message.contains("out of range")));
+    /// The scalar a TOML text holds at a top-level label.
+    fn scalar_at(text: &str, label: &str) -> Scalar {
+        read_toml(text)
+            .unwrap()
+            .root()
+            .get_one(label)
+            .unwrap()
+            .value()
+            .unwrap()
+            .clone()
+    }
+
+    /// The integer a TOML text holds at `x`, as its decimal digits.
+    fn int_at(text: &str, label: &str) -> String {
+        let got = scalar_at(text, label);
+        assert!(matches!(got, Scalar::Int(_)), "{got:?}");
+        got.to_string()
+    }
+
+    fn assert_int_digits(err: &OmnistError, path: &str) {
+        assert!(
+            matches!(err, OmnistError::Document(e)
+                if e.code.as_deref() == Some("document.limit.int-digits")
+                    && e.path == path
+                    && e.message.contains("4300-digit limit")),
+            "expected document.limit.int-digits at {path}, got {err:?}"
+        );
     }
 
     #[test]
-    fn huge_hex_literal_is_capped_unlike_pythons_uncapped_tomllib() {
-        // Live-confirmed divergence: tomllib.loads("x = 0x" + "f"*5000)
-        // parses successfully in Python with no error at all (CPython's
-        // digit cap explicitly exempts power-of-two bases). This port does
-        // not replicate that exemption -- toml_edit enforces a strict i64
-        // range at parse time regardless of radix, so this hits the same
-        // digit-cap recovery path as a decimal literal and is rejected. See
-        // this module's doc comment for why that's a disclosed, deliberate
-        // divergence rather than a parity claim.
+    fn integer_at_4300_digits_reads_exactly() {
+        // D-2: integers are arbitrary precision, so a literal `toml_edit`
+        // cannot hold in 64 bits still reads, exactly, up to the digit limit.
+        let digits = "9".repeat(4300);
+        assert_eq!(int_at(&format!("x = {digits}\n"), "x"), digits);
+        assert_eq!(
+            int_at(&format!("x = -{digits}\n"), "x"),
+            format!("-{digits}")
+        );
+    }
+
+    #[test]
+    fn huge_hex_literal_is_limited_by_its_decimal_digits() {
+        // D-28: the limit counts the decimal digits of the VALUE. 3,600 hex
+        // digits are about 4,335 decimal digits, over the default 4,300.
+        let text = format!("x = 0x{}\n", "f".repeat(3600));
+        assert_int_digits(&read_toml(&text).unwrap_err(), "$.x");
+        // Far past it, the same.
         let text = format!("x = 0x{}\n", "f".repeat(5000));
-        let err = read_toml(&text).unwrap_err();
-        assert!(matches!(
-            err,
-            OmnistError::Document(ref e)
-                if e.code.as_deref() == Some("document.limit.int-digits")
-                    && e.path == "$.x"
-                    && e.message.contains("4300-digit limit")
-        ));
+        assert_int_digits(&read_toml(&text).unwrap_err(), "$.x");
+    }
+
+    #[test]
+    fn a_long_binary_literal_within_the_decimal_limit_reads() {
+        // 4,301 binary digits are about 1,295 decimal digits: within the limit.
+        let text = format!("x = 0b{}\n", "1".repeat(4301));
+        let expected: BigInt = (BigInt::from(1) << 4301) - 1;
+        assert_eq!(scalar_at(&text, "x"), Scalar::Int(expected));
     }
 
     #[test]
     fn integer_over_4300_digits_is_the_digit_cap_error() {
         let text = format!("x = {}\n", "9".repeat(4301));
-        let err = read_toml(&text).unwrap_err();
-        assert!(matches!(
-            err,
-            OmnistError::Document(ref e)
-                if e.code.as_deref() == Some("document.limit.int-digits")
-                    && e.path == "$.x"
-                    && e.message.contains("4300-digit limit")
-        ));
+        assert_int_digits(&read_toml(&text).unwrap_err(), "$.x");
+        let text = format!("x = -{}\n", "9".repeat(4301));
+        assert_int_digits(&read_toml(&text).unwrap_err(), "$.x");
     }
 
     #[test]
-    fn integer_literal_under_digit_cap_but_over_i64_range_is_out_of_range_error() {
-        // Live-confirmed: tomllib.loads("x = 9223372036854775808") parses
-        // fine in Python (arbitrary-precision int, no error at all -- this
-        // is well under the 4300-digit cap). `toml_edit`'s own read-side
-        // integer type is i64-only (see this module's doc comment), so the
-        // same literal is rejected here as out of range -- a disclosed
-        // limit of the underlying `toml_edit` crate on the read path, not
-        // this crate's own `Scalar::Int` (arbitrary-precision `BigInt`,
-        // issue #104), and not parity with Python's real behavior, matching
-        // json.rs's own precedent for the same representational gap.
-        let text = "x = 9223372036854775808\n"; // i64::MAX + 1, 19 digits
-        let err = read_toml(text).unwrap_err();
+    fn integer_beyond_64_bits_reads_exactly_in_every_radix() {
+        let big = "9223372036854775808"; // i64::MAX + 1
+        assert_eq!(int_at(&format!("x = {big}\n"), "x"), big);
+        assert_eq!(
+            int_at("x = -9223372036854775809\n", "x"),
+            "-9223372036854775809"
+        );
+        assert_eq!(int_at("x = 9_223_372_036_854_775_808\n", "x"), big);
+        assert_eq!(int_at("x = +9223372036854775808\n", "x"), big);
+        assert_eq!(
+            int_at("x = 0xFFFFFFFFFFFFFFFFFF\n", "x"),
+            "4722366482869645213695"
+        );
+        assert_eq!(
+            int_at("x = 0o7777777777777777777777\n", "x"),
+            "73786976294838206463"
+        );
+        assert_eq!(
+            int_at(
+                "x = 0b1111111111111111111111111111111111111111111111111111111111111111111111\n",
+                "x"
+            )
+            .to_string(),
+            "1180591620717411303423"
+        );
+    }
+
+    #[test]
+    fn a_decimal_literal_over_a_lowered_limit_is_refused_at_its_path() {
+        let limits = crate::limits::Limits::default().with_max_int_digits(20);
+        let err = read_toml_with("a = 1\nb = 123456789012345678901\n", &limits).unwrap_err();
         assert!(matches!(
             err,
-            OmnistError::Parse(ref e) if e.message.contains("out of range for a 64-bit integer")
+            OmnistError::Document(ref e)
+                if e.code.as_deref() == Some("document.limit.int-digits") && e.path == "$.b"
         ));
+        let ok = read_toml_with("b = 12345678901234567890\n", &limits).unwrap();
+        assert!(ok.root().get_one("b").is_ok());
+    }
+
+    #[test]
+    fn big_integers_are_found_by_path_inside_arrays_tables_and_inline_tables() {
+        let big = "9".repeat(30);
+        let text =
+            format!("a = [1, {big}]\n[t]\nx = {{ y = {big} }}\n[[r]]\nz = {big}\n[[r]]\nz = 2\n");
+        let doc = read_toml(&text).unwrap();
+        let t = doc.root().get_one("t").unwrap();
+        let x = t.get_one("x").unwrap();
+        assert_eq!(
+            x.get_one("y").unwrap().value(),
+            Ok(&Scalar::Int(big.parse().unwrap()))
+        );
+        // The same literals over a lowered limit: the path is the element's.
+        let limits = crate::limits::Limits::default().with_max_int_digits(20);
+        for (text, path) in [
+            (format!("a = [1, {big}]\n"), "$.a[1]"),
+            (format!("x = {{ y = {big} }}\n"), "$.x.y"),
+            (format!("[[r]]\nz = {big}\n[[r]]\nz = 2\n"), "$.r[0].z"),
+            (format!("[t]\nz = {big}\n"), "$.t.z"),
+        ] {
+            let err = read_toml_with(&text, &limits).unwrap_err();
+            assert!(
+                matches!(&err, OmnistError::Document(e) if e.path == path
+                    && e.code.as_deref() == Some("document.limit.int-digits")),
+                "{path}: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_syntax_error_wins_over_a_big_integer_wherever_it_is() {
+        let big = "9".repeat(5000);
+        // After the literal: reported at its own position.
+        let err = read_toml(&format!("a = {big}\nb = = 1\n")).unwrap_err();
+        assert!(matches!(err, OmnistError::Parse(ref e) if e.line == 2));
+        // Before it: the same.
+        let err = read_toml(&format!("b = = 1\na = {big}\n")).unwrap_err();
+        assert!(matches!(err, OmnistError::Parse(ref e) if e.line == 1));
+        // Several literals, one past the limit, one not.
+        let text = format!("a = {big}\nb = 99999999999999999999\nc = 1\n");
+        assert_int_digits(&read_toml(&text).unwrap_err(), "$.a");
+    }
+
+    #[test]
+    fn an_overflowing_float_reads_as_an_infinity() {
+        // D-29.
+        assert_eq!(scalar_at("a = 1e999\n", "a"), Scalar::Float(f64::INFINITY));
+        assert_eq!(
+            scalar_at("a = -1e999\n", "a"),
+            Scalar::Float(f64::NEG_INFINITY)
+        );
+        assert_eq!(scalar_at("a = +1e999\n", "a"), Scalar::Float(f64::INFINITY));
+        assert_eq!(
+            scalar_at("a = 1.5e999\n", "a"),
+            Scalar::Float(f64::INFINITY)
+        );
+        assert_eq!(
+            scalar_at("a = 1_0e9_99\n", "a"),
+            Scalar::Float(f64::INFINITY)
+        );
+        assert_eq!(
+            scalar_at("a = [1e999]\n", "a"),
+            Scalar::Float(f64::INFINITY)
+        );
+        // And a float that merely underflows is still a finite zero.
+        assert_eq!(scalar_at("a = 1e-999\n", "a"), Scalar::Float(0.0));
     }
 
     #[test]
@@ -1651,7 +1691,7 @@ mod tests {
         // module's doc comment) -- read_toml never constructs one, so this
         // white-box-tests the documented invariant directly.
         let result = std::panic::catch_unwind(|| {
-            let _ = item_to_value(&Item::None);
+            let _ = item_to_value(&Item::None, &HashMap::new());
         });
         assert!(result.is_err());
     }

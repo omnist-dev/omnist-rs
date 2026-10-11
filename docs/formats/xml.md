@@ -94,6 +94,10 @@ string, not its original type (`check_xml`'s `format.value-stringified`
 adjustment; named `value.stringified` through 0.7.0-alpha, renamed to the
 code the spec's section 8.3.8 names).
 
+A `date`, `time` or `datetime` leaf is reported as `format.temporal-stringified`
+instead, never as `format.value-stringified` as well (E-5): a leaf takes one of
+the two codes, once, at the leaf's own path (indexed when the label repeats).
+
 ## `null` has no XML form
 
 XML has no null token, and a childless element reads back as the empty string

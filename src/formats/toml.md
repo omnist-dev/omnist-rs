@@ -30,39 +30,47 @@ as a `null.omitted` warning, erased the edge's existence with no trace on
 read-back (omnist-rs#160 retired that behaviour). The XML writer refuses a
 null the same way (spec C-10); see [XML](xml.md#null-has-no-xml-form).
 
-## Integer digit cap, and a real, external `i64` ceiling from `toml_edit`
+## Integers are arbitrary precision; the digit limit counts decimal digits
 
-The cap is `Limits::max_int_digits` (default 4300; `read_toml_with` changes it),
-and an over-long literal is a `DocumentError` with code
-`document.limit.int-digits` at the integer's Document path. `toml_edit` refuses
-a literal past `i64` and returns no tree, so this reader recovers the path by
-blanking the literal and parsing the text again with spans kept.
+A TOML integer is arbitrary precision here, in every radix (spec D-2). The
+limit is `Limits::max_int_digits` (default 4300; `read_toml_with` changes it),
+and it counts the **decimal digits of the value** (D-28), whatever the
+spelling: `0xFFF` is 4095, four digits; underscores are separators, not digits.
+A value over the limit is a `DocumentError` with code
+`document.limit.int-digits` at the integer's Document path, never a syntax
+error. A 3,600-digit hex literal is about 4,335 decimal digits, so it is
+refused at the default; a 4,301-digit binary literal is about 1,295, so it
+reads.
 
-Live-confirmed against `tomllib.loads`: a **decimal** integer literal
-follows the identical 4300-digit `sys.set_int_max_str_digits` cap
-`json.rs`/`yaml.rs` already apply. **Hex/octal/binary literals are a
-genuine exception in Python** -- `tomllib.loads("x = 0x" + "f" * 10000)`
-parses successfully with no error at all, because CPython's digit-limit
-guard explicitly exempts power-of-two bases.
+`toml_edit` holds an integer in 64 bits and refuses a longer one with no value
+to read. This reader works around that: it takes the byte range from the
+refusal, reads the literal itself (any radix, optional sign, underscores),
+swaps in a one-character stand-in of the same width so every other offset keeps
+its place, parses again, and puts the real value back by offset when it builds
+the Document. A decimal literal already longer than the limit in its own
+spelling is not converted at all; a placeholder stands in for it, so it is
+refused without paying the superlinear conversion. A syntax error elsewhere
+in the text still wins over a limit.
 
-This port does **not** replicate that decimal/non-decimal split, but for
-a different reason than it used to (issue #104: `Scalar::Int`/`Value::Int`
-are arbitrary-precision `BigInt`s now, not `i64`). The underlying
-`toml_edit` crate's own `Integer` type is `i64`-backed regardless of
-radix (the TOML 1.0 format spec itself documents 64-bit signed
-integers), so **reading** a >19-digit literal of any radix from TOML
-*source text* fails in `toml_edit`'s own parser, before this codec's
-`Scalar` conversion ever runs -- a real, external, still-current
-divergence from Python's arbitrary-precision `int`, not something this
-port's own representation choice can lift. Live-confirmed:
-`convert --from toml` on `n = 99999999999999999999999999` fails with
-`"integer literal ... is out of range for a 64-bit integer"`.
-**Writing** an oversized `Scalar::Int` *to* TOML, by contrast, succeeds
--- this codec's writer renders integers as plain digit text rather than
-going through `toml_edit`'s typed API, so the ceiling is read-side only;
-live-confirmed the same 26-digit value round-trips out via
-`convert --from oml --to toml` with no error, it just can't be read back
-in through TOML afterward.
+Python's `tomllib` exempts hex, octal and binary literals from CPython's
+4,300-digit string-conversion guard; this port does not, because D-28 counts
+the value's decimal digits for every radix.
+
+A float whose magnitude overflows (`1e999`, `-1e999`) reads as positive or
+negative infinity (D-29), by the same route.
+
+**Writing** an oversized integer to TOML needs no workaround: the writer renders
+integers as plain digit text.
+
+## Nesting past about 80 levels
+
+`toml_edit` has a recursion limit of its own, about 80 levels of table header,
+inline table, array or dotted key. TOML nested between about 81 levels and the
+configured maximum depth (200 by default) therefore fails with
+`document.limit.depth` at `$` even though the configured limit has not been
+reached; the message names `toml_edit` as the cause. This is a limit of the
+parser library, not of the format or of the Document model, and raising
+`max_depth` does not lift it.
 
 ## Native temporal types, truncated (not rounded) sub-microsecond precision
 

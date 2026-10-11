@@ -461,20 +461,19 @@ fn toml_literal_past_i64_and_past_the_cap_is_refused_at_its_path() {
 }
 
 #[test]
-fn toml_syntax_or_range_error_after_an_over_cap_literal_still_wins() {
+fn toml_syntax_error_after_an_over_cap_literal_still_wins() {
     let big = "99999999999999999999";
     let l = Limits::default().with_max_int_digits(10);
     let e = read_toml_with(&format!("a = {big}\nb = \n"), &l).unwrap_err();
     assert!(matches!(e, OmnistError::Parse(ref p) if p.code == "parse.codec-syntax"));
-    // A later literal that is out of range for i64 but within the cap is the
-    // existing out-of-range error, not the limit.
+    // A later literal past 64 bits but within the cap reads exactly; the
+    // over-cap literal before it is the one named.
     let wide = Limits::default().with_max_int_digits(25);
     let thirty = "9".repeat(30);
     let e = read_toml_with(&format!("a = {thirty}\nb = {big}\n"), &wide).unwrap_err();
-    assert!(
-        matches!(&e, OmnistError::Parse(p) if p.message.contains("out of range")),
-        "{e:?}"
-    );
+    assert_eq!(diag(e), want(DIGITS, "$.a"));
+    let ok = read_toml_with(&format!("a = {big}\n"), &wide).unwrap();
+    assert!(ok.root().get_one("a").is_ok());
     // Several over-cap literals followed by a clean end: the first is named.
     assert_eq!(
         toml_err(
@@ -486,16 +485,13 @@ fn toml_syntax_or_range_error_after_an_over_cap_literal_still_wins() {
 }
 
 #[test]
-fn toml_literal_exactly_at_the_cap_but_past_i64_is_out_of_range_not_a_limit() {
-    // 20 digits: at a cap of 20 it is within the limit but still too big for
-    // toml_edit's 64-bit integers; at a cap of 19 it is over the limit.
+fn toml_literal_exactly_at_the_cap_but_past_i64_reads() {
+    // 20 digits: at a cap of 20 it is within the limit and reads exactly,
+    // though toml_edit alone would refuse it; at a cap of 19 it is over.
     let text = "n = 99999999999999999999\n";
     let at = Limits::default().with_max_int_digits(20);
-    let e = read_toml_with(text, &at).unwrap_err();
-    assert!(
-        matches!(&e, OmnistError::Parse(p) if p.message.contains("out of range")),
-        "{e:?}"
-    );
+    let doc = read_toml_with(text, &at).unwrap();
+    assert!(doc.root().get_one("n").is_ok());
     let past = Limits::default().with_max_int_digits(19);
     assert_eq!(toml_err(text, &past), want(DIGITS, "$.n"));
 }
@@ -633,8 +629,17 @@ fn yaml_scalar_errors_surface_from_sequence_items_and_keys() {
 }
 
 #[test]
-fn yaml_over_cap_integer_dropped_by_a_duplicate_key_is_still_refused() {
-    assert_eq!(yaml_err("n: 1000\nn: 1\n", &digits3()), want(DIGITS, "$"));
+fn yaml_over_cap_integer_under_a_repeated_key_is_the_syntax_error() {
+    // C-12: the repeated key is malformed input, and a syntax error takes
+    // precedence over a limit.
+    let e = read_yaml_with(
+        "n: 1000
+n: 1
+",
+        &YamlReadOptions::default().with_limits(digits3()),
+    )
+    .unwrap_err();
+    assert!(matches!(e, OmnistError::Parse(ref p) if p.code == "parse.codec-syntax"));
 }
 
 #[test]

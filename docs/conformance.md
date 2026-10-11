@@ -3,8 +3,8 @@
 This port has its own conformance-test harness (`tools/conformance/`)
 against [omnist-spec](https://github.com/omnist-dev/omnist-spec), the
 language-agnostic upstream specification. It vendors omnist-spec as a
-pinned git submodule (`vendor/omnist-spec`, currently commit `64cbb68`,
-the `v0.33.0-beta` tag) and
+pinned git submodule (`vendor/omnist-spec`, currently commit `3346b50`,
+the `v0.34.0-beta` tag) and
 runs entirely against this crate's own library code -- it does not depend
 on the Python or TypeScript ports' implementations.
 
@@ -17,7 +17,7 @@ reporting rule:
 - **Track 1** (`vendor/omnist-spec/conformance/fixtures/`, directory-per-fixture,
   11 operations): **19 passed, 0 failed, 0 skipped**.
 - **Track 2** (`vendor/omnist-spec/test-suite/`, JSON-vector suite, 14-operation
-  vocabulary): **339 passed, 0 failed, 28 skipped** (of 367 vectors),
+  vocabulary): **494 passed, 0 failed, 28 skipped** (of 522 vectors),
   **diagnostics compared as `(path, code)` sets** (section 8.5.2), not in
   code-agnostic mode. The runner exits non-zero on any failing vector and
   never on skips (E-22); it has no list of tolerated failures.
@@ -37,6 +37,19 @@ All 28 skips are one spec category, E-20 "not yet implemented"; none is an
 E-21 documented divergence. The 6 `document-model/limits` vectors were skips
 through 0.6.1-alpha (304 / 0 / 34); the limits became runtime-configurable in
 0.7.0-alpha and they now run and pass (310 / 0 / 28).
+
+**Adopting v0.34.0-beta (0.10.0-alpha).** The suite grew from 367 to 522
+vectors (the C-12, C-13, D-27, D-28, D-29, E-5 and E-35 vectors, among others)
+and the pin moved from v0.33.0-beta. Before any change the runner reported 467
+pass / 27 fail / 28 skip, and the 27 were: 4 TOML number vectors (an integer
+beyond 64 bits and `1e999`, D-2, D-28, D-29), 6 YAML duplicate-key vectors
+(C-12), 2 `!!merge` merge-key vectors (D-27), 6 `!!omap`/`!!pairs`/`!!set`
+vectors (C-13), 4 XML temporal leaves reported as `format.value-stringified`
+instead of `format.temporal-stringified` (E-5) and 5 OML compact vectors (E-35:
+the runner dropped the `compact` key and compared the expanded layout). Track 1
+now compares the lint `code` exactly (omnist-rs#200). After the adoption:
+494 / 0 / 28, and the 28 skips are the same OSD-OML extension vectors as before.
+The runner fails a vector that sets `compact` on a format other than OML.
 
 **Adopting v0.33.0-beta (0.9.0-alpha).** The suite grew from 338 to 367 vectors
 (7 repeated-label path vectors, 10 input-size vectors, 7 OML-29 vectors, 5 XML
