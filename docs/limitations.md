@@ -209,17 +209,12 @@ disclosed permitted variation, since a 20+ digit literal under the shared
 `declared_max_int_digits` override in play (omnist-spec ledger entry D-9).
 Fixed; see each format's own page for anything still worth knowing:
 
-- [formats/toml.md](formats/toml.md) -- **one real, external divergence
-  remains**: `toml_edit`, the crate this port's TOML codec is built on,
-  has its own `i64`-backed integer type (the TOML 1.0 format spec itself
-  documents 64-bit signed integers), so a >19-digit integer literal in
-  TOML *source text* is still rejected -- by `toml_edit`'s own parser,
-  before this port's `Scalar` is ever involved. Writing an
-  arbitrary-precision `Scalar::Int` *to* TOML still succeeds (this
-  codec's writer renders integers as plain digit text, not through
-  `toml_edit`'s typed API), so the asymmetry is read-side only: such a
-  value round-trips out but not back in through TOML specifically. Every
-  other format (JSON, YAML, OML) has no such ceiling.
+- [formats/toml.md](formats/toml.md) -- TOML integers read at full
+  precision too: `toml_edit`, the crate this port's TOML codec is built on,
+  holds an integer in 64 bits and refuses a longer literal, so the reader
+  works the literal out itself (any radix) and puts the value back. The
+  digit limit counts the decimal digits of the value (spec D-28).
+  No format has a 64-bit ceiling on read or on write.
 
 ## Temporal kinds have no arithmetic
 

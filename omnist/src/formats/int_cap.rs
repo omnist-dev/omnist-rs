@@ -39,14 +39,6 @@ pub(crate) fn over_cap_message(prefix: &str, max: usize) -> String {
     )
 }
 
-/// The "fits the cap but not an `i64`" message, spelled identically for
-/// every format modulo each format's own error-prefix convention.
-///
-/// `prefix` is prepended verbatim, same convention as [`over_cap_message`].
-pub(crate) fn out_of_range_message(prefix: &str, literal: &str) -> String {
-    format!("{prefix}integer literal {literal:?} is out of range for a 64-bit integer")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -66,23 +58,6 @@ mod tests {
             over_cap_message("invalid TOML: ", 4300),
             "invalid TOML: integer literal exceeds the 4300-digit limit (security: \
              unbounded-digit int-to-str conversion is superlinear)"
-        );
-    }
-
-    #[test]
-    fn out_of_range_message_no_prefix() {
-        assert_eq!(
-            out_of_range_message("", "99999999999999999999"),
-            "integer literal \"99999999999999999999\" is out of range for a 64-bit integer"
-        );
-    }
-
-    #[test]
-    fn out_of_range_message_with_prefix() {
-        assert_eq!(
-            out_of_range_message("invalid YAML: ", "99999999999999999999"),
-            "invalid YAML: integer literal \"99999999999999999999\" is out of range for a \
-             64-bit integer"
         );
     }
 }
