@@ -88,6 +88,12 @@ that produce a genuine temporal variant are unchanged:
   Date/Time/Datetime-kinded schema constructs the real variant too, so a
   materialized document writes its temporal fields bare through OML.
 
+## Temporal output (E-37, OML-30)
+
+A `time` or `datetime` is always written with its seconds (`12:00` is written
+`12:00:00`), the offset after the seconds and any fraction, and a datetime with
+the `T` separator. The value is never altered.
+
 ## Integer digit cap and `i64`
 
 Same 4300-digit cap as `json.rs`/`yaml.rs`/`toml.rs` (`Limits::max_int_digits`,

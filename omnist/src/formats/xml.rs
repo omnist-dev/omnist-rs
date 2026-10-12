@@ -246,6 +246,24 @@ fn read_xml_raw(
         .map_err(|_| ParseError::codec_syntax(1, 1, crate::bom::DOUBLED_BOM_MESSAGE))?;
     let mut refusal: Refusal = None;
     let normalized = normalize_line_endings(text);
+    // C-16: XML 1.0 `Char` only. A character outside it, anywhere in the
+    // document (text, CDATA, an attribute value, a comment, a name), is
+    // `parse.codec-syntax` at its position.
+    if let Some((at, c)) = normalized
+        .char_indices()
+        .find(|&(_, c)| is_xml_illegal_char(c))
+    {
+        let (line, col) = line_col_bytes(&normalized, at);
+        return Err(ParseError::codec_syntax(
+            line,
+            col,
+            format!(
+                "invalid XML: character U+{:04X} is not allowed in XML 1.0",
+                c as u32
+            ),
+        )
+        .into());
+    }
     let mut reader = Reader::from_str(&normalized);
     reader.config_mut().trim_text(false);
     let mut buf = Vec::new();
@@ -264,6 +282,7 @@ fn read_xml_raw(
                 };
                 let tag = local_name(e.name());
                 let path = crate::report::child_path("$", &tag, None);
+                check_attribute_char_refs(&reader, &normalized, &e)?;
                 refuse_attribute_entities(&e, &mut refusal);
                 record_elem_diagnostics(&e, &path, report.as_deref_mut());
                 let content = parse_content(
@@ -280,6 +299,7 @@ fn read_xml_raw(
             Event::Empty(e) => {
                 let tag = local_name(e.name());
                 let path = crate::report::child_path("$", &tag, None);
+                check_attribute_char_refs(&reader, &normalized, &e)?;
                 refuse_attribute_entities(&e, &mut refusal);
                 record_elem_diagnostics(&e, &path, report.as_deref_mut());
                 break RawNode::Edges(vec![(tag, RawNode::Leaf(Scalar::Str(String::new())))]);
@@ -505,6 +525,7 @@ fn parse_content(
                 let child_path =
                     crate::report::child_path(path, &tag, (index > 0).then_some(index));
                 let start = report.as_deref().map_or(0, WriteReport::len);
+                check_attribute_char_refs(reader, source, &e)?;
                 refuse_attribute_entities(&e, refusal);
                 record_elem_diagnostics(&e, &child_path, report.as_deref_mut());
                 let child = parse_content(
@@ -532,6 +553,7 @@ fn parse_content(
                 let child_path =
                     crate::report::child_path(path, &tag, (index > 0).then_some(index));
                 let start = report.as_deref().map_or(0, WriteReport::len);
+                check_attribute_char_refs(reader, source, &e)?;
                 refuse_attribute_entities(&e, refusal);
                 record_elem_diagnostics(&e, &child_path, report.as_deref_mut());
                 if index == 0 && report.is_some() {
@@ -644,6 +666,61 @@ fn record_elem_diagnostics(
     }
 }
 
+/// The character a strict XML numeric character reference body names (the
+/// text between `&` and `;`, so `#65` or `#x41`), or `None` when the body is
+/// malformed (no digits, `#X`, a sign, a non-digit, a value that does not fit
+/// `u32`) or names a code point outside XML 1.0's `Char` (C-16).
+fn numeric_ref_char(body: &str) -> Option<char> {
+    let digits = body.strip_prefix('#')?;
+    let (radix, digits) = match digits.strip_prefix('x') {
+        Some(hex) => (16, hex),
+        None => (10, digits),
+    };
+    if digits.is_empty() || !digits.chars().all(|c| c.is_digit(radix)) {
+        return None;
+    }
+    char::from_u32(u32::from_str_radix(digits, radix).ok()?).filter(|&c| !is_xml_illegal_char(c))
+}
+
+/// C-16 for attribute values, which quick_xml does not tokenize into
+/// reference events: a malformed numeric character reference, or one naming a
+/// code point outside `Char`, is `parse.codec-syntax`.
+fn check_attribute_char_refs(
+    reader: &Reader<&[u8]>,
+    source: &str,
+    e: &quick_xml::events::BytesStart<'_>,
+) -> Result<(), OmnistError> {
+    for attr in e.attributes().filter_map(Result::ok) {
+        // An attribute value is a slice of the valid `&str` source cut at
+        // quotes, so it is always UTF-8.
+        let value = std::str::from_utf8(&attr.value).unwrap_or_default();
+        let mut rest: &str = value;
+        while let Some(at) = rest.find("&#") {
+            rest = &rest[at + 1..];
+            let body = rest.find(';').map(|end| &rest[..end]);
+            if body.and_then(numeric_ref_char).is_none() {
+                let shown: String = match body {
+                    Some(b) => format!("&{b};"),
+                    None => format!(
+                        "&{}",
+                        rest.chars()
+                            .take_while(|c| c.is_ascii_alphanumeric() || *c == '#')
+                            .collect::<String>()
+                    ),
+                };
+                return Err(located_error(
+                    reader,
+                    source,
+                    &format!(
+                        "invalid XML: bad character reference '{shown}' in an attribute value"
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The data-XML profile refuses an entity reference other than the five
 /// predefined ones "on sight, not on use", wherever it stands -- an
 /// attribute value included, although attributes are otherwise dropped on
@@ -726,6 +803,13 @@ fn resolve_general_ref(
         .resolve_char_ref()
         .map_err(|err| xml_parse_error(reader, source, &err))?
     {
+        if is_xml_illegal_char(ch) {
+            return Err(located_error(
+                reader,
+                source,
+                "invalid XML: character reference names a character outside XML 1.0 Char",
+            ));
+        }
         return Ok(Some(ch));
     }
     let name = e
@@ -1074,7 +1158,9 @@ fn xml_text(scalar: &Scalar) -> String {
         }
         Scalar::Int(i) => i.to_string(),
         Scalar::Float(x) => write_float_text(*x),
-        Scalar::Str(s) | Scalar::Date(s) | Scalar::Time(s) | Scalar::Datetime(s) => s.clone(),
+        Scalar::Str(s) | Scalar::Date(s) => s.clone(),
+        Scalar::Time(s) => super::temporal_text(s, false).into_owned(),
+        Scalar::Datetime(s) => super::temporal_text(s, true).into_owned(),
     }
 }
 

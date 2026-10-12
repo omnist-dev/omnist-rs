@@ -98,4 +98,7 @@ quoted). This resolves the shape-guessing divergence issue #99 first
 introduced for OML and issue #105 now closes here too -- see [Python
 divergences](../python-divergences.md#date-shaped-strings-as-native-temporal-literals-tomlyaml-resolved-by-issue-105).
 A `Time` value carrying a UTC offset has no native TOML spelling at all
-(only *date*time can carry an offset) and always writes quoted.
+(only *date*time can carry an offset) and always writes double-quoted, with
+`format.temporal-stringified` reported at its path (E-37). Every writer writes a
+time's seconds (`12:00` is written `12:00:00`) and keeps the offset and every
+fractional digit; a datetime uses the `T` separator.

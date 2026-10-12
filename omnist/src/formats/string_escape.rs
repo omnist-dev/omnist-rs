@@ -28,7 +28,8 @@
 pub(crate) enum ControlStyle {
     /// `\u{04x}` -- JSON, TOML, OML.
     HexU,
-    /// `\x{02x}` -- YAML.
+    /// `\x{02x}` for a code point below U+0100 and `\u{04x}` from there up
+    /// (U+FFFE, U+FFFF) -- YAML (C-14).
     HexX,
 }
 
@@ -97,7 +98,14 @@ pub(crate) const YAML_ESCAPES: EscapeSpec = EscapeSpec {
         ('\u{0085}', "\\N"),
     ],
     control: ControlStyle::HexX,
-    also_escape: &[],
+    // U+007F, the C1 controls except U+0085 (which has its own `\N`) and the
+    // noncharacters U+FFFE / U+FFFF: characters YAML 1.1 does not print (C-14).
+    also_escape: &[
+        '\u{7f}', '\u{80}', '\u{81}', '\u{82}', '\u{83}', '\u{84}', '\u{86}', '\u{87}', '\u{88}',
+        '\u{89}', '\u{8a}', '\u{8b}', '\u{8c}', '\u{8d}', '\u{8e}', '\u{8f}', '\u{90}', '\u{91}',
+        '\u{92}', '\u{93}', '\u{94}', '\u{95}', '\u{96}', '\u{97}', '\u{98}', '\u{99}', '\u{9a}',
+        '\u{9b}', '\u{9c}', '\u{9d}', '\u{9e}', '\u{9f}', '\u{fffe}', '\u{ffff}',
+    ],
 };
 
 /// Writes `s` as a double-quoted, escaped string into `out`, per `spec`.
@@ -114,7 +122,10 @@ pub(crate) fn write_quoted(s: &str, spec: &EscapeSpec, out: &mut String) {
         } else if (c as u32) < 0x20 || spec.also_escape.contains(&c) {
             match spec.control {
                 ControlStyle::HexU => out.push_str(&format!("\\u{:04x}", c as u32)),
-                ControlStyle::HexX => out.push_str(&format!("\\x{:02x}", c as u32)),
+                ControlStyle::HexX if (c as u32) < 0x100 => {
+                    out.push_str(&format!("\\x{:02x}", c as u32));
+                }
+                ControlStyle::HexX => out.push_str(&format!("\\u{:04x}", c as u32)),
             }
         } else {
             out.push(c);
@@ -203,7 +214,10 @@ mod tests {
                 '\n' => out.push_str("\\n"),
                 '\t' => out.push_str("\\t"),
                 '\u{0085}' => out.push_str("\\N"),
-                c if (c as u32) < 0x20 => out.push_str(&format!("\\x{:02x}", c as u32)),
+                c if (c as u32) < 0x20 || (0x7f..0xa0).contains(&(c as u32)) => {
+                    out.push_str(&format!("\\x{:02x}", c as u32));
+                }
+                '\u{fffe}' | '\u{ffff}' => out.push_str(&format!("\\u{:04x}", c as u32)),
                 c => out.push(c),
             }
         }

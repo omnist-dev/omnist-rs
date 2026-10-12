@@ -1510,7 +1510,7 @@ mod tests {
     }
 
     #[test]
-    fn vector_count_is_522() {
+    fn vector_count_is_731() {
         // 204 -> 249 via the submodule pin bump v0.9.1-beta -> v0.19.0-beta,
         // 249 -> 273 via v0.19.0-beta -> v0.21.0-beta (14 new bytes_hex D-14
         // vectors, 4 new OSD-15 canonical-output vectors, 5 new OML-26/27
@@ -1524,9 +1524,9 @@ mod tests {
         // v0.26.0-beta (19 new vectors: D-18a carrier, D-22 expanded size and
         // the malformed-merge syntax errors, all in alias-expansion.json, and
         // the rest of the v0.26.0 additions), 331 -> 338 via v0.26.0-beta ->
-        // v0.27.0-beta (7 new empty-merge-sequence vectors in alias-expansion.json), 338 -> 367 via v0.27.0-beta -> v0.33.0-beta (7 repeated-label path, 10 input-size, 7 OML-29, 5 XML-null vectors), 367 -> 522 via v0.33.0-beta -> v0.34.0-beta (the C-12, C-13, D-27, D-28, D-29, E-5 and E-35 vectors).
+        // v0.27.0-beta (7 new empty-merge-sequence vectors in alias-expansion.json), 338 -> 367 via v0.27.0-beta -> v0.33.0-beta (7 repeated-label path, 10 input-size, 7 OML-29, 5 XML-null vectors), 367 -> 522 via v0.33.0-beta -> v0.34.0-beta (the C-12, C-13, D-27, D-28, D-29, E-5 and E-35 vectors), 522 -> 731 via v0.34.0-beta -> v0.35.0-beta (the E-36 label-quoting, E-37 temporal-writing, C-14 YAML-escape, C-15/C-16 XML-character, C-17 YAML-number and OML-30 vectors).
         let vectors = iter_vectors(&suite_dir());
-        assert_eq!(vectors.len(), 522);
+        assert_eq!(vectors.len(), 731);
     }
 
     /// Full-suite regression guard: runs every real vector through every
@@ -1534,8 +1534,8 @@ mod tests {
     /// `main`/`main_with_dir` is process-entry-point code). The counts are
     /// freshly measured, not computed by hand.
     ///
-    /// Spec v0.34.0-beta, diagnostics compared as (path, code) sets:
-    /// 494 pass, 0 fail, 28 skip of 522.
+    /// Spec v0.35.0-beta, diagnostics compared as (path, code) sets:
+    /// 703 pass, 0 fail, 28 skip of 731.
     ///
     /// - the 28 skips are E-20 "not yet implemented", never a documented
     ///   divergence: the `extensions-osd-oml` vectors (extension not
@@ -1582,13 +1582,18 @@ mod tests {
     /// D-2/D-28/D-29), 6 YAML duplicate keys (C-12), 2 `!!merge` and 6
     /// `!!omap`/`!!pairs`/`!!set` vectors (D-27, C-13), 4 XML temporal leaves
     /// (E-5) and the 5 OML compact vectors (E-35, the runner dropped the key).
-    /// Implementing them brings it to (494, 0, 28).
+    /// Implementing them brings it to (494, 0, 28). At v0.35.0-beta, before
+    /// any change, the baseline was (642, 61, 28) of 731: 18 label-quoting
+    /// path vectors (E-36), 19 temporal-writing vectors (E-37), 17 XML
+    /// character and character-reference vectors (C-15, C-16), 6 YAML escape
+    /// vectors (C-14) and 1 sexagesimal-float vector (C-17). Implementing
+    /// them brings it to (703, 0, 28).
     #[test]
     fn full_suite_counts_match_the_measured_baseline() {
         let (passed, failed, skipped) = run_all(&suite_dir());
         assert_eq!(
             (passed, failed, skipped),
-            (494, 0, 28),
+            (703, 0, 28),
             "vector pass/fail/skip counts changed -- if this is an intentional fix or a new \
              vector, update the pinned baseline; if not, something regressed"
         );

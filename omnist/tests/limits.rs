@@ -222,8 +222,8 @@ fn oml_integer_digits_at_limit_accepted_one_past_refused_at_the_integer() {
         want(DIGITS, "$.b.n")
     );
     assert_eq!(
-        oml_err("\"a b\": 1000\n", &digits3()),
-        want(DIGITS, "$[\"a b\"]")
+        oml_err("\"a.b\": 1000\n", &digits3()),
+        want(DIGITS, "$[\"a.b\"]")
     );
     // A bare integer document.
     assert_eq!(oml_err("1000", &digits3()), want(DIGITS, "$"));
@@ -455,8 +455,8 @@ fn toml_literal_past_i64_and_past_the_cap_is_refused_at_its_path() {
     );
     // A label that needs quoting.
     assert_eq!(
-        toml_err(&format!("\"a b\" = {big}\n"), &l),
-        want(DIGITS, "$[\"a b\"]")
+        toml_err(&format!("\"a.b\" = {big}\n"), &l),
+        want(DIGITS, "$[\"a.b\"]")
     );
 }
 
@@ -720,7 +720,8 @@ fn from_raw_with_names_a_repeated_label_and_quotes_an_odd_one() {
     let path = |raw| Doc::from_raw_with(raw, &digits3()).unwrap_err().path;
     assert_eq!(path(edges(vec![("n", 1), ("n", 1000)])), "$.n[1]");
     assert_eq!(path(edges(vec![("n", 1000), ("m", 1), ("n", 1)])), "$.n[0]");
-    assert_eq!(path(edges(vec![("a b", 1000)])), "$[\"a b\"]");
+    assert_eq!(path(edges(vec![("a b", 1000)])), "$.a b");
+    assert_eq!(path(edges(vec![("a.b", 1000)])), "$[\"a.b\"]");
 }
 
 #[test]

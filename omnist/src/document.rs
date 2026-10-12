@@ -233,17 +233,10 @@ impl Arena {
 }
 
 pub(crate) fn join(path: &str, key: &str) -> String {
-    let is_identifier = !key.is_empty()
-        && key
-            .chars()
-            .next()
-            .is_some_and(|c| c.is_alphabetic() || c == '_')
-        && key.chars().all(|c| c.is_alphanumeric() || c == '_');
-    if is_identifier {
-        format!("{path}.{key}")
-    } else {
-        format!("{path}[\"{key}\"]")
-    }
+    let mut s = String::with_capacity(path.len() + key.len() + 4);
+    s.push_str(path);
+    crate::report::push_label_segment(&mut s, key);
+    s
 }
 
 /// One (path, depth, value) triple to be turned into a child node -- mirrors
@@ -1396,7 +1389,8 @@ mod tests {
             ]),
         )]);
         let err = Doc::of(&v).unwrap_err();
-        assert_eq!(err.path, "$[\"1bad\"][0]");
+        // E-36: a label that needs no quoting is bare, whatever its spelling.
+        assert_eq!(err.path, "$.1bad[0]");
     }
 
     #[test]

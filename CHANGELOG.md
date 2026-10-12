@@ -1,5 +1,63 @@
 # Changelog
 
+## 0.11.0-alpha
+
+Adopts omnist-spec v0.35.0-beta (the pin was v0.34.0-beta). Vectors 703 pass, 0
+fail, 28 skip of 731 (was 494 / 0 / 28 of 522; before any change the adoption
+measured 642 / 61 / 28 of 731); fixtures 19 / 19. OSD-OML stays out of scope
+(the 28 skips).
+
+Minor bump of the alpha: new rejections (a character outside XML 1.0's `Char`,
+a bad XML numeric character reference), changed output (Document paths, the
+seconds of a time, YAML escapes) and a new report, all observable by a caller.
+The `[workspace]` crates move together.
+
+**Behaviour changes a caller can observe:**
+
+- **Document paths bracket-quote a label that needs it** (E-36). A label that is
+  empty, or holds `.` `[` `]` `"` `\`, a control character, U+007F, U+0085,
+  U+2028 or U+2029, is printed `["a.b"]` (no dot before the bracket, with
+  `\"`, `\\`, `\n`, `\r`, `\t` and lowercase `\u001f`-style escapes); every
+  other label stays `.label`. This reaches every path a caller sees: a
+  `DocumentError.path`, a `ValidationError.path`, an `Adjustment.path`. Through
+  0.10.0-alpha a path printed the label raw, so `b` inside `a` and `a.b` beside
+  it were both `$.a.b`, and a label such as `a b` was `$["a b"]` where it is now
+  `$.a b`. Schema paths (`Record.label`) are unchanged.
+- **Every writer writes a time's seconds and keeps its value** (E-37). A `time`
+  or `datetime` built with no seconds (`12:00`) is written `12:00:00` in OML,
+  JSON, TOML, YAML and XML (OML's own reader already did this); a datetime's
+  separator is `T`. A TOML `time` with an offset and every YAML `time` are
+  written double-quoted and reported as `format.temporal-stringified` (once per
+  leaf, a warning); a YAML `time` such as `12:00:00.5` no longer goes out as an
+  unquoted plain scalar a YAML 1.1 reader would take for a float.
+- **XML text holds only XML 1.0 characters** (C-16). A character outside `Char`
+  (U+0000 to U+0008, U+000B, U+000C, U+000E to U+001F, U+FFFE, U+FFFF) anywhere
+  in the input, and a numeric character reference that is malformed or names
+  such a character, is `parse.codec-syntax`. Through 0.10.0-alpha they read.
+  An attribute value's references are checked too. A declared `encoding=` is
+  still ignored (C-15, unchanged).
+- **YAML escapes follow C-14.** A string holding a control character YAML 1.1
+  does not print (U+0000 to U+0008, U+000B, U+000C, U+000E to U+001F, U+007F,
+  U+0080 to U+009F except U+0085, U+FFFE, U+FFFF) is written double-quoted with
+  `\xXX` (below U+0100) or `\uXXXX` (U+FFFE, U+FFFF), lowercase hex, where it
+  used to be written raw in a plain scalar.
+- **A YAML sexagesimal float reads as a number** (C-17): `1:30.5` is `90.5`.
+  It used to be a string.
+- **A YAML merge source that the mapping's own key overrides is still checked
+  against the integer-digit limit** (D-13). `m: {<<: {a: <over-limit integer>},
+  a: 1}` is `document.limit.int-digits`; the dropped value used to be discarded
+  unseen and the input accepted.
+- **A bare `0x`, `0o` or `0b` in TOML** is `integer literal "0x" is out of range
+  for a 64-bit integer` again, not `toml_edit`'s `integer number overflowed`
+  (the wording changed in 0.10.0-alpha).
+
+The linear-time TOML number recovery of 0.10.0-alpha is unchanged
+(`many_big_integers_read_in_linear_time`).
+
+**Migration:** code that matched a path string containing a quoted or dotted
+label must follow the E-36 spelling; code that compared written text for a
+`time` without seconds must expect `:00`.
+
 ## 0.10.0-alpha
 
 Adopts omnist-spec v0.34.0-beta (the pin was v0.33.0-beta) and closes

@@ -3,8 +3,8 @@
 This port has its own conformance-test harness (`tools/conformance/`)
 against [omnist-spec](https://github.com/omnist-dev/omnist-spec), the
 language-agnostic upstream specification. It vendors omnist-spec as a
-pinned git submodule (`vendor/omnist-spec`, currently commit `3346b50`,
-the `v0.34.0-beta` tag) and
+pinned git submodule (`vendor/omnist-spec`, currently commit `237ef00`,
+the `v0.35.0-beta` tag) and
 runs entirely against this crate's own library code -- it does not depend
 on the Python or TypeScript ports' implementations.
 
@@ -17,7 +17,7 @@ reporting rule:
 - **Track 1** (`vendor/omnist-spec/conformance/fixtures/`, directory-per-fixture,
   11 operations): **19 passed, 0 failed, 0 skipped**.
 - **Track 2** (`vendor/omnist-spec/test-suite/`, JSON-vector suite, 14-operation
-  vocabulary): **494 passed, 0 failed, 28 skipped** (of 522 vectors),
+  vocabulary): **703 passed, 0 failed, 28 skipped** (of 731 vectors),
   **diagnostics compared as `(path, code)` sets** (section 8.5.2), not in
   code-agnostic mode. The runner exits non-zero on any failing vector and
   never on skips (E-22); it has no list of tolerated failures.
@@ -37,6 +37,20 @@ All 28 skips are one spec category, E-20 "not yet implemented"; none is an
 E-21 documented divergence. The 6 `document-model/limits` vectors were skips
 through 0.6.1-alpha (304 / 0 / 34); the limits became runtime-configurable in
 0.7.0-alpha and they now run and pass (310 / 0 / 28).
+
+**Adopting v0.35.0-beta (0.11.0-alpha).** The suite grew from 522 to 731
+vectors and the pin moved from v0.34.0-beta. Before any change the runner
+reported 642 pass / 61 fail / 28 skip, and the 61 were: 18 label-quoting path
+vectors (E-36: a Document path printed a label raw), 19 temporal-writing vectors
+(E-37: the seconds field dropped in every format, no
+`format.temporal-stringified` for a TOML time with an offset or for a YAML time,
+and a YAML time written as an unquoted plain scalar), 17 XML vectors (C-15,
+C-16: a character outside XML 1.0's `Char` and a malformed or out-of-range
+numeric character reference were accepted), 6 YAML escape vectors (C-14: a raw
+control character inside a plain scalar, and the U+007F, U+0080 to U+009F and
+U+FFFE/U+FFFF escapes) and 1 YAML sexagesimal-float vector (C-17). After the
+adoption: 703 / 0 / 28, and the 28 skips are the same OSD-OML extension vectors
+as before. Track 1 stays 19 / 19.
 
 **Adopting v0.34.0-beta (0.10.0-alpha).** The suite grew from 367 to 522
 vectors (the C-12, C-13, D-27, D-28, D-29, E-5 and E-35 vectors, among others)

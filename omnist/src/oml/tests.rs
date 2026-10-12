@@ -328,8 +328,9 @@ fn bare_time_literal_round_trips_as_a_time_not_a_quoted_string() {
         RawNode::Leaf(crate::document::Scalar::Time("12:00".to_string())),
     )]);
     let text = write_oml(&raw, 2).unwrap();
-    // Must write as a bare, unquoted time literal, not `"12:00"`.
-    assert_eq!(text, "a: 12:00");
+    // Must write as a bare, unquoted time literal, not `"12:00"`, and with its
+    // seconds (E-37): an omitted seconds field is written as `00`.
+    assert_eq!(text, "a: 12:00:00");
     // Reading it back canonicalizes the missing seconds (issue #90) and
     // is itself a genuinely-read bare literal, so the parsed value is
     // `Scalar::Time("12:00:00")`, not a byte-identical round trip of `raw`.

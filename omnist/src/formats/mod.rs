@@ -22,9 +22,40 @@ pub mod toml;
 pub mod xml;
 pub mod yaml;
 
+use std::borrow::Cow;
+
 use crate::document::{Doc, Value};
 use crate::error::OmnistError;
 use crate::report::WriteReport;
+
+/// A temporal leaf's text as every writer spells it (spec E-37): the seconds
+/// field is always written (`12:00` -> `12:00:00`; an omitted field is `00`)
+/// and a datetime's date/time separator is `T`. Nothing else changes: the
+/// offset, every fractional digit and the clock reading are kept. `datetime`
+/// selects the date-time shape; a `date` is passed through [`Cow::Borrowed`]
+/// by the callers and never reaches this function.
+pub(crate) fn temporal_text(s: &str, datetime: bool) -> Cow<'_, str> {
+    let bytes = s.as_bytes();
+    let start = if datetime { 11 } else { 0 };
+    let clock_ok = bytes.len() >= start + 5
+        && bytes[start + 2] == b':'
+        && [0, 1, 3, 4]
+            .iter()
+            .all(|&i| bytes[start + i].is_ascii_digit());
+    let missing_seconds = clock_ok && bytes.get(start + 5) != Some(&b':');
+    let spaced = datetime && bytes.len() > 10 && bytes[10] == b' ';
+    if !missing_seconds && !spaced {
+        return Cow::Borrowed(s);
+    }
+    let mut out = s.to_string();
+    if missing_seconds {
+        out.insert_str(start + 5, ":00");
+    }
+    if spaced {
+        out.replace_range(10..11, "T");
+    }
+    Cow::Owned(out)
+}
 
 /// The (read, write, check) contract every builtin format codec already
 /// implements as a naming convention -- expressed once (issue #52).
@@ -114,8 +145,8 @@ pub(crate) fn visit_grouped(
         Value::Object(map) => {
             for (label, child) in map {
                 let base = path.len();
-                path.push('.');
-                path.push_str(label);
+                // E-36: the edge's own path quotes a label that needs it.
+                crate::report::push_child_path(path, label, None);
                 f(Visited::Edge { label }, path.as_str());
 
                 match child {
@@ -140,5 +171,116 @@ pub(crate) fn visit_grouped(
             }
         }
         other => f(Visited::Node { value: other }, path.as_str()),
+    }
+}
+
+#[cfg(test)]
+mod temporal_text_tests {
+    use super::temporal_text;
+    use std::borrow::Cow;
+
+    #[test]
+    fn an_omitted_seconds_field_is_written_as_00() {
+        assert_eq!(temporal_text("12:00", false), "12:00:00");
+        assert_eq!(temporal_text("12:00+01:00", false), "12:00:00+01:00");
+        assert_eq!(temporal_text("12:00Z", false), "12:00:00Z");
+        assert_eq!(
+            temporal_text("2024-01-15T12:00", true),
+            "2024-01-15T12:00:00"
+        );
+        assert_eq!(
+            temporal_text("2024-01-15T12:00-05:00", true),
+            "2024-01-15T12:00:00-05:00"
+        );
+    }
+
+    #[test]
+    fn a_datetime_separator_is_t() {
+        assert_eq!(
+            temporal_text("2024-01-15 12:00:00", true),
+            "2024-01-15T12:00:00"
+        );
+        assert_eq!(
+            temporal_text("2024-01-15 12:00", true),
+            "2024-01-15T12:00:00"
+        );
+    }
+
+    #[test]
+    fn nothing_else_changes() {
+        for (s, datetime) in [
+            ("12:00:00", false),
+            ("12:00:00.5", false),
+            ("12:00:00.123456+01:00", false),
+            ("2024-01-15T12:00:00.5Z", true),
+            ("2024-01-15", true),
+            ("garbage", false),
+            ("12", false),
+            ("ab:cd", false),
+            ("", true),
+        ] {
+            assert!(
+                matches!(temporal_text(s, datetime), Cow::Borrowed(t) if t == s),
+                "{s:?}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod path_quoting_tests {
+    use crate::document::{Doc, Value};
+    use crate::formats::{json, toml, yaml};
+    use indexmap::IndexMap;
+
+    fn one(label: &str, v: Value) -> Doc {
+        let mut m = IndexMap::new();
+        m.insert(label.to_string(), v);
+        Doc::of(&Value::Object(m)).unwrap()
+    }
+
+    const CASES: [(&str, &str); 3] = [("a.b", r#"$["a.b"]"#), ("", r#"$[""]"#), ("a b", "$.a b")];
+
+    #[test]
+    fn json_check_and_write_adjustments_quote_the_label() {
+        for (label, want) in CASES {
+            let nan = one(label, Value::Float(f64::NAN));
+            assert_eq!(json::check_json(&nan).adjustments()[0].path, want);
+            let t = one(label, Value::Time("12:00:00".to_string()));
+            assert_eq!(json::check_json(&t).adjustments()[0].path, want);
+            let mut rep = crate::report::WriteReport::new();
+            json::write_json(&t, None, false, Some(&mut rep)).unwrap();
+            assert_eq!(rep.adjustments()[0].path, want);
+        }
+    }
+
+    #[test]
+    fn yaml_adjustments_quote_the_label() {
+        for (label, want) in CASES {
+            let t = one(label, Value::Time("12:00:00".to_string()));
+            assert_eq!(yaml::check_yaml(&t).adjustments()[0].path, want);
+            let nel = one(label, Value::Str("a\u{85}b".to_string()));
+            assert_eq!(yaml::check_yaml(&nel).adjustments()[0].path, want);
+        }
+        let key = one("a.b\u{85}", Value::Int(1.into()));
+        assert_eq!(
+            yaml::check_yaml(&key).adjustments()[0].path,
+            "$[\"a.b\\u0085\"]"
+        );
+    }
+
+    #[test]
+    fn toml_time_with_an_offset_or_z_is_quoted_and_reported_at_a_quoted_path() {
+        for (label, want) in CASES {
+            for t in ["12:00:00+01:00", "12:00Z", "12:00:00z", "12:00:00-05:00"] {
+                let doc = one(label, Value::Time(t.to_string()));
+                let mut rep = crate::report::WriteReport::new();
+                let text = toml::write_toml(&doc, false, Some(&mut rep)).unwrap();
+                assert!(text.contains('"'), "{t}: {text}");
+                assert_eq!(rep.adjustments()[0].path, want);
+                assert_eq!(rep.adjustments()[0].code, "format.temporal-stringified");
+                assert!(toml::read_toml(&text).is_ok(), "{text}");
+            }
+        }
     }
 }

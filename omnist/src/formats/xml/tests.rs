@@ -1759,3 +1759,102 @@ fn the_report_indexes_the_first_of_a_repeated_element() {
         assert_eq!(&got, expect, "{text}");
     }
 }
+
+#[test]
+fn an_attribute_value_character_reference_is_checked() {
+    for bad in [
+        r#"<a x="&#1;">y</a>"#,
+        r#"<a x="&#xB;">y</a>"#,
+        r#"<a x="&#xD800;">y</a>"#,
+        r#"<a x="&#xFFFE;">y</a>"#,
+        r#"<a x="&#x110000;">y</a>"#,
+        r#"<a x="&#99999999999999999999;">y</a>"#,
+        r#"<a x="&#;">y</a>"#,
+        r#"<a x="&#x;">y</a>"#,
+        r#"<a x="&#X41;">y</a>"#,
+        r#"<a x="&#+65;">y</a>"#,
+        r#"<a x="&#6a;">y</a>"#,
+        r#"<a x="&#65">y</a>"#,
+        r#"<a><b x="&#1;"/></a>"#,
+        r#"<a><b x="&#1;">z</b></a>"#,
+    ] {
+        let err = read_xml(bad).unwrap_err();
+        assert!(
+            matches!(&err, OmnistError::Parse(e) if e.code == "parse.codec-syntax"),
+            "{bad:?} gave {err:?}"
+        );
+    }
+    for ok in [
+        r#"<a x="&#65;&#x41;&#9;&amp;&#x10FFFF;">y</a>"#,
+        r#"<a x="plain">y</a>"#,
+    ] {
+        assert!(read_xml(ok).is_ok(), "{ok:?}");
+    }
+}
+
+#[test]
+fn numeric_ref_char_accepts_only_strict_references_inside_char() {
+    assert_eq!(numeric_ref_char("#65"), Some('A'));
+    assert_eq!(numeric_ref_char("#x41"), Some('A'));
+    assert_eq!(numeric_ref_char("#x0041"), Some('A'));
+    assert_eq!(numeric_ref_char("#9"), Some('\t'));
+    for bad in [
+        "65",
+        "#",
+        "#x",
+        "#X41",
+        "#+65",
+        "#x+41",
+        "#6a",
+        "#x4g",
+        "#1",
+        "#xB",
+        "#xFFFE",
+        "#xD800",
+        "#x110000",
+        "#4294967296",
+        "amp",
+    ] {
+        assert_eq!(numeric_ref_char(bad), None, "{bad:?}");
+    }
+}
+
+#[test]
+fn a_character_outside_char_is_a_codec_syntax_error_at_its_position() {
+    let err = read_xml("<a>\nx\u{1}y</a>").unwrap_err();
+    assert!(
+        matches!(&err, OmnistError::Parse(e) if e.code == "parse.codec-syntax" && e.line == 2 && e.col == 2),
+        "{err:?}"
+    );
+    for c in [
+        '\u{0}', '\u{8}', '\u{b}', '\u{c}', '\u{e}', '\u{1f}', '\u{fffe}', '\u{ffff}',
+    ] {
+        assert!(read_xml(&format!("<a>x{c}y</a>")).is_err(), "{c:?}");
+    }
+    for c in [
+        '\t',
+        '\n',
+        '\u{20}',
+        '\u{d7ff}',
+        '\u{e000}',
+        '\u{fffd}',
+        '\u{10000}',
+        '\u{10ffff}',
+    ] {
+        assert!(read_xml(&format!("<a>x{c}y</a>")).is_ok(), "{c:?}");
+    }
+}
+
+#[test]
+fn an_attribute_reference_error_shows_the_reference_as_written() {
+    for (text, shown) in [
+        (r#"<a x="&#65">y</a>"#, "'&#65'"),
+        (r#"<a x="&#1;">y</a>"#, "'&#1;'"),
+    ] {
+        let err = read_xml(text).unwrap_err();
+        assert!(
+            matches!(&err, OmnistError::Parse(e) if e.message.contains(shown)),
+            "{text:?} gave {err:?}"
+        );
+    }
+}

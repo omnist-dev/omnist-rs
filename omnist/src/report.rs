@@ -47,11 +47,47 @@ pub(crate) fn child_path(path: &str, label: &str, index: Option<usize>) -> Strin
 /// every edge, instead of one allocation per edge.
 pub(crate) fn push_child_path(buf: &mut String, label: &str, index: Option<usize>) {
     use std::fmt::Write;
-    buf.push('.');
-    buf.push_str(label);
+    push_label_segment(buf, label);
     if let Some(index) = index {
         write!(buf, "[{index}]").expect("writing to a String never fails");
     }
+}
+
+/// Whether a character forces a label to be written bracket-quoted in a
+/// Document path (spec E-36): `.` `[` `]` `"` `\`, a control character
+/// (U+0000..U+001F), U+007F, U+0085, U+2028 or U+2029.
+fn is_unsafe_path_char(c: char) -> bool {
+    matches!(c, '.' | '[' | ']' | '"' | '\\')
+        || c <= '\u{1f}'
+        || matches!(c, '\u{7f}' | '\u{85}' | '\u{2028}' | '\u{2029}')
+}
+
+/// Appends one label segment to a Document path buffer per spec E-36: bare
+/// `.label`, or `["label"]` (no dot) with the pinned escapes when the label
+/// is empty or contains an unsafe character. The single renderer every
+/// Document-path builder uses.
+pub(crate) fn push_label_segment(buf: &mut String, label: &str) {
+    use std::fmt::Write;
+    if !label.is_empty() && !label.chars().any(is_unsafe_path_char) {
+        buf.push('.');
+        buf.push_str(label);
+        return;
+    }
+    buf.push_str("[\"");
+    for c in label.chars() {
+        match c {
+            '"' => buf.push_str("\\\""),
+            '\\' => buf.push_str("\\\\"),
+            '\n' => buf.push_str("\\n"),
+            '\r' => buf.push_str("\\r"),
+            '\t' => buf.push_str("\\t"),
+            c if is_unsafe_path_char(c) && !matches!(c, '.' | '[' | ']') => {
+                write!(buf, "\\u{:04x}", c as u32).expect("writing to a String never fails");
+            }
+            c => buf.push(c),
+        }
+    }
+    buf.push_str("\"]");
 }
 
 /// The E-10 index of the `i`-th (0-based) occurrence of a label that occurs
@@ -382,5 +418,58 @@ mod tests {
         let err = finish_write("text".to_string(), rep, true, Some(&mut out_report)).unwrap_err();
         assert_eq!(out_report.len(), 1);
         assert_eq!(err.report().unwrap().len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod label_segment_tests {
+    use super::*;
+
+    fn seg(label: &str) -> String {
+        let mut s = String::new();
+        push_label_segment(&mut s, label);
+        s
+    }
+
+    #[test]
+    fn a_label_that_needs_no_quoting_is_bare() {
+        for l in ["name", "a b", "$", "é", "0", "1bad", "日本"] {
+            assert_eq!(seg(l), format!(".{l}"));
+        }
+    }
+
+    #[test]
+    fn a_label_that_needs_quoting_is_bracket_quoted_with_the_pinned_escapes() {
+        for (label, want) in [
+            ("", r#"[""]"#),
+            ("a.b", r#"["a.b"]"#),
+            ("item[0]", r#"["item[0]"]"#),
+            ("a]b", r#"["a]b"]"#),
+            ("q\"x", r#"["q\"x"]"#),
+            ("a\\b", r#"["a\\b"]"#),
+            ("l1\nl2", r#"["l1\nl2"]"#),
+            ("a\tb\rc", r#"["a\tb\rc"]"#),
+            ("a\u{1f}b", r#"["a\u001fb"]"#),
+            ("a\0b", r#"["a\u0000b"]"#),
+            ("a\u{7f}b", r#"["a\u007fb"]"#),
+            ("a\u{85}b", r#"["a\u0085b"]"#),
+            ("a\u{2028}b", "[\"a\\u2028b\"]"),
+            ("a\u{2029}b", "[\"a\\u2029b\"]"),
+            ("é.ü", r#"["é.ü"]"#),
+        ] {
+            assert_eq!(seg(label), want, "label {label:?}");
+        }
+    }
+
+    #[test]
+    fn the_occurrence_index_follows_either_form() {
+        assert_eq!(child_path("$", "a.b", Some(1)), r#"$["a.b"][1]"#);
+        assert_eq!(child_path("$.a", "b", None), "$.a.b");
+        assert_eq!(child_path("$", "item", Some(0)), "$.item[0]");
+        assert_eq!(child_path("$", "a", None), "$.a");
+        assert_eq!(
+            crate::document::join(&child_path("$", "x.y", None), "z"),
+            r#"$["x.y"].z"#
+        );
     }
 }

@@ -66,6 +66,21 @@ malformed XML is always `parse.codec-syntax` (never misreported as a
 refusal). Numeric character references and the five predefined entities stay
 legal; comments, CDATA sections and processing instructions are inert.
 
+## Characters and character references on read (C-15, C-16)
+
+XML 1.0's `Char` production admits U+0009, U+000A, U+000D, U+0020 to U+D7FF,
+U+E000 to U+FFFD and U+10000 to U+10FFFF. A character outside it, written
+directly anywhere in the input (text, a CDATA section, an attribute value, a
+comment, a processing instruction, a name), is `parse.codec-syntax`, as is a
+numeric character reference that is malformed (`&#;`, `&#x;`, `&#65` without
+its `;`, `&#X41;`, a sign, a non-digit, a value too large for an integer) or
+names a code point outside `Char` (`&#0;`, `&#1;`, `&#xB;`, a surrogate,
+`&#xFFFE;`, `&#xFFFF;`, `&#x110000;` and above). The check covers an attribute
+value's references too, although attributes are otherwise dropped. A valid
+reference reads as the one character it names. An `encoding=` pseudo-attribute
+in the XML declaration is ignored whatever it names (C-15): the bytes are read
+as UTF-8.
+
 ## Illegal characters fail the write
 
 XML 1.0 cannot represent a raw C0 control character other than tab, LF and CR
@@ -97,6 +112,8 @@ code the spec's section 8.3.8 names).
 A `date`, `time` or `datetime` leaf is reported as `format.temporal-stringified`
 instead, never as `format.value-stringified` as well (E-5): a leaf takes one of
 the two codes, once, at the leaf's own path (indexed when the label repeats).
+The text is the value's ISO-8601 spelling with its seconds always written
+(`12:00` is written `12:00:00`, E-37).
 
 ## `null` has no XML form
 
