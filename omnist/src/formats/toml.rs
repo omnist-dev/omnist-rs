@@ -844,7 +844,7 @@ fn write_float(x: f64, out: &mut String) {
 /// string shaped like "time with an offset" (an unusual value that isn't a
 /// real TOML literal at all) is written as a quoted string instead.
 fn has_offset(s: &str) -> bool {
-    s.contains('+') || s.contains('-')
+    s.contains(['+', '-', 'Z', 'z'])
 }
 
 fn write_key(k: &str, out: &mut String) {

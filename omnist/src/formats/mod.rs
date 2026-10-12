@@ -145,8 +145,8 @@ pub(crate) fn visit_grouped(
         Value::Object(map) => {
             for (label, child) in map {
                 let base = path.len();
-                path.push('.');
-                path.push_str(label);
+                // E-36: the edge's own path quotes a label that needs it.
+                crate::report::push_child_path(path, label, None);
                 f(Visited::Edge { label }, path.as_str());
 
                 match child {
@@ -223,6 +223,64 @@ mod temporal_text_tests {
                 matches!(temporal_text(s, datetime), Cow::Borrowed(t) if t == s),
                 "{s:?}"
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod path_quoting_tests {
+    use crate::document::{Doc, Value};
+    use crate::formats::{json, toml, yaml};
+    use indexmap::IndexMap;
+
+    fn one(label: &str, v: Value) -> Doc {
+        let mut m = IndexMap::new();
+        m.insert(label.to_string(), v);
+        Doc::of(&Value::Object(m)).unwrap()
+    }
+
+    const CASES: [(&str, &str); 3] = [("a.b", r#"$["a.b"]"#), ("", r#"$[""]"#), ("a b", "$.a b")];
+
+    #[test]
+    fn json_check_and_write_adjustments_quote_the_label() {
+        for (label, want) in CASES {
+            let nan = one(label, Value::Float(f64::NAN));
+            assert_eq!(json::check_json(&nan).adjustments()[0].path, want);
+            let t = one(label, Value::Time("12:00:00".to_string()));
+            assert_eq!(json::check_json(&t).adjustments()[0].path, want);
+            let mut rep = crate::report::WriteReport::new();
+            json::write_json(&t, None, false, Some(&mut rep)).unwrap();
+            assert_eq!(rep.adjustments()[0].path, want);
+        }
+    }
+
+    #[test]
+    fn yaml_adjustments_quote_the_label() {
+        for (label, want) in CASES {
+            let t = one(label, Value::Time("12:00:00".to_string()));
+            assert_eq!(yaml::check_yaml(&t).adjustments()[0].path, want);
+            let nel = one(label, Value::Str("a\u{85}b".to_string()));
+            assert_eq!(yaml::check_yaml(&nel).adjustments()[0].path, want);
+        }
+        let key = one("a.b\u{85}", Value::Int(1.into()));
+        assert_eq!(
+            yaml::check_yaml(&key).adjustments()[0].path,
+            "$[\"a.b\\u0085\"]"
+        );
+    }
+
+    #[test]
+    fn toml_time_with_an_offset_or_z_is_quoted_and_reported_at_a_quoted_path() {
+        for (label, want) in CASES {
+            for t in ["12:00:00+01:00", "12:00Z", "12:00:00z", "12:00:00-05:00"] {
+                let doc = one(label, Value::Time(t.to_string()));
+                let mut rep = crate::report::WriteReport::new();
+                let text = toml::write_toml(&doc, false, Some(&mut rep)).unwrap();
+                assert!(text.contains('"'), "{t}: {text}");
+                assert_eq!(rep.adjustments()[0].path, want);
+                assert_eq!(rep.adjustments()[0].code, "format.temporal-stringified");
+                assert!(toml::read_toml(&text).is_ok(), "{text}");
+            }
         }
     }
 }

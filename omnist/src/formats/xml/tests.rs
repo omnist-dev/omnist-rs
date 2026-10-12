@@ -1844,3 +1844,17 @@ fn a_character_outside_char_is_a_codec_syntax_error_at_its_position() {
         assert!(read_xml(&format!("<a>x{c}y</a>")).is_ok(), "{c:?}");
     }
 }
+
+#[test]
+fn an_attribute_reference_error_shows_the_reference_as_written() {
+    for (text, shown) in [
+        (r#"<a x="&#65">y</a>"#, "'&#65'"),
+        (r#"<a x="&#1;">y</a>"#, "'&#1;'"),
+    ] {
+        let err = read_xml(text).unwrap_err();
+        assert!(
+            matches!(&err, OmnistError::Parse(e) if e.message.contains(shown)),
+            "{text:?} gave {err:?}"
+        );
+    }
+}

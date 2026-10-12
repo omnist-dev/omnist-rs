@@ -699,12 +699,20 @@ fn check_attribute_char_refs(
             rest = &rest[at + 1..];
             let body = rest.find(';').map(|end| &rest[..end]);
             if body.and_then(numeric_ref_char).is_none() {
-                let shown = body.unwrap_or(rest);
+                let shown: String = match body {
+                    Some(b) => format!("&{b};"),
+                    None => format!(
+                        "&{}",
+                        rest.chars()
+                            .take_while(|c| c.is_ascii_alphanumeric() || *c == '#')
+                            .collect::<String>()
+                    ),
+                };
                 return Err(located_error(
                     reader,
                     source,
                     &format!(
-                        "invalid XML: bad character reference '&{shown};' in an attribute value"
+                        "invalid XML: bad character reference '{shown}' in an attribute value"
                     ),
                 ));
             }
