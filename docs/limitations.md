@@ -1,6 +1,6 @@
 # Limitations & stability
 
-## Alpha status: `0.10.0-alpha`, per this project's versioning rule
+## Alpha status: `0.11.0-alpha`, per this project's versioning rule
 
 The Rust port's first feature-complete milestone (issue #28) plus its own
 conformance-test harness against
@@ -13,6 +13,16 @@ signs off on the scoping decisions below (the `any`-type gap chief among
 them); accumulating further features or fixes alone never moves it past
 `-alpha` on its own. Treat every public API in this crate as subject to
 change without a deprecation cycle until that further sign-off happens.
+
+## Document paths quote a label that needs it (E-36)
+
+Every Document path this crate prints (`DocumentError.path`,
+`ValidationError.path`, `Adjustment.path`) writes a label as `.label`, unless
+the label is empty or holds `.` `[` `]` `"` `\`, a control character, U+007F,
+U+0085, U+2028 or U+2029: then it is `["label"]` with no dot, escaping `"` as
+`\"`, `\` as `\\`, `\n`, `\r`, `\t`, and any other of those as lowercase
+`\u001f`. The E-10 index follows either form (`$["a.b"][1]`). Schema paths
+(`Record.label`) keep the raw label.
 
 ## Programmatic-schema rules from spec v0.28.0-beta (S-8, S-22, S-23, S-24)
 

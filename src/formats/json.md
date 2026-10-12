@@ -43,6 +43,9 @@ making the adjustment structurally unreachable in this port
 (`formats-json/basic/temporal-leaf-is-stringified-on-write`, previously
 skipped, now passes for real).
 
+The text is the value's ISO-8601 spelling with its seconds always written
+(`12:00` is written `12:00:00`) and the offset kept (E-37).
+
 ## Integer digit cap (arbitrary-precision, matching Python -- issue #104)
 
 A JSON integer literal over **4300 digits** is a `DocumentError`

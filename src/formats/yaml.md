@@ -259,6 +259,21 @@ A genuine `Scalar::Time` (e.g. from OML's own bare-time grammar, or a
 schema-directed upgrade) has no native YAML spelling at all and always
 writes quoted.
 
+## Writing: escapes and temporals (C-14, E-37)
+
+A string holding a character YAML 1.1 does not print is written
+double-quoted with an escape, never raw in a plain scalar: U+0000 to U+0008,
+U+000B, U+000C, U+000E to U+001F, U+007F and U+0080 to U+009F (except U+0085,
+which keeps `\N`) as `\xXX`, and U+FFFE and U+FFFF as `\uXXXX`, always with
+lowercase hex digits.
+
+A `time` has no YAML 1.1 type (an unquoted `12:00:00` reads back as a
+sexagesimal integer and `12:00:00.5` as a float), so every `time` is written as
+a double-quoted string, seconds included (`"12:00:00+01:00"`), and `check_yaml`
+and `write_yaml` report `format.temporal-stringified` at its path (E-37). A
+`datetime` is written bare with the `T` separator and its seconds
+(`2024-01-15T12:00:00`).
+
 ## Native `NaN`/`Infinity` -- no lossy adjustment here (unlike JSON)
 
 YAML's float grammar has native `.nan`/`.inf`/`-.inf` tokens, so unlike
@@ -279,6 +294,11 @@ leading zero on the first group, and constrains later groups to `0..=59`
 one of those rules), matching PyYAML's own grammar. Confirmed by omnist-rs
 issue #87, found while building the conformance harness against
 [omnist-spec](../conformance.md).
+
+The sexagesimal float is read too (C-17): `1:30.5` is the number `90.5`
+(`^[-+]?[0-9][0-9_]*(:[0-5]?[0-9])+\.[0-9_]*$`, folded as `acc*60 + group`
+with the fraction on the last group). The spellings YAML 1.1's core schema does
+not resolve stay strings: `0o17`, `08`, `09`, `0:5`, `1e3`, `1.0e3`.
 
 ## Mapping keys are implicitly typed too (the "Norway problem")
 
