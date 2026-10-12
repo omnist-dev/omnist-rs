@@ -134,7 +134,9 @@ pub(super) fn write_scalar(v: &Scalar) -> String {
         Scalar::Str(s) => write_string(s),
         // Bare, no quotes -- by construction (see `Scalar::Date`'s own
         // doc comment) always already a validated, canonical spelling.
-        Scalar::Date(s) | Scalar::Time(s) | Scalar::Datetime(s) => s.clone(),
+        Scalar::Date(s) => s.clone(),
+        Scalar::Time(s) => crate::formats::temporal_text(s, false).into_owned(),
+        Scalar::Datetime(s) => crate::formats::temporal_text(s, true).into_owned(),
     }
 }
 

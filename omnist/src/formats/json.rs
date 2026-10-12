@@ -270,9 +270,9 @@ fn write_value(v: &Value, indent: Option<usize>, level: usize, out: &mut String)
         // temporal-kinded value (issue #105) is stringified the same way
         // Python's writer does, with `check_json` reporting the
         // now-reachable `temporal.stringified` adjustment (see below).
-        Value::Str(s) | Value::Date(s) | Value::Time(s) | Value::Datetime(s) => {
-            write_json_string(s, out)
-        }
+        Value::Str(s) | Value::Date(s) => write_json_string(s, out),
+        Value::Time(s) => write_json_string(&super::temporal_text(s, false), out),
+        Value::Datetime(s) => write_json_string(&super::temporal_text(s, true), out),
         Value::Array(items) => write_seq(items.iter(), '[', ']', indent, level, out, write_value),
         Value::Object(map) => write_seq(
             map.iter(),

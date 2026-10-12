@@ -22,9 +22,40 @@ pub mod toml;
 pub mod xml;
 pub mod yaml;
 
+use std::borrow::Cow;
+
 use crate::document::{Doc, Value};
 use crate::error::OmnistError;
 use crate::report::WriteReport;
+
+/// A temporal leaf's text as every writer spells it (spec E-37): the seconds
+/// field is always written (`12:00` -> `12:00:00`; an omitted field is `00`)
+/// and a datetime's date/time separator is `T`. Nothing else changes: the
+/// offset, every fractional digit and the clock reading are kept. `datetime`
+/// selects the date-time shape; a `date` is passed through [`Cow::Borrowed`]
+/// by the callers and never reaches this function.
+pub(crate) fn temporal_text(s: &str, datetime: bool) -> Cow<'_, str> {
+    let bytes = s.as_bytes();
+    let start = if datetime { 11 } else { 0 };
+    let clock_ok = bytes.len() >= start + 5
+        && bytes[start + 2] == b':'
+        && [0, 1, 3, 4]
+            .iter()
+            .all(|&i| bytes[start + i].is_ascii_digit());
+    let missing_seconds = clock_ok && bytes.get(start + 5) != Some(&b':');
+    let spaced = datetime && bytes.len() > 10 && bytes[10] == b' ';
+    if !missing_seconds && !spaced {
+        return Cow::Borrowed(s);
+    }
+    let mut out = s.to_string();
+    if missing_seconds {
+        out.insert_str(start + 5, ":00");
+    }
+    if spaced {
+        out.replace_range(10..11, "T");
+    }
+    Cow::Owned(out)
+}
 
 /// The (read, write, check) contract every builtin format codec already
 /// implements as a naming convention -- expressed once (issue #52).
@@ -140,5 +171,58 @@ pub(crate) fn visit_grouped(
             }
         }
         other => f(Visited::Node { value: other }, path.as_str()),
+    }
+}
+
+#[cfg(test)]
+mod temporal_text_tests {
+    use super::temporal_text;
+    use std::borrow::Cow;
+
+    #[test]
+    fn an_omitted_seconds_field_is_written_as_00() {
+        assert_eq!(temporal_text("12:00", false), "12:00:00");
+        assert_eq!(temporal_text("12:00+01:00", false), "12:00:00+01:00");
+        assert_eq!(temporal_text("12:00Z", false), "12:00:00Z");
+        assert_eq!(
+            temporal_text("2024-01-15T12:00", true),
+            "2024-01-15T12:00:00"
+        );
+        assert_eq!(
+            temporal_text("2024-01-15T12:00-05:00", true),
+            "2024-01-15T12:00:00-05:00"
+        );
+    }
+
+    #[test]
+    fn a_datetime_separator_is_t() {
+        assert_eq!(
+            temporal_text("2024-01-15 12:00:00", true),
+            "2024-01-15T12:00:00"
+        );
+        assert_eq!(
+            temporal_text("2024-01-15 12:00", true),
+            "2024-01-15T12:00:00"
+        );
+    }
+
+    #[test]
+    fn nothing_else_changes() {
+        for (s, datetime) in [
+            ("12:00:00", false),
+            ("12:00:00.5", false),
+            ("12:00:00.123456+01:00", false),
+            ("2024-01-15T12:00:00.5Z", true),
+            ("2024-01-15", true),
+            ("garbage", false),
+            ("12", false),
+            ("ab:cd", false),
+            ("", true),
+        ] {
+            assert!(
+                matches!(temporal_text(s, datetime), Cow::Borrowed(t) if t == s),
+                "{s:?}"
+            );
+        }
     }
 }

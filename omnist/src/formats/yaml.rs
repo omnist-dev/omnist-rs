@@ -666,9 +666,17 @@ pub fn read_yaml_with(text: &str, options: &YamlReadOptions) -> Result<Doc, Omni
         TScalarStyle::Plain,
         None,
     ));
-    let resolved = resolve_merges(&raw, 0, limits.max_depth)?;
+    let mut dropped: Vec<Raw> = Vec::new();
+    let resolved = resolve_merges(&raw, 0, limits.max_depth, &mut dropped)?;
     let mut guard = IntGuard::new(limits.max_int_digits);
     let value = raw_to_value(&resolved, &Trail::Root, &mut guard)?;
+    // A merged value a mapping's own key overrode is never part of the
+    // Document, but an integer in it past the digit limit is still refused
+    // (D-13): convert what was dropped so the guard sees it. The work is
+    // bounded by the size of the (already expansion-limited) tree.
+    for node in &dropped {
+        note_dropped_integers(node, &mut guard);
+    }
     let doc = Doc::of_resolved(&value, limits).map_err(|e| limits.whole_document(e))?;
     // A placeholder for an over-cap literal that never reached the Document
     // is still a limit error (D-13).
@@ -679,18 +687,25 @@ pub fn read_yaml_with(text: &str, options: &YamlReadOptions) -> Result<Doc, Omni
 /// Recursively expands every `<<` merge key, depth-guarded the same way
 /// `document.rs`'s own construction path is (an alias can smuggle in an
 /// already-deep subtree before `Doc::of` ever sees it).
-fn resolve_merges(node: &Raw, depth: usize, max_depth: usize) -> Result<Raw, OmnistError> {
+fn resolve_merges(
+    node: &Raw,
+    depth: usize,
+    max_depth: usize,
+    dropped: &mut Vec<Raw>,
+) -> Result<Raw, OmnistError> {
     crate::document::check_write_depth(depth, "$", max_depth)?;
     match node {
         Raw::Scalar(..) => Ok(node.clone()),
         Raw::Sequence(items) => {
             let mut out = Vec::with_capacity(items.len());
             for item in items {
-                out.push(resolve_merges(item, depth + 1, max_depth)?);
+                out.push(resolve_merges(item, depth + 1, max_depth, dropped)?);
             }
             Ok(Raw::Sequence(out))
         }
-        Raw::Mapping(entries) => Ok(Raw::Mapping(resolve_mapping(entries, depth, max_depth)?)),
+        Raw::Mapping(entries) => Ok(Raw::Mapping(resolve_mapping(
+            entries, depth, max_depth, dropped,
+        )?)),
     }
 }
 
@@ -709,13 +724,14 @@ fn resolve_mapping(
     entries: &[(Raw, Raw)],
     depth: usize,
     max_depth: usize,
+    dropped: &mut Vec<Raw>,
 ) -> Result<Vec<(Raw, Raw)>, OmnistError> {
     let mut merged_from: Vec<(Raw, Raw)> = Vec::new();
     let mut own: Vec<(Raw, Raw)> = Vec::new();
     let mut written: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for (k, v) in entries {
         if is_merge_key(k) {
-            merged_from.extend(merge_source_entries(v, depth, max_depth)?);
+            merged_from.extend(merge_source_entries(v, depth, max_depth, dropped)?);
         } else {
             // C-12: a key written twice in one mapping is malformed YAML
             // (`a` and `"a"` are one key). A key a merge supplies is not a
@@ -731,8 +747,8 @@ fn resolve_mapping(
                 .into());
             }
             own.push((
-                resolve_merges(k, depth + 1, max_depth)?,
-                resolve_merges(v, depth + 1, max_depth)?,
+                resolve_merges(k, depth + 1, max_depth, dropped)?,
+                resolve_merges(v, depth + 1, max_depth, dropped)?,
             ));
         }
     }
@@ -743,7 +759,7 @@ fn resolve_mapping(
         std::collections::HashMap::with_capacity(merged_from.len());
     for (k, v) in merged_from {
         match scalar_key_text(&k) {
-            Some(label) if position.contains_key(label) => {}
+            Some(label) if position.contains_key(label) => dropped.push(v),
             Some(label) => {
                 position.insert(label.to_string(), result.len());
                 result.push((k, v));
@@ -756,11 +772,33 @@ fn resolve_mapping(
     // appended. A key written twice among the own keys was refused above.
     for (k, v) in own {
         match scalar_key_text(&k).and_then(|label| position.get(label).copied()) {
-            Some(at) => result[at].1 = v,
+            Some(at) => dropped.push(std::mem::replace(&mut result[at].1, v)),
             None => result.push((k, v)),
         }
     }
     Ok(result)
+}
+
+/// Resolves every scalar of a dropped subtree so an integer past the digit
+/// limit leaves its mark on `guard` (which [`IntGuard::finish`] then refuses).
+/// Any other outcome of the resolution is irrelevant for a value the Document
+/// does not hold.
+fn note_dropped_integers(node: &Raw, guard: &mut IntGuard) {
+    match node {
+        Raw::Scalar(text, style, tag) => {
+            let _ = scalar_to_value(text, *style, tag.as_ref(), guard);
+        }
+        Raw::Sequence(items) => {
+            for item in items {
+                note_dropped_integers(item, guard);
+            }
+        }
+        Raw::Mapping(entries) => {
+            for (_, v) in entries {
+                note_dropped_integers(v, guard);
+            }
+        }
+    }
 }
 
 /// A merge key's own key text, for de-duplication purposes -- non-scalar
@@ -826,18 +864,19 @@ fn merge_source_entries(
     v: &Raw,
     depth: usize,
     max_depth: usize,
+    dropped: &mut Vec<Raw>,
 ) -> Result<Vec<(Raw, Raw)>, OmnistError> {
     match v {
         // A merged mapping is itself resolved first, so a nested `<<` inside
         // it flattens recursively and the grandparent's entries arrive first.
-        Raw::Mapping(entries) => resolve_mapping(entries, depth + 1, max_depth),
+        Raw::Mapping(entries) => resolve_mapping(entries, depth + 1, max_depth, dropped),
         Raw::Sequence(items) => {
             let mut out = Vec::new();
             for item in items {
                 let Raw::Mapping(entries) = item else {
                     unreachable!("the alias check refused a non-mapping merge member")
                 };
-                out.extend(resolve_mapping(entries, depth + 2, max_depth)?);
+                out.extend(resolve_mapping(entries, depth + 2, max_depth, dropped)?);
             }
             Ok(out)
         }
@@ -1069,6 +1108,9 @@ fn resolve_plain_scalar(text: &str, guard: &mut IntGuard) -> Result<Value, Parse
     if is_float_literal_shape(text) {
         return parse_float_literal(text);
     }
+    if SEXAGESIMAL_FLOAT_RE.is_match(text) {
+        return Ok(parse_sexagesimal_float(text));
+    }
     if let Some(iso) = normalize_timestamp(text)? {
         // YAML's own implicit-resolver timestamp grammar (unlike OML's or
         // TOML's) has no standalone bare-time form -- `normalize_timestamp`
@@ -1203,6 +1245,31 @@ static FLOAT_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(||
     )
     .unwrap()
 });
+
+/// PyYAML's legacy sexagesimal float form (C-17): colon-separated base-60
+/// groups ending in a fractional group, `1:30.5` -> `90.5`. Mirrors PyYAML's
+/// `tag:yaml.org,2002:float` resolver regex
+/// (`^[-+]?[0-9][0-9_]*(:[0-5]?[0-9])+\.[0-9_]*$`).
+static SEXAGESIMAL_FLOAT_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"^[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+\.[0-9_]*$").unwrap()
+});
+
+/// Folds a sexagesimal-float-shaped string (confirmed by
+/// [`SEXAGESIMAL_FLOAT_RE`]) left to right as `acc = acc*60 + group`, the last
+/// group carrying the fraction, as PyYAML's `construct_yaml_float` does.
+fn parse_sexagesimal_float(text: &str) -> Value {
+    let neg = text.starts_with('-');
+    let t = text.strip_prefix(['+', '-']).unwrap_or(text);
+    let cleaned: String = t.chars().filter(|&c| c != '_').collect();
+    let mut acc = 0.0_f64;
+    for group in cleaned.split(':') {
+        let group: f64 = group
+            .parse()
+            .expect("SEXAGESIMAL_FLOAT_RE guarantees numeric groups");
+        acc = acc * 60.0 + group;
+    }
+    Value::Float(if neg { -acc } else { acc })
+}
 
 fn is_float_literal_shape(text: &str) -> bool {
     FLOAT_RE.is_match(text)
@@ -1377,6 +1444,18 @@ fn check_yaml_grouped(grouped: &Value) -> WriteReport {
                 Severity::Warning,
             );
         }
+        // E-37 rule 4: YAML 1.1 has no time-of-day type, so every `time` is
+        // written as a double-quoted string.
+        crate::formats::Visited::Node {
+            value: Value::Time(_),
+        } => {
+            rep.add(
+                path,
+                "format.temporal-stringified",
+                "time has no native YAML literal; wrote as a quoted ISO-8601 string",
+                Severity::Warning,
+            );
+        }
         _ => {}
     });
     rep
@@ -1512,7 +1591,8 @@ fn write_scalar_value(v: &Value, out: &mut String) {
         // canonical spelling that YAML's own implicit resolver reads back
         // as the identical kind (`normalize_timestamp` produces exactly
         // this date-or-datetime shape, see `resolve_plain_scalar`).
-        Value::Date(s) | Value::Datetime(s) => out.push_str(s),
+        Value::Date(s) => out.push_str(s),
+        Value::Datetime(s) => out.push_str(&super::temporal_text(s, true)),
         // Unlike `Date`/`Datetime`, YAML's implicit resolver has no bare
         // standalone-time form at all (`normalize_timestamp`'s grammar
         // always requires a date) -- a genuine `Time` value (e.g. from a
@@ -1520,7 +1600,7 @@ fn write_scalar_value(v: &Value, out: &mut String) {
         // OML's own bare time grammar) has no native YAML spelling, so it
         // must stay a quoted string, the same fallback TOML's writer uses
         // for a `Time` value that carries a UTC offset.
-        Value::Time(s) => write_yaml_string(s, out),
+        Value::Time(s) => write_quoted(&super::temporal_text(s, false), &YAML_ESCAPES, out),
         Value::Object(_) | Value::Array(_) => {
             unreachable!("write_scalar_value is only ever called on a leaf")
         }
@@ -1548,6 +1628,13 @@ fn write_yaml_string(s: &str, out: &mut String) {
 
 fn needs_quoting(s: &str) -> bool {
     if s.is_empty() || s.contains('\u{0085}') || s.contains('\n') {
+        return true;
+    }
+    // C-14: a character YAML 1.1 does not print is escaped, so the scalar is
+    // double-quoted (tab and CR keep their existing plain handling).
+    if s.chars()
+        .any(|c| (c < ' ' && c != '\t' && c != '\r') || YAML_ESCAPES.also_escape.contains(&c))
+    {
         return true;
     }
     // A string that starts with a byte-order mark is always quoted (D-15,
@@ -2227,8 +2314,10 @@ mod tests {
             unlabeled("$.a.b.c")
         );
         assert_eq!(doc_diag("x: 1\na:\n  y: 2\n  no: 3\n"), unlabeled("$.a"));
-        // A label that needs quoting in a Document path.
-        assert_eq!(doc_diag("\"a b\": {on: 1}\n"), unlabeled("$[\"a b\"]"));
+        // A label that needs quoting in a Document path (E-36), and one that
+        // does not.
+        assert_eq!(doc_diag("\"a.b\": {on: 1}\n"), unlabeled("$[\"a.b\"]"));
+        assert_eq!(doc_diag("\"a b\": {on: 1}\n"), unlabeled("$.a b"));
     }
 
     #[test]
@@ -2268,6 +2357,45 @@ mod tests {
             matches!(&err, OmnistError::Document(e)
                 if e.code.as_deref() == Some("document.limit.int-digits") && e.path == "$.a.b"),
             "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn an_over_limit_integer_in_a_dropped_merge_entry_is_still_refused() {
+        // D-13: a merged value the mapping's own key overrides (or an earlier
+        // merge source shadows) never reaches the Document, but the integer
+        // limit applies to the input, so the document is refused all the same.
+        let options =
+            YamlReadOptions::default().with_limits(Limits::default().with_max_int_digits(3));
+        for text in [
+            "m: {<<: {a: 1000}, a: 1}
+",
+            "m: {a: 1, <<: {a: 1000}}
+",
+            "m: {<<: [{a: 1}, {a: 1000}]}
+",
+            "m: {<<: {a: [1, {z: 1000}]}, a: 1}
+",
+            "m: {<<: {<<: {a: 1000}, a: 1}}
+",
+            "m: {<<: {<<: {a: 1000}}, a: 1}
+",
+        ] {
+            let err = read_yaml_with(text, &options).unwrap_err();
+            assert!(
+                matches!(&err, OmnistError::Document(e)
+                    if e.code.as_deref() == Some("document.limit.int-digits")),
+                "{text:?} gave {err:?}"
+            );
+        }
+        // At the limit, and when nothing is dropped, nothing changes.
+        assert!(
+            read_yaml_with(
+                "m: {<<: {a: 999}, a: 1}
+",
+                &options
+            )
+            .is_ok()
         );
     }
 
@@ -3145,14 +3273,14 @@ mod tests {
     #[should_panic(expected = "the alias check refused a scalar merge value")]
     fn merge_source_entries_panics_on_a_scalar_the_check_refused() {
         let scalar = Raw::Scalar("1".to_string(), TScalarStyle::Plain, None);
-        let _ = merge_source_entries(&scalar, 0, 200);
+        let _ = merge_source_entries(&scalar, 0, 200, &mut Vec::new());
     }
 
     #[test]
     #[should_panic(expected = "the alias check refused a non-mapping merge member")]
     fn merge_source_entries_panics_on_a_member_the_check_refused() {
         let member = Raw::Scalar("1".to_string(), TScalarStyle::Plain, None);
-        let _ = merge_source_entries(&Raw::Sequence(vec![member]), 0, 200);
+        let _ = merge_source_entries(&Raw::Sequence(vec![member]), 0, 200, &mut Vec::new());
     }
 
     #[test]
@@ -3519,5 +3647,104 @@ child:
         write_yaml(&doc, false, Some(&mut report)).unwrap();
         assert!(report.is_empty());
         assert!(check_yaml(&doc).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod v035_tests {
+    use super::*;
+    use crate::document::{Doc, Scalar, Value};
+
+    fn one(label: &str, v: Value) -> Doc {
+        let mut m = IndexMap::new();
+        m.insert(label.to_string(), v);
+        Doc::of(&Value::Object(m)).unwrap()
+    }
+
+    fn written(v: Value) -> String {
+        write_yaml(&one("a", v), false, None).unwrap()
+    }
+
+    #[test]
+    fn characters_yaml_does_not_print_are_escaped_in_lowercase() {
+        for (c, want) in [
+            ('\u{0}', "\"x\\x00y\""),
+            ('\u{1}', "\"x\\x01y\""),
+            ('\u{8}', "\"x\\x08y\""),
+            ('\u{b}', "\"x\\x0by\""),
+            ('\u{1f}', "\"x\\x1fy\""),
+            ('\u{7f}', "\"x\\x7fy\""),
+            ('\u{80}', "\"x\\x80y\""),
+            ('\u{9f}', "\"x\\x9fy\""),
+            ('\u{85}', "\"x\\Ny\""),
+            ('\u{fffe}', "\"x\\ufffey\""),
+            ('\u{ffff}', "\"x\\uffffy\""),
+        ] {
+            assert_eq!(
+                written(Value::Str(format!("x{c}y"))),
+                format!("a: {want}"),
+                "{c:?}"
+            );
+        }
+        // Printable neighbours stay plain.
+        for c in ['\u{a0}', '\u{fffd}', 'é'] {
+            assert_eq!(written(Value::Str(format!("x{c}y"))), format!("a: x{c}y"));
+        }
+    }
+
+    #[test]
+    fn a_time_is_written_double_quoted_with_its_seconds_and_reported() {
+        for (t, want) in [
+            ("12:00:00", "a: \"12:00:00\""),
+            ("12:00", "a: \"12:00:00\""),
+            ("12:00:00.5", "a: \"12:00:00.5\""),
+            ("12:00:00.123456+01:00", "a: \"12:00:00.123456+01:00\""),
+        ] {
+            let doc = one("a", Value::Time(t.to_string()));
+            let mut rep = WriteReport::new();
+            assert_eq!(write_yaml(&doc, false, Some(&mut rep)).unwrap(), want);
+            assert_eq!(rep.adjustments().len(), 1);
+            assert_eq!(rep.adjustments()[0].path, "$.a");
+            assert_eq!(rep.adjustments()[0].code, "format.temporal-stringified");
+            assert_eq!(check_yaml(&doc).adjustments().len(), 1);
+        }
+        assert_eq!(
+            written(Value::Datetime("2024-01-15 12:00".to_string())),
+            "a: 2024-01-15T12:00:00"
+        );
+    }
+
+    #[test]
+    fn a_sexagesimal_float_reads_as_a_number_and_the_look_alikes_stay_strings() {
+        for (text, want) in [
+            ("1:30.5", 90.5),
+            ("-1:30.5", -90.5),
+            ("+1:30.5", 90.5),
+            ("1:30:15.25", 5415.25),
+            ("1_0:30.5", 630.5),
+            ("190:20:30.15", 685230.15),
+            ("1:30.", 90.0),
+        ] {
+            let doc = read_yaml(&format!("a: {text}\n")).unwrap();
+            assert_eq!(
+                *doc.root().get_one("a").unwrap().value().unwrap(),
+                Scalar::Float(want),
+                "{text}"
+            );
+        }
+        for text in [
+            "0o17", "08", "09", "0:5", "1e3", "1.0e3", "1:60.5", "1:30.5x",
+        ] {
+            let doc = read_yaml(&format!("a: {text}\n")).unwrap();
+            assert_eq!(
+                *doc.root().get_one("a").unwrap().value().unwrap(),
+                Scalar::Str(text.to_string()),
+            );
+        }
+    }
+
+    #[test]
+    fn a_string_that_reads_as_a_sexagesimal_float_is_written_quoted() {
+        assert_eq!(written(Value::Str("1:30.5".to_string())), "a: \"1:30.5\"");
     }
 }

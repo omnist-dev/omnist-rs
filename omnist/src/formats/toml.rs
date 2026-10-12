@@ -262,6 +262,22 @@ fn toml_parse_error(text: &str, e: &toml_edit::TomlError, limits: &Resolved) -> 
     // hostile input (that was #197): fall back to the start of the input.
     let span = e.span().unwrap_or(0..0);
     let (line, col) = line_col_bytes(text, span.start);
+    // A number literal `toml_edit` refuses as an overflow and this module's
+    // scan did not take (a bare radix prefix such as `0x`, which has no
+    // digits) keeps the message it had before 0.10.0-alpha: it names the
+    // literal, not the library's generic wording.
+    if e.message().contains("overflow")
+        && let Some(literal) = text.get(span.clone()).filter(|l| !l.is_empty())
+    {
+        return ParseError::codec_syntax(
+            line,
+            col,
+            format!(
+                "invalid TOML: integer literal {literal:?} is out of range for a 64-bit integer"
+            ),
+        )
+        .into();
+    }
     ParseError::codec_syntax(line, col, format!("invalid TOML: {}", e.message())).into()
 }
 
@@ -554,6 +570,7 @@ pub fn write_toml(
             "TOML needs a top-level table (the root must be an object)",
         ));
     };
+    check_toml_grouped(&stripped, "$", &mut rep);
     let mut out = String::new();
     write_table_body(map, &mut out);
     crate::report::finish_write(out, rep, strict, report)
@@ -641,6 +658,16 @@ fn check_toml_grouped(node: &Value, path: &str, rep: &mut WriteReport) {
                     check_toml_grouped(item, &p, rep);
                 }
             }
+        }
+        // E-37 rule 4: TOML has no offset time, so a `time` with an offset is
+        // written as a double-quoted string.
+        Value::Time(s) if has_offset(s) => {
+            rep.add(
+                path,
+                "format.temporal-stringified",
+                "time with an offset has no native TOML literal; wrote as a quoted ISO-8601 string",
+                Severity::Warning,
+            );
         }
         _ => {}
     }
@@ -783,7 +810,8 @@ fn write_scalar(v: &Value, out: &mut String) {
         // value is a `Date`/`Time`/`Datetime` variant, not a
         // shape-matched `Str`; see the arms below.
         Value::Str(s) => write_toml_string(s, out),
-        Value::Date(s) | Value::Datetime(s) => out.push_str(s),
+        Value::Date(s) => out.push_str(s),
+        Value::Datetime(s) => out.push_str(&super::temporal_text(s, true)),
         // TOML has no "local time with an offset" literal form (only
         // *date*time can carry an offset) -- a `Time` value that happens
         // to carry one (YAML's own `TIME_RE` allows it, see issue #99's
@@ -792,10 +820,11 @@ fn write_scalar(v: &Value, out: &mut String) {
         // string instead, the same fallback this module already used
         // before real provenance existed -- see `has_offset`.
         Value::Time(s) => {
+            let text = super::temporal_text(s, false);
             if has_offset(s) {
-                write_toml_string(s, out);
+                write_toml_string(&text, out);
             } else {
-                out.push_str(s);
+                out.push_str(&text);
             }
         }
         Value::Object(_) | Value::Array(_) => {
@@ -881,7 +910,8 @@ mod tests {
         let mut rep = WriteReport::new();
         check_toml_grouped(&arr, "$", &mut rep);
         assert_eq!(rep.adjustments().len(), 1);
-        assert_eq!(rep.adjustments()[0].path, "$.[0]");
+        // The array's items sit under an empty label, which E-36 quotes.
+        assert_eq!(rep.adjustments()[0].path, "$[\"\"][0]");
     }
 
     #[test]
@@ -1360,6 +1390,32 @@ mod tests {
     }
 
     // ------------------------------------------------------------ integer cap
+
+    #[test]
+    fn a_bare_radix_prefix_names_the_literal_as_out_of_range() {
+        for (text, literal) in [
+            (
+                "a = 0x
+", "0x",
+            ),
+            (
+                "a = 0o
+", "0o",
+            ),
+            (
+                "a = [0b]
+",
+                "0b",
+            ),
+        ] {
+            let err = read_toml(text).unwrap_err();
+            assert!(
+                matches!(&err, OmnistError::Parse(e)
+                    if e.message.contains(&format!("integer literal {literal:?} is out of range"))),
+                "{text:?} gave {err:?}"
+            );
+        }
+    }
 
     /// The scalar a TOML text holds at a top-level label.
     fn scalar_at(text: &str, label: &str) -> Scalar {
