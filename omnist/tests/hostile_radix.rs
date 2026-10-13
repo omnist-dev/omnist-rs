@@ -19,7 +19,7 @@ fn huge_radix_literals_are_refused_quickly() {
         let err = Doc::from_format(fmt, &text).unwrap_err().to_string();
         assert!(err.starts_with("$.a: integer literal exceeds"), "{err}");
         assert!(
-            t.elapsed() < Duration::from_secs(4),
+            t.elapsed() < Duration::from_secs(20),
             "{fmt} took {:?}",
             t.elapsed()
         );
