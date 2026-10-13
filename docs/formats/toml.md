@@ -73,17 +73,18 @@ reached; the message names `toml_edit` as the cause. This is a limit of the
 parser library, not of the format or of the Document model, and raising
 `max_depth` does not lift it.
 
-## Native temporal types, truncated (not rounded) sub-microsecond precision
+## Native temporal types, at most six fractional digits
 
 TOML has **four** first-class temporal literal forms (local date, local
 time, local datetime, offset datetime), stricter-shaped than YAML's --
 `toml_edit` itself fully validates calendar/clock fields at parse time
 (`2024-02-30`, `25:00:00`, and a `+25:00` offset are all parse errors, not
-accepted-then-rejected-later). Fractional seconds beyond microsecond
-precision are **truncated, not rounded** to six digits, live-confirmed
-against `tomllib`: `00:32:00.9999999` (7 nines) reads as
-`datetime.time(0, 32, 0, 999999)`, matching this module's integer-
-truncating conversion exactly. A numeric UTC offset is preserved exactly
+accepted-then-rejected-later). A fractional
+second holds at most six digits (the OML grammar's `1*6DIGIT`): zeros beyond
+the sixth are insignificant and dropped, but a **non-zero seventh or later
+digit fails the read** (`00:32:00.9999999` is a `parse.codec-syntax` error)
+rather than being truncated as `tomllib` does (fail, don't invent; through
+0.11.0-alpha it was silently truncated). A numeric UTC offset is preserved exactly
 across read+write (no offset-erasure bug).
 
 On read, `toml_value_to_value` constructs the real `Value::Date`/`Time`/

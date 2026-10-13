@@ -136,6 +136,13 @@ way.
 
 Because XML text is untyped and `materialize` strictly rejects coercing plain strings to `boolean`/`integer`/`number`, [`read_xml_with_schema`] performs schema-guided pretyping on the raw XML tree before materialization (spec §2.2 / issue #114).
 
+An `integer` leaf with more decimal digits than the D-9 limit
+(`Limits::max_int_digits`, default 4,300; D-28 counts the digits of the value)
+is refused with `document.limit.int-digits` at the leaf's Document path
+(`$.r.n`, or `$.r.n[1]` when the label repeats, E-10), not left a string for
+`materialize` to reject as `materialize.inexact-conversion` (omnist-rs#204).
+A `number` leaf over the limit still stays a string.
+
 ```rust
 use omnist::formats::xml::read_xml_with_schema;
 use omnist::osd::parse_schema;

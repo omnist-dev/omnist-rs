@@ -143,7 +143,11 @@ static XML_NUM_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(
     regex::Regex::new(r"^-?(0|[1-9]\d*)(\.\d+)?([eE][+-]?\d+)?$").unwrap()
 });
 
-fn xml_pretype_scalar(node: RawNode, s: &crate::schema::Scalar) -> RawNode {
+fn xml_pretype_scalar(
+    node: RawNode,
+    s: &crate::schema::Scalar,
+    guard: &mut crate::limits::IntGuard,
+) -> RawNode {
     let RawNode::Leaf(Scalar::Str(ref val)) = node else {
         return node;
     };
@@ -164,12 +168,18 @@ fn xml_pretype_scalar(node: RawNode, s: &crate::schema::Scalar) -> RawNode {
                 } else {
                     val.as_str()
                 };
-                if digits.len() <= crate::formats::int_cap::MAX_INT_DIGITS {
+                if digits.len() <= guard.max() {
                     let i: num_bigint::BigInt = val
                         .parse()
                         .expect("XML_INT_RE guarantees valid integer literal");
                     return RawNode::Leaf(Scalar::Int(i));
                 }
+                // Over the D-9 digit limit (counted on the decimal digits of
+                // the value, D-28): the placeholder is itself over the cap, so
+                // the Document constructor refuses it with
+                // `document.limit.int-digits` at this leaf's Document path
+                // (E-10 index included), without the superlinear conversion.
+                return RawNode::Leaf(Scalar::Int(guard.placeholder()));
             }
             node
         }
@@ -181,7 +191,7 @@ fn xml_pretype_scalar(node: RawNode, s: &crate::schema::Scalar) -> RawNode {
                     val.as_str()
                 };
                 let int_digits = digits.split(['.', 'e', 'E']).next().unwrap_or(digits);
-                if int_digits.len() <= crate::formats::int_cap::MAX_INT_DIGITS {
+                if int_digits.len() <= guard.max() {
                     let f: f64 = val
                         .parse()
                         .expect("XML_NUM_RE guarantees valid float literal");
@@ -194,11 +204,16 @@ fn xml_pretype_scalar(node: RawNode, s: &crate::schema::Scalar) -> RawNode {
     }
 }
 
-fn xml_pretype(node: RawNode, schema: &Schema, ty: &FieldType) -> RawNode {
+fn xml_pretype(
+    node: RawNode,
+    schema: &Schema,
+    ty: &FieldType,
+    guard: &mut crate::limits::IntGuard,
+) -> RawNode {
     let d = schema.resolve(ty);
     match d {
         Resolved::Any => node,
-        Resolved::Scalar(s) => xml_pretype_scalar(node, &s),
+        Resolved::Scalar(s) => xml_pretype_scalar(node, &s, guard),
         Resolved::Record(rec) => {
             let RawNode::Edges(edges) = node else {
                 return node;
@@ -206,7 +221,7 @@ fn xml_pretype(node: RawNode, schema: &Schema, ty: &FieldType) -> RawNode {
             let mut out = Vec::with_capacity(edges.len());
             for (label, child) in edges {
                 let pretyped_child = if let Some(field) = rec.field(&label) {
-                    xml_pretype(child, schema, &field.ty)
+                    xml_pretype(child, schema, &field.ty, guard)
                 } else {
                     child
                 };
@@ -420,7 +435,8 @@ pub fn read_xml(text: &str) -> Result<Doc, OmnistError> {
 /// (`document.limit.depth` / `document.limit.nodes` at `$`). An element's
 /// text is never an integer literal here (XML is untyped), so
 /// `max_int_digits` only governs the schema-guided pretyping of
-/// [`read_xml_with_schema`], which keeps using the default.
+/// [`read_xml_with_schema_and_limits`]: a schema-typed `integer` leaf over
+/// it is refused with `document.limit.int-digits` at the leaf's path.
 pub fn read_xml_with(text: &str, limits: &Limits) -> Result<Doc, OmnistError> {
     let resolved = limits.resolve()?;
     let raw = read_xml_raw(text, None, &resolved)?;
@@ -454,7 +470,13 @@ pub fn read_xml_with_schema_and_limits(
 ) -> Result<Doc, OmnistError> {
     let resolved = limits.resolve()?;
     let raw = read_xml_raw(text, None, &resolved)?;
-    let pretyped = xml_pretype(raw, schema, &FieldType::Ref(schema.root().clone()));
+    let mut guard = crate::limits::IntGuard::new(resolved.max_int_digits);
+    let pretyped = xml_pretype(
+        raw,
+        schema,
+        &FieldType::Ref(schema.root().clone()),
+        &mut guard,
+    );
     Doc::from_raw_resolved(pretyped, resolved).map_err(Into::into)
 }
 

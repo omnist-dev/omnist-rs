@@ -38,6 +38,12 @@ E-21 documented divergence. The 6 `document-model/limits` vectors were skips
 through 0.6.1-alpha (304 / 0 / 34); the limits became runtime-configurable in
 0.7.0-alpha and they now run and pass (310 / 0 / 28).
 
+**Bug wave after v0.35.0-beta (0.11.1-alpha).** The pin does not move: the
+suite stays 731 vectors (703 / 0 / 28). The wave fixes what the vectors cannot
+pin (an XML integer pretyped over the digit limit, a TOML or YAML fraction
+read past six digits, a multi-megabyte radix integer), each with the port's
+own tests.
+
 **Adopting v0.35.0-beta (0.11.0-alpha).** The suite grew from 522 to 731
 vectors and the pin moved from v0.34.0-beta. Before any change the runner
 reported 642 pass / 61 fail / 28 skip, and the 61 were: 18 label-quoting path

@@ -238,7 +238,7 @@ fn read_toml_resolved(text: &str, limits: Resolved) -> Result<Doc, OmnistError> 
     }
     let parsed = toml_edit::Document::parse(patched.as_str())
         .map_err(|e| toml_parse_error(&patched, &e, &limits))?;
-    let value = table_like_to_value(parsed.as_table(), &lexemes)?;
+    let value = table_like_to_value(parsed.as_table(), &lexemes, &patched)?;
     Ok(Doc::of_resolved(&value, limits).map_err(|e| limits.whole_document(e))?)
 }
 
@@ -428,15 +428,20 @@ fn prescan_numbers(text: &str) -> Vec<(usize, usize)> {
 fn table_like_to_value(
     t: &dyn TableLike,
     lexemes: &HashMap<usize, Value>,
+    src: &str,
 ) -> Result<Value, ParseError> {
     let mut map = IndexMap::new();
     for (k, item) in t.iter() {
-        map.insert(k.to_string(), item_to_value(item, lexemes)?);
+        map.insert(k.to_string(), item_to_value(item, lexemes, src)?);
     }
     Ok(Value::Object(map))
 }
 
-fn item_to_value(item: &Item, lexemes: &HashMap<usize, Value>) -> Result<Value, ParseError> {
+fn item_to_value(
+    item: &Item,
+    lexemes: &HashMap<usize, Value>,
+    src: &str,
+) -> Result<Value, ParseError> {
     match item {
         // `Item::None` is only ever produced by `toml_edit`'s *mutation*
         // API (`Entry`/`Index::or_insert(Item::None)`, confirmed by reading
@@ -447,12 +452,12 @@ fn item_to_value(item: &Item, lexemes: &HashMap<usize, Value>) -> Result<Value, 
         Item::None => unreachable!(
             "Item::None is only produced by toml_edit's mutation API, never by parsing text"
         ),
-        Item::Value(v) => toml_value_to_value(v, lexemes),
-        Item::Table(t) => table_like_to_value(t, lexemes),
+        Item::Value(v) => toml_value_to_value(v, lexemes, src),
+        Item::Table(t) => table_like_to_value(t, lexemes, src),
         Item::ArrayOfTables(arr) => {
             let mut out = Vec::with_capacity(arr.len());
             for t in arr.iter() {
-                out.push(table_like_to_value(t, lexemes)?);
+                out.push(table_like_to_value(t, lexemes, src)?);
             }
             Ok(Value::Array(out))
         }
@@ -462,6 +467,7 @@ fn item_to_value(item: &Item, lexemes: &HashMap<usize, Value>) -> Result<Value, 
 fn toml_value_to_value(
     v: &toml_edit::Value,
     lexemes: &HashMap<usize, Value>,
+    src: &str,
 ) -> Result<Value, ParseError> {
     // A number `toml_edit` refused (see `read_toml_resolved`) was read by
     // this module and stood in for; its value is found again by offset.
@@ -488,6 +494,7 @@ fn toml_value_to_value(
         // discarding real type information `toml_edit` had already
         // computed).
         toml_edit::Value::Datetime(dt) => {
+            check_fraction_digits(v, src)?;
             let canonical = format_datetime(dt.value());
             let inner = dt.value();
             Ok(match (inner.date.is_some(), inner.time.is_some()) {
@@ -505,12 +512,31 @@ fn toml_value_to_value(
         toml_edit::Value::Array(arr) => {
             let mut out = Vec::with_capacity(arr.len());
             for item in arr.iter() {
-                out.push(toml_value_to_value(item, lexemes)?);
+                out.push(toml_value_to_value(item, lexemes, src)?);
             }
             Ok(Value::Array(out))
         }
-        toml_edit::Value::InlineTable(it) => table_like_to_value(it, lexemes),
+        toml_edit::Value::InlineTable(it) => table_like_to_value(it, lexemes, src),
     }
+}
+
+/// The Document model holds a fractional second of at most six digits (the
+/// OML grammar's `1*6DIGIT`). `toml_edit` keeps nine and drops the rest
+/// without a word, so the literal's own text is checked: a non-zero digit
+/// beyond the sixth is a value the Document cannot hold, which fails rather
+/// than being altered (fail, don't invent). Trailing zeros are insignificant.
+fn check_fraction_digits(v: &toml_edit::Value, src: &str) -> Result<(), ParseError> {
+    let span = v.span().unwrap_or(0..0);
+    let lit = src.get(span.clone()).unwrap_or("");
+    if crate::formats::fraction_inexact(lit) {
+        let (line, col) = line_col_bytes(src, span.start);
+        return Err(ParseError::codec_syntax(
+            line,
+            col,
+            "invalid TOML: a fractional second has more than six digits (the Document model holds at most microseconds); it would be altered",
+        ));
+    }
+    Ok(())
 }
 
 /// Canonicalizes a parsed `toml_edit` [`toml_edit::Datetime`] into this
@@ -661,6 +687,14 @@ fn check_toml_grouped(node: &Value, path: &str, rep: &mut WriteReport) {
         }
         // E-37 rule 4: TOML has no offset time, so a `time` with an offset is
         // written as a double-quoted string.
+        Value::Time(s) | Value::Datetime(s) if super::fraction_inexact(s) => {
+            rep.add(
+                path,
+                "format.temporal-stringified",
+                "fractional second has more than six digits; wrote as a quoted ISO-8601 string",
+                Severity::Warning,
+            );
+        }
         Value::Time(s) if has_offset(s) => {
             rep.add(
                 path,
@@ -811,7 +845,14 @@ fn write_scalar(v: &Value, out: &mut String) {
         // shape-matched `Str`; see the arms below.
         Value::Str(s) => write_toml_string(s, out),
         Value::Date(s) => out.push_str(s),
-        Value::Datetime(s) => out.push_str(&super::temporal_text(s, true)),
+        Value::Datetime(s) => {
+            let text = super::temporal_text(s, true);
+            if super::fraction_inexact(&text) {
+                write_toml_string(&text, out);
+            } else {
+                out.push_str(&text);
+            }
+        }
         // TOML has no "local time with an offset" literal form (only
         // *date*time can carry an offset) -- a `Time` value that happens
         // to carry one (YAML's own `TIME_RE` allows it, see issue #99's
@@ -821,7 +862,7 @@ fn write_scalar(v: &Value, out: &mut String) {
         // before real provenance existed -- see `has_offset`.
         Value::Time(s) => {
             let text = super::temporal_text(s, false);
-            if has_offset(s) {
+            if has_offset(s) || super::fraction_inexact(&text) {
                 write_toml_string(&text, out);
             } else {
                 out.push_str(&text);
@@ -929,7 +970,7 @@ mod tests {
         };
         let v = toml_edit::Value::Datetime(toml_edit::Formatted::new(dt));
         assert_eq!(
-            toml_value_to_value(&v, &HashMap::new()).unwrap(),
+            toml_value_to_value(&v, &HashMap::new(), "").unwrap(),
             Value::Str(String::new())
         );
     }
@@ -1027,23 +1068,25 @@ mod tests {
     }
 
     #[test]
-    fn truncates_fraction_beyond_microseconds_matching_python() {
-        // Live-confirmed: tomllib truncates (not rounds) a 7-digit fraction
-        // to microseconds -- 00:32:00.9999999 -> time(0, 32, 0, 999999).
-        let doc = read_toml("t = 00:32:00.9999999\n").unwrap();
-        assert_eq!(
-            *doc.root().get_one("t").unwrap().value().unwrap(),
-            Scalar::Time("00:32:00.999999".to_string())
-        );
+    fn a_nonzero_digit_beyond_microseconds_fails_instead_of_truncating() {
+        // The Document holds at most six fractional digits: a seventh
+        // non-zero digit is not silently dropped (fail, don't invent).
+        for text in [
+            "t = 00:32:00.9999999\n",
+            "t = 07:32:00.000000001\n",
+            "t = 07:32:00.1234567891\n",
+        ] {
+            let err = read_toml(text).unwrap_err().to_string();
+            assert!(err.contains("six digits"), "{text:?}: {err}");
+        }
     }
 
     #[test]
-    fn sub_microsecond_fraction_truncates_to_no_fraction() {
-        // Live-confirmed: tomllib gives time(7, 32) (no fraction) for this.
-        let doc = read_toml("t = 07:32:00.000000001\n").unwrap();
+    fn zeros_beyond_microseconds_are_insignificant() {
+        let doc = read_toml("t = 00:32:00.9999990\n").unwrap();
         assert_eq!(
             *doc.root().get_one("t").unwrap().value().unwrap(),
-            Scalar::Time("07:32:00".to_string())
+            Scalar::Time("00:32:00.999999".to_string())
         );
     }
 
@@ -1874,7 +1917,7 @@ mod tests {
         // module's doc comment) -- read_toml never constructs one, so this
         // white-box-tests the documented invariant directly.
         let result = std::panic::catch_unwind(|| {
-            let _ = item_to_value(&Item::None, &HashMap::new());
+            let _ = item_to_value(&Item::None, &HashMap::new(), "");
         });
         assert!(result.is_err());
     }

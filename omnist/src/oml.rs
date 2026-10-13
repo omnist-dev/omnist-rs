@@ -199,8 +199,24 @@ pub fn write_oml_compact(node: &RawNode) -> Result<String, WriteError> {
 /// WriteReport()`. Every other builtin format has a `check_*` function
 /// already; this is the OML counterpart, needed so the `"oml"` registry
 /// entry has a `check` callable like the other four.
-pub fn check_oml(_doc: &crate::document::Doc) -> crate::report::WriteReport {
-    crate::report::WriteReport::new()
+pub fn check_oml(doc: &crate::document::Doc) -> crate::report::WriteReport {
+    let mut rep = crate::report::WriteReport::new();
+    let mut path = String::from("$");
+    crate::formats::visit_grouped(&doc.to_grouped(), &mut path, &mut |visited, path| {
+        if let crate::formats::Visited::Node {
+            value: document::Value::Time(s) | document::Value::Datetime(s),
+        } = visited
+            && crate::formats::fraction_inexact(s)
+        {
+            rep.add(
+                path,
+                "format.temporal-stringified",
+                "fractional second has more than six digits, which OML's literal cannot spell; wrote as a quoted ISO-8601 string",
+                crate::report::Severity::Warning,
+            );
+        }
+    });
+    rep
 }
 
 /// Marker type implementing [`crate::formats::Codec`] for OML -- adapts
