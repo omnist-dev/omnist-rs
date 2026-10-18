@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.12.0-alpha
+
+Adopts omnist-spec v0.36.0-beta (the pin was v0.35.0-beta). Vectors 765 pass, 0
+fail, 28 skip of 793 (was 703 / 0 / 28 of 731; before any change the adoption
+measured 757 / 8 / 28 of 793); fixtures 19 / 19. OSD-OML stays out of scope
+(the 28 skips). Minor bump: two breaking changes.
+
+- **Breaking: the JSON reader rejects `NaN`, `Infinity` and `-Infinity`**
+  (C-19, DIV-45). They are `parse.codec-syntax`; NaN and Infinity are numbers
+  only where the format spells them (YAML `.nan` `.inf`, TOML and OML `nan`
+  `inf`). Migration: quote the value, or write `null`; a document that relied on
+  the bare tokens could not be written back as JSON anyway (E-6).
+- **Breaking: an XML `number` leaf of any length reads as a number** (D-28,
+  D-29, DIV-42). `read_xml_with_schema` used to leave a `number` leaf whose
+  integer part had more than 4,300 digits a string (so `materialize` reported
+  `materialize.inexact-conversion`); it now reads `+Infinity` / `-Infinity`
+  (underflow as a zero), in linear time, never as an integer-digit error.
+  Migration: expect a float where a string used to come back.
+- **The CLI `--json` payload names a document-level error** (DIV-46). A limit or
+  profile refusal prints its code and Document path in `errors`
+  (`{"path": "$.n", "code": "document.limit.int-digits", ...}`), where it
+  printed `"errors": []`. The `message` is unchanged.
+- **The runner compares NaN as equal** (E-33, DIV-47), and reads OML with
+  `read_oml_with` so a default-limit integer refusal is at its Document path
+  (`$.a`, not `1:4`; DIV-46). The library's `read_oml` is unchanged: it still
+  returns a `ParseError` and so still reports a limit at the text position.
+
 ## 0.11.1-alpha
 
 Bug wave after omnist-spec v0.35.0-beta (the pin does not move: vectors 703 pass,

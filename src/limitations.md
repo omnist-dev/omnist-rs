@@ -1,6 +1,6 @@
 # Limitations & stability
 
-## Alpha status: `0.11.1-alpha`, per this project's versioning rule
+## Alpha status: `0.12.0-alpha`, per this project's versioning rule
 
 The Rust port's first feature-complete milestone (issue #28) plus its own
 conformance-test harness against
@@ -111,7 +111,10 @@ a node once it has a child element, so a million leaf elements are one node;
 its text is never an integer, so `max_int_digits` governs only the
 schema-guided pretyping of `read_xml_with_schema_and_limits`: an `integer`
 leaf over it is `document.limit.int-digits` at the leaf's path (through
-0.11.0-alpha it was `materialize.inexact-conversion`, omnist-rs#204).
+0.11.0-alpha it was `materialize.inexact-conversion`, omnist-rs#204). A
+`number` leaf is exempt however long its integer part (D-28) and reads as an
+infinity past binary64 (D-29); through 0.11.1-alpha a `number` leaf over the
+limit stayed a string (DIV-42).
 
 The alias expansion factor bounds the materialized-to-written value-slot
 ratio of every anchored node, every other mapping and sequence, and the

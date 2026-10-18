@@ -468,9 +468,6 @@ pub fn decode_input(bytes: Vec<u8>) -> Result<String, ParseError> {
     })
 }
 
-/// The spec's code for a D-23 failure (section 8.3.2).
-const INPUT_SIZE: &str = "document.limit.input-size";
-
 /// The spec's code for a D-14 failure (section 8.3.1).
 pub const INVALID_ENCODING: &str = "parse.invalid-encoding";
 
@@ -590,9 +587,14 @@ fn extract_errors(e: &OmnistError) -> Vec<(String, String, String)> {
         OmnistError::Parse(pe) if pe.code == INVALID_ENCODING => {
             vec![(pe.position(), pe.code.clone(), pe.message.clone())]
         }
-        // D-23: the size refusal is likewise one fixed diagnostic, `$`.
-        OmnistError::Document(de) if de.code.as_deref() == Some(INPUT_SIZE) => {
-            vec![(de.path.clone(), INPUT_SIZE.to_string(), de.message.clone())]
+        // E-11, D-23: a document-level failure (a safety limit, a profile
+        // refusal) carries a code and a Document path; report both.
+        OmnistError::Document(de) if de.code.is_some() => {
+            vec![(
+                de.path.clone(),
+                de.code.clone().unwrap_or_default(),
+                de.message.clone(),
+            )]
         }
         _ => vec![],
     }

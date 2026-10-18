@@ -184,19 +184,14 @@ fn xml_pretype_scalar(
             node
         }
         ScalarKind::Number => {
+            // D-28: a `number` is exempt from the integer digit limit however
+            // long its integer part; D-29: past binary64 it reads as an
+            // infinity (underflow as a zero), so the parse never fails.
             if XML_NUM_RE.is_match(val) {
-                let digits = if let Some(stripped) = val.strip_prefix('-') {
-                    stripped
-                } else {
-                    val.as_str()
-                };
-                let int_digits = digits.split(['.', 'e', 'E']).next().unwrap_or(digits);
-                if int_digits.len() <= guard.max() {
-                    let f: f64 = val
-                        .parse()
-                        .expect("XML_NUM_RE guarantees valid float literal");
-                    return RawNode::Leaf(Scalar::Float(f));
-                }
+                let f: f64 = val
+                    .parse()
+                    .expect("XML_NUM_RE guarantees valid float literal");
+                return RawNode::Leaf(Scalar::Float(f));
             }
             node
         }

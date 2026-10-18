@@ -141,7 +141,10 @@ An `integer` leaf with more decimal digits than the D-9 limit
 is refused with `document.limit.int-digits` at the leaf's Document path
 (`$.r.n`, or `$.r.n[1]` when the label repeats, E-10), not left a string for
 `materialize` to reject as `materialize.inexact-conversion` (omnist-rs#204).
-A `number` leaf over the limit still stays a string.
+A `number` leaf is exempt from the limit however long its integer part (D-28):
+past binary64 it reads as `+Infinity`/`-Infinity` (or a zero on underflow, D-29),
+never as a string and never as `materialize.inexact-conversion` (through
+0.11.1-alpha a `number` leaf over the limit stayed a string).
 
 ```rust
 use omnist::formats::xml::read_xml_with_schema;
