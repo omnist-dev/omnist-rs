@@ -214,6 +214,19 @@ fn convert_oml_int_digits_limit_is_a_document_path_error() {
 }
 
 #[test]
+fn convert_oml_int_digits_json_payload_carries_path_and_code() {
+    // DIV-46: a document-level error prints its code and Document path in
+    // `--json`, not an empty `errors` list.
+    let input = fixture("oml_digits_json", &format!("n: {}\n", "9".repeat(4301)));
+    let r = run(&["format", &input, "--json"]);
+    assert_eq!(r.code, 2, "stderr: {}", r.stderr);
+    assert_eq!(
+        only_diagnostic(&r),
+        ("$.n".to_string(), "document.limit.int-digits".to_string())
+    );
+}
+
+#[test]
 fn convert_oml_syntax_error_stays_a_positioned_parse_error() {
     let out = oml_json_error("oml_syntax", "n: 1 1\n");
     assert!(out.contains("\"message\": \"line 1, col 6:"), "{out}");
@@ -302,16 +315,16 @@ fn convert_strict_refuses_a_yaml_nel_adjustment_with_exit_1_and_a_report() {
 // asserted both with and without the flag.
 #[test]
 fn convert_of_nan_fails_unconditionally_exits_2_regardless_of_strict() {
-    let input = fixture("convert_nan_strict_in", r#"{"a": NaN}"#);
+    let input = fixture("convert_nan_strict_in", "a: .nan\n");
     let r = run(&[
-        "convert", &input, "--from", "json", "--to", "json", "--strict",
+        "convert", &input, "--from", "yaml", "--to", "json", "--strict",
     ]);
     assert_eq!(r.code, 2);
     assert!(r.stderr.starts_with("error: "));
     assert!(r.stderr.contains("write.unsupported-value"));
 
-    let input2 = fixture("convert_nan_lenient_in", r#"{"a": NaN}"#);
-    let r2 = run(&["convert", &input2, "--from", "json", "--to", "json"]);
+    let input2 = fixture("convert_nan_lenient_in", "a: .nan\n");
+    let r2 = run(&["convert", &input2, "--from", "yaml", "--to", "json"]);
     assert_eq!(r2.code, 2);
     assert!(r2.stderr.contains("write.unsupported-value"));
 }
@@ -402,21 +415,21 @@ fn check_golden_path_never_writes_default_exit_0() {
 
 #[test]
 fn check_strict_exits_1_when_something_would_be_adjusted() {
-    let input = fixture("check_strict_in", r#"{"a": NaN}"#);
+    let input = fixture("check_strict_in", "a: .nan\n");
     let r = run(&[
-        "check", &input, "--from", "json", "--to", "json", "--strict",
+        "check", &input, "--from", "yaml", "--to", "json", "--strict",
     ]);
     assert_eq!(r.code, 1);
 }
 
 #[test]
 fn check_json_result_format() {
-    let input = fixture("check_json_in", r#"{"a": NaN}"#);
+    let input = fixture("check_json_in", "a: .nan\n");
     let r = run(&[
         "check",
         &input,
         "--from",
-        "json",
+        "yaml",
         "--to",
         "json",
         "--result-format",

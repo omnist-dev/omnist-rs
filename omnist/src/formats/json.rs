@@ -471,18 +471,6 @@ impl<'a> Parser<'a> {
                 self.pos += 4;
                 Ok(Value::Null)
             }
-            Some('N') if self.matches_word("NaN") => {
-                self.pos += 3;
-                Ok(Value::Float(f64::NAN))
-            }
-            Some('I') if self.matches_word("Infinity") => {
-                self.pos += 8;
-                Ok(Value::Float(f64::INFINITY))
-            }
-            Some('-') if self.matches_word("-Infinity") => {
-                self.pos += 9;
-                Ok(Value::Float(f64::NEG_INFINITY))
-            }
             Some(c) if c == '-' || c.is_ascii_digit() => self.parse_number(),
             Some(c) => Err(self.error_at(self.pos, format!("unexpected character {c:?}"))),
         }
@@ -940,22 +928,12 @@ mod tests {
     }
 
     #[test]
-    fn reads_bare_nan_and_infinity_tokens() {
-        // Confirmed live against Python's json.loads (allow_nan=True by
-        // default): NaN/Infinity/-Infinity are accepted on read.
-        let doc = read_json(r#"{"a": NaN, "b": Infinity, "c": -Infinity}"#).unwrap();
-        let root = doc.root();
-        assert!(
-            matches!(root.get_one("a").unwrap().value().unwrap(), Scalar::Float(x) if x.is_nan())
-        );
-        assert_eq!(
-            *root.get_one("b").unwrap().value().unwrap(),
-            Scalar::Float(f64::INFINITY)
-        );
-        assert_eq!(
-            *root.get_one("c").unwrap().value().unwrap(),
-            Scalar::Float(f64::NEG_INFINITY)
-        );
+    fn rejects_bare_nan_and_infinity_tokens() {
+        // Spec C-19: the JSON tokens NaN, Infinity and -Infinity are
+        // parse.codec-syntax, not numbers.
+        for src in [r#"{"a": NaN}"#, r#"{"a": Infinity}"#, r#"{"a": -Infinity}"#] {
+            assert!(read_json(src).is_err(), "{src} must be refused");
+        }
     }
 
     #[test]

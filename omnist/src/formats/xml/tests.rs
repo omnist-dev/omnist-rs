@@ -1319,20 +1319,52 @@ fn test_xml_pretype_number() {
 }
 
 #[test]
-fn test_xml_pretype_digit_cap_oversized_number_stays_string() {
+fn test_xml_pretype_number_is_exempt_from_the_digit_limit() {
+    // D-28/D-29: a `number` leaf is exempt from the integer digit limit and
+    // reads as an infinity past binary64, however long its integer part.
     use crate::formats::int_cap::MAX_INT_DIGITS;
     let schema = crate::osd::parse_schema(
         "record Data { \"big_num\": number } record Root { \"data\": Data } root Root",
     )
     .unwrap();
     let oversized = "9".repeat(MAX_INT_DIGITS + 1);
-    let xml = format!("<data><big_num>{oversized}.5</big_num></data>");
+    for (text, expected) in [
+        (format!("{oversized}.5"), f64::INFINITY),
+        (oversized.clone(), f64::INFINITY),
+        (format!("-{oversized}"), f64::NEG_INFINITY),
+        (format!("{oversized}e-99999"), 0.0),
+    ] {
+        let xml = format!("<data><big_num>{text}</big_num></data>");
+        let doc = read_xml_with_schema(&xml, &schema).unwrap();
+        assert_eq!(
+            doc.to_raw(),
+            edges(vec![(
+                "data",
+                edges(vec![("big_num", leaf(Scalar::Float(expected)))])
+            )]),
+            "{}",
+            &text[..8]
+        );
+    }
+}
+
+#[test]
+fn test_xml_pretype_number_with_a_huge_integer_part_reads_in_linear_time() {
+    // Scale guard: a million-digit `number` leaf must not hit a superlinear
+    // path (the parse is a single f64 conversion, no big-integer step).
+    let schema = crate::osd::parse_schema(
+        "record Data { \"n\": number } record Root { \"data\": Data } root Root",
+    )
+    .unwrap();
+    let xml = format!("<data><n>{}</n></data>", "9".repeat(1_000_000));
+    let started = std::time::Instant::now();
     let doc = read_xml_with_schema(&xml, &schema).unwrap();
+    assert!(started.elapsed() < std::time::Duration::from_secs(10));
     assert_eq!(
         doc.to_raw(),
         edges(vec![(
             "data",
-            edges(vec![("big_num", leaf_str(&format!("{oversized}.5")))])
+            edges(vec![("n", leaf(Scalar::Float(f64::INFINITY)))])
         )])
     );
 }

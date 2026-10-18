@@ -3,8 +3,8 @@
 This port has its own conformance-test harness (`tools/conformance/`)
 against [omnist-spec](https://github.com/omnist-dev/omnist-spec), the
 language-agnostic upstream specification. It vendors omnist-spec as a
-pinned git submodule (`vendor/omnist-spec`, currently commit `237ef00`,
-the `v0.35.0-beta` tag) and
+pinned git submodule (`vendor/omnist-spec`, currently commit `7575727`,
+the `v0.36.0-beta` tag) and
 runs entirely against this crate's own library code -- it does not depend
 on the Python or TypeScript ports' implementations.
 
@@ -17,7 +17,7 @@ reporting rule:
 - **Track 1** (`vendor/omnist-spec/conformance/fixtures/`, directory-per-fixture,
   11 operations): **19 passed, 0 failed, 0 skipped**.
 - **Track 2** (`vendor/omnist-spec/test-suite/`, JSON-vector suite, 14-operation
-  vocabulary): **703 passed, 0 failed, 28 skipped** (of 731 vectors),
+  vocabulary): **765 passed, 0 failed, 28 skipped** (of 793 vectors),
   **diagnostics compared as `(path, code)` sets** (section 8.5.2), not in
   code-agnostic mode. The runner exits non-zero on any failing vector and
   never on skips (E-22); it has no list of tolerated failures.
@@ -37,6 +37,20 @@ All 28 skips are one spec category, E-20 "not yet implemented"; none is an
 E-21 documented divergence. The 6 `document-model/limits` vectors were skips
 through 0.6.1-alpha (304 / 0 / 34); the limits became runtime-configurable in
 0.7.0-alpha and they now run and pass (310 / 0 / 28).
+
+**Adopting v0.36.0-beta (0.12.0-alpha).** The suite grew from 731 to 793
+vectors and the pin moved from v0.35.0-beta. Before any change the runner
+reported 757 pass / 8 fail / 28 skip, and the 8 were: 3 bare JSON `NaN`,
+`Infinity` and `-Infinity` tokens read as numbers (C-19, DIV-45); 3
+`nan-is-a-number` vectors the runner failed because it compared NaN with
+`==` (E-33, DIV-47); and 2 OML 4,301-digit integer vectors reported at the
+text position `1:4` instead of `$.a` (D-28, DIV-46: the runner called
+`read_oml`, whose signature keeps a position; it now calls `read_oml_with`).
+Also fixed, with port tests only: the CLI `--json` payload carries the code and
+Document path of any document-level error (DIV-46), and an XML `number` leaf of
+any length reads as an infinity past binary64 (D-28, D-29, DIV-42). After the
+adoption: 765 / 0 / 28; the 28 skips are the same OSD-OML extension vectors.
+Track 1 stays 19 / 19.
 
 **Bug wave after v0.35.0-beta (0.11.1-alpha).** The pin does not move: the
 suite stays 731 vectors (703 / 0 / 28). The wave fixes what the vectors cannot

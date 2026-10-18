@@ -426,6 +426,25 @@ fn cli_format(format: &str) -> Option<Fmt> {
     }
 }
 
+/// Document equality with E-33's NaN rule: two NaN leaves are equal. Every
+/// other scalar compares as `Scalar`'s own `PartialEq` does.
+fn raw_eq(a: &RawNode, b: &RawNode) -> bool {
+    match (a, b) {
+        (RawNode::Leaf(Scalar::Float(x)), RawNode::Leaf(Scalar::Float(y))) => {
+            (x.is_nan() && y.is_nan()) || x == y
+        }
+        (RawNode::Leaf(x), RawNode::Leaf(y)) => x == y,
+        (RawNode::Edges(xs), RawNode::Edges(ys)) => {
+            xs.len() == ys.len()
+                && xs
+                    .iter()
+                    .zip(ys)
+                    .all(|((lx, nx), (ly, ny))| lx == ly && raw_eq(nx, ny))
+        }
+        _ => false,
+    }
+}
+
 fn run_parse(v: &Json) -> VResult {
     let input = &v["input"];
     let limits = match declared_limits(input) {
@@ -462,7 +481,9 @@ fn run_parse(v: &Json) -> VResult {
                 Doc::from_raw_with(raw.clone(), l)?;
                 Ok(raw)
             }),
-            None => read_oml(&text).map_err(OmnistError::from),
+            // E-11: a safety limit is reported at its Document path, which
+            // only the `_with` reader does; `read_oml` keeps a text position.
+            None => read_oml_with(&text, &Limits::default()),
         },
         (Source::Text(text), "json") => match &limits {
             Some(l) => read_json_with(&text, l),
@@ -511,7 +532,7 @@ fn run_parse(v: &Json) -> VResult {
                 return fail("expected failure, parse succeeded");
             }
             let expected = decode_document(&v["expect"]["document"]);
-            if raw != expected {
+            if !raw_eq(&raw, &expected) {
                 return fail("parsed document does not match expected");
             }
             // A successful read may still report diagnostics (XML's dropped
@@ -1277,6 +1298,32 @@ mod tests {
     }
 
     #[test]
+    fn raw_eq_treats_two_nans_as_equal_and_compares_structure() {
+        let nan = || RawNode::Leaf(Scalar::Float(f64::NAN));
+        assert!(raw_eq(&nan(), &nan()));
+        assert!(!raw_eq(&nan(), &RawNode::Leaf(Scalar::Float(1.0))));
+        assert!(raw_eq(
+            &RawNode::Leaf(Scalar::Float(1.0)),
+            &RawNode::Leaf(Scalar::Float(1.0))
+        ));
+        assert!(!raw_eq(
+            &RawNode::Leaf(Scalar::Int(1.into())),
+            &RawNode::Leaf(Scalar::Float(1.0))
+        ));
+        let one = RawNode::Edges(vec![("a".to_string(), nan())]);
+        assert!(raw_eq(
+            &one,
+            &RawNode::Edges(vec![("a".to_string(), nan())])
+        ));
+        assert!(!raw_eq(
+            &one,
+            &RawNode::Edges(vec![("b".to_string(), nan())])
+        ));
+        assert!(!raw_eq(&one, &RawNode::Edges(vec![])));
+        assert!(!raw_eq(&one, &nan()));
+    }
+
+    #[test]
     fn run_parse_rejects_bytes_hex_on_an_unknown_format() {
         let v = json!({
             "operation": "parse",
@@ -1510,7 +1557,7 @@ mod tests {
     }
 
     #[test]
-    fn vector_count_is_731() {
+    fn vector_count_is_793() {
         // 204 -> 249 via the submodule pin bump v0.9.1-beta -> v0.19.0-beta,
         // 249 -> 273 via v0.19.0-beta -> v0.21.0-beta (14 new bytes_hex D-14
         // vectors, 4 new OSD-15 canonical-output vectors, 5 new OML-26/27
@@ -1524,9 +1571,9 @@ mod tests {
         // v0.26.0-beta (19 new vectors: D-18a carrier, D-22 expanded size and
         // the malformed-merge syntax errors, all in alias-expansion.json, and
         // the rest of the v0.26.0 additions), 331 -> 338 via v0.26.0-beta ->
-        // v0.27.0-beta (7 new empty-merge-sequence vectors in alias-expansion.json), 338 -> 367 via v0.27.0-beta -> v0.33.0-beta (7 repeated-label path, 10 input-size, 7 OML-29, 5 XML-null vectors), 367 -> 522 via v0.33.0-beta -> v0.34.0-beta (the C-12, C-13, D-27, D-28, D-29, E-5 and E-35 vectors), 522 -> 731 via v0.34.0-beta -> v0.35.0-beta (the E-36 label-quoting, E-37 temporal-writing, C-14 YAML-escape, C-15/C-16 XML-character, C-17 YAML-number and OML-30 vectors).
+        // v0.27.0-beta (7 new empty-merge-sequence vectors in alias-expansion.json), 338 -> 367 via v0.27.0-beta -> v0.33.0-beta (7 repeated-label path, 10 input-size, 7 OML-29, 5 XML-null vectors), 367 -> 522 via v0.33.0-beta -> v0.34.0-beta (the C-12, C-13, D-27, D-28, D-29, E-5 and E-35 vectors), 522 -> 731 via v0.34.0-beta -> v0.35.0-beta (the E-36 label-quoting, E-37 temporal-writing, C-14 YAML-escape, C-15/C-16 XML-character, C-17 YAML-number and OML-30 vectors), 731 -> 793 via v0.35.0-beta -> v0.36.0-beta (the D-28/D-29 limits and number-exempt, C-18 XML pretyping and C-19 non-finite vectors).
         let vectors = iter_vectors(&suite_dir());
-        assert_eq!(vectors.len(), 731);
+        assert_eq!(vectors.len(), 793);
     }
 
     /// Full-suite regression guard: runs every real vector through every
@@ -1534,8 +1581,8 @@ mod tests {
     /// `main`/`main_with_dir` is process-entry-point code). The counts are
     /// freshly measured, not computed by hand.
     ///
-    /// Spec v0.35.0-beta, diagnostics compared as (path, code) sets:
-    /// 703 pass, 0 fail, 28 skip of 731.
+    /// Spec v0.36.0-beta, diagnostics compared as (path, code) sets:
+    /// 765 pass, 0 fail, 28 skip of 793.
     ///
     /// - the 28 skips are E-20 "not yet implemented", never a documented
     ///   divergence: the `extensions-osd-oml` vectors (extension not
@@ -1587,13 +1634,17 @@ mod tests {
     /// path vectors (E-36), 19 temporal-writing vectors (E-37), 17 XML
     /// character and character-reference vectors (C-15, C-16), 6 YAML escape
     /// vectors (C-14) and 1 sexagesimal-float vector (C-17). Implementing
-    /// them brings it to (703, 0, 28).
+    /// them brings it to (703, 0, 28). At v0.36.0-beta, before any change, the
+    /// baseline was (757, 8, 28) of 793: 3 bare JSON non-finite tokens (C-19),
+    /// 3 `nan-is-a-number` vectors (E-33, the runner's NaN equality) and 2 OML
+    /// 4,301-digit integers reported at `1:4` (D-28). Implementing them brings
+    /// it to (765, 0, 28).
     #[test]
     fn full_suite_counts_match_the_measured_baseline() {
         let (passed, failed, skipped) = run_all(&suite_dir());
         assert_eq!(
             (passed, failed, skipped),
-            (703, 0, 28),
+            (765, 0, 28),
             "vector pass/fail/skip counts changed -- if this is an intentional fix or a new \
              vector, update the pinned baseline; if not, something regressed"
         );

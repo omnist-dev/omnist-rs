@@ -28,6 +28,13 @@ these floats substitutes `null` and records a `temporal.stringified`-style
 adjustment via `WriteReport`; `strict` mode turns this into an error instead
 of a silent substitution.
 
+## `NaN` and `Infinity` are not JSON on read (C-19)
+
+The bare tokens `NaN`, `Infinity` and `-Infinity` are `parse.codec-syntax`:
+NaN and Infinity are numbers only where the format spells them (YAML `.nan`
+`.inf`; TOML and OML `nan` `inf`). Through 0.11.1-alpha the reader accepted
+them as floats, a document it could not write back as JSON.
+
 ## No native temporal type
 
 JSON has no native `date`/`time`/`datetime` literal, so a genuine
