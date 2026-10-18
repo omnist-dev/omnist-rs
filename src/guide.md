@@ -5,8 +5,7 @@ its own native [**OML**](formats/oml.md), and a [**schema language**](#schemas-o
 (OSD) to validate and compare shapes over it. This is the Rust port of
 [omnist](https://github.com/omnist-dev/omnist); its public types (`Doc`,
 `Schema`, error enums) are not identical to Python's or TypeScript's by
-design -- see the workflow playbook's "architecture freedom" note -- but the
-model and every format's observable behavior are the same.
+design, but the model and every format's observable behavior are the same.
 
 - [The two ideas](#the-two-ideas)
 - [Documents](#documents)
