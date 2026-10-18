@@ -1319,24 +1319,82 @@ fn test_xml_pretype_number() {
 }
 
 #[test]
-fn test_xml_pretype_digit_cap_oversized_literal_stays_string() {
+fn test_xml_pretype_digit_cap_oversized_number_stays_string() {
     use crate::formats::int_cap::MAX_INT_DIGITS;
-    let schema_text = "record Data { \"big_int\": integer, \"big_num\": number } record Root { \"data\": Data } root Root";
-    let schema = crate::osd::parse_schema(schema_text).unwrap();
+    let schema = crate::osd::parse_schema(
+        "record Data { \"big_num\": number } record Root { \"data\": Data } root Root",
+    )
+    .unwrap();
     let oversized = "9".repeat(MAX_INT_DIGITS + 1);
-    let xml =
-        format!("<data><big_int>{oversized}</big_int><big_num>{oversized}.5</big_num></data>");
+    let xml = format!("<data><big_num>{oversized}.5</big_num></data>");
     let doc = read_xml_with_schema(&xml, &schema).unwrap();
     assert_eq!(
         doc.to_raw(),
         edges(vec![(
             "data",
-            edges(vec![
-                ("big_int", leaf_str(&oversized)),
-                ("big_num", leaf_str(&format!("{oversized}.5"))),
-            ])
+            edges(vec![("big_num", leaf_str(&format!("{oversized}.5")))])
         )])
     );
+}
+
+fn int_digits_path(xml: &str, schema: &str) -> String {
+    let schema = crate::osd::parse_schema(schema).unwrap();
+    match read_xml_with_schema(xml, &schema) {
+        Err(OmnistError::Document(e)) => {
+            assert_eq!(e.code.as_deref(), Some("document.limit.int-digits"));
+            e.path
+        }
+        other => panic!("expected document.limit.int-digits, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_xml_pretype_oversized_integer_is_int_digits_at_leaf_path() {
+    use crate::formats::int_cap::MAX_INT_DIGITS;
+    let schema = "record R { \"n\": integer } record Root { \"r\": R } root Root";
+    // The 4,301-digit E-4a worked case (also with a sign).
+    for sign in ["", "-"] {
+        let big = format!("{sign}{}", "9".repeat(MAX_INT_DIGITS + 1));
+        assert_eq!(
+            int_digits_path(&format!("<r><n>{big}</n></r>"), schema),
+            "$.r.n"
+        );
+    }
+    // Exactly at the limit is still an integer.
+    let ok = "9".repeat(MAX_INT_DIGITS);
+    let s = crate::osd::parse_schema(schema).unwrap();
+    assert!(read_xml_with_schema(&format!("<r><n>{ok}</n></r>"), &s).is_ok());
+}
+
+#[test]
+fn test_xml_pretype_oversized_integer_repeated_label_index() {
+    use crate::formats::int_cap::MAX_INT_DIGITS;
+    let schema = "record R { \"n\": integer } record Root { \"r\": R } root Root";
+    let big = "9".repeat(MAX_INT_DIGITS + 1);
+    assert_eq!(
+        int_digits_path(&format!("<r><n>1</n><n>{big}</n></r>"), schema),
+        "$.r.n[1]"
+    );
+    assert_eq!(
+        int_digits_path(&format!("<r><n>{big}</n><n>1</n></r>"), schema),
+        "$.r.n[0]"
+    );
+}
+
+#[test]
+fn test_xml_pretype_integer_limit_follows_explicit_limits() {
+    let schema =
+        crate::osd::parse_schema("record R { \"n\": integer } record Root { \"r\": R } root Root")
+            .unwrap();
+    let limits = Limits::default().with_max_int_digits(5);
+    assert!(read_xml_with_schema_and_limits("<r><n>12345</n></r>", &schema, &limits).is_ok());
+    match read_xml_with_schema_and_limits("<r><n>123456</n></r>", &schema, &limits) {
+        Err(OmnistError::Document(e)) => {
+            assert_eq!(e.code.as_deref(), Some("document.limit.int-digits"));
+            assert_eq!(e.path, "$.r.n");
+        }
+        other => panic!("expected int-digits, got {other:?}"),
+    }
 }
 
 #[test]
@@ -1456,6 +1514,7 @@ fn test_xml_pretype_whitebox_non_string_and_non_edges() {
         leaf_node.clone(),
         &schema,
         &crate::schema::FieldType::Scalar(crate::schema::INTEGER),
+        &mut crate::limits::IntGuard::new(4300),
     );
     assert_eq!(pretyped_leaf, leaf_node);
 
@@ -1464,6 +1523,7 @@ fn test_xml_pretype_whitebox_non_string_and_non_edges() {
         leaf_node.clone(),
         &schema,
         &crate::schema::FieldType::Ref(schema.root().clone()),
+        &mut crate::limits::IntGuard::new(4300),
     );
     assert_eq!(pretyped_rec_on_leaf, leaf_node);
 }

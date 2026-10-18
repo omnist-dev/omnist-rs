@@ -424,6 +424,14 @@ pub(crate) fn int_exceeds(i: &BigInt, max: usize) -> bool {
     if upper.saturating_add(1) <= max {
         return false;
     }
+    // digits(n) >= floor((bits - 1) * log10(2)) + 1, and 30102/100000 < log10(2):
+    // a number whose lower bound is already over `max` is over it, and is not
+    // rendered (rendering a multi-megabit integer in decimal is superlinear).
+    let lower = usize::try_from(i.bits().saturating_sub(1).saturating_mul(30_102) / 100_000)
+        .unwrap_or(usize::MAX);
+    if lower.saturating_add(1) > max {
+        return true;
+    }
     i.magnitude().to_str_radix(10).len() > max
 }
 
@@ -483,5 +491,30 @@ impl IntGuard {
             return Err(resolved.int_digits_error("$"));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod int_exceeds_tests {
+    use super::*;
+
+    /// The bit-length bounds agree with the rendered digit count at every
+    /// size around the default cap, for powers of two and their neighbours.
+    #[test]
+    fn int_exceeds_matches_the_rendered_digit_count() {
+        let max = DEFAULT_MAX_INT_DIGITS as usize;
+        for bits in 14_000u32..14_400 {
+            for delta in [-1i32, 0, 1] {
+                let n = (BigInt::from(1u8) << bits) + delta;
+                assert_eq!(
+                    int_exceeds(&n, max),
+                    n.magnitude().to_str_radix(10).len() > max,
+                    "bits {bits} delta {delta}"
+                );
+            }
+        }
+        assert!(!int_exceeds(&BigInt::from(0u8), max));
+        assert!(!int_exceeds(&BigInt::from(10u8).pow(4299), max));
+        assert!(int_exceeds(&BigInt::from(10u8).pow(4300), max));
     }
 }

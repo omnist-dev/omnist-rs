@@ -1,6 +1,6 @@
 # Limitations & stability
 
-## Alpha status: `0.11.0-alpha`, per this project's versioning rule
+## Alpha status: `0.11.1-alpha`, per this project's versioning rule
 
 The Rust port's first feature-complete milestone (issue #28) plus its own
 conformance-test harness against
@@ -108,7 +108,10 @@ alike) and holds every integer in 64 bits, so a larger `max_depth` or a
 header deeper than 80 levels panicked the reader, omnist-rs#197, and the other
 spellings were `parse.codec-syntax`). The XML reader counts an element as
 a node once it has a child element, so a million leaf elements are one node;
-its text is never an integer, so `max_int_digits` does not touch it.
+its text is never an integer, so `max_int_digits` governs only the
+schema-guided pretyping of `read_xml_with_schema_and_limits`: an `integer`
+leaf over it is `document.limit.int-digits` at the leaf's path (through
+0.11.0-alpha it was `materialize.inexact-conversion`, omnist-rs#204).
 
 The alias expansion factor bounds the materialized-to-written value-slot
 ratio of every anchored node, every other mapping and sequence, and the

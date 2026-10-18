@@ -35,6 +35,42 @@ use crate::report::WriteReport;
 /// selects the date-time shape; a `date` is passed through [`Cow::Borrowed`]
 /// by the callers and never reaches this function.
 pub(crate) fn temporal_text(s: &str, datetime: bool) -> Cow<'_, str> {
+    trim_exact_fraction(spell_temporal(s, datetime))
+}
+
+/// The Document model holds a fractional second of at most six digits (the
+/// OML grammar's `1*6DIGIT`). Digits beyond the sixth are insignificant when
+/// they are all zeros: they are dropped, the value is unchanged.
+fn trim_exact_fraction(text: Cow<'_, str>) -> Cow<'_, str> {
+    let Some(dot) = text.find('.') else {
+        return text;
+    };
+    let digits = text[dot + 1..]
+        .bytes()
+        .take_while(u8::is_ascii_digit)
+        .count();
+    if digits <= 6 || fraction_inexact(&text) {
+        return text;
+    }
+    let mut out = text.into_owned();
+    out.replace_range(dot + 7..dot + 1 + digits, "");
+    Cow::Owned(out)
+}
+
+/// Whether a temporal's fractional second has a non-zero digit beyond the
+/// sixth: such a value cannot be written as a six-digit literal without
+/// altering it, so a writer stringifies it with
+/// `format.temporal-stringified` (E-37 rule 4) instead.
+pub(crate) fn fraction_inexact(s: &str) -> bool {
+    let Some(dot) = s.find('.') else {
+        return false;
+    };
+    let digits: &str = &s[dot + 1..];
+    let n = digits.bytes().take_while(u8::is_ascii_digit).count();
+    n > 6 && digits.as_bytes()[6..n].iter().any(|&b| b != b'0')
+}
+
+fn spell_temporal(s: &str, datetime: bool) -> Cow<'_, str> {
     let bytes = s.as_bytes();
     let start = if datetime { 11 } else { 0 };
     let clock_ok = bytes.len() >= start + 5

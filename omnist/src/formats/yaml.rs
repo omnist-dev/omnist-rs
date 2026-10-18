@@ -1349,6 +1349,13 @@ fn normalize_timestamp(text: &str) -> Result<Option<String>, ParseError> {
     let mut out = format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}");
     if let Some(frac) = caps.name("fraction") {
         let mut digits = frac.as_str().to_string();
+        // The Document model holds at most six fractional digits; a
+        // non-zero digit beyond them cannot be kept, so it fails rather
+        // than being truncated (fail, don't invent). Trailing zeros are
+        // insignificant.
+        if digits.len() > 6 && digits[6..].bytes().any(|b| b != b'0') {
+            return bad("fractional second (more than six digits)");
+        }
         while digits.len() < 6 {
             digits.push('0');
         }
@@ -1446,6 +1453,16 @@ fn check_yaml_grouped(grouped: &Value) -> WriteReport {
         }
         // E-37 rule 4: YAML 1.1 has no time-of-day type, so every `time` is
         // written as a double-quoted string.
+        crate::formats::Visited::Node {
+            value: Value::Datetime(s),
+        } if crate::formats::fraction_inexact(s) => {
+            rep.add(
+                path,
+                "format.temporal-stringified",
+                "fractional second has more than six digits; wrote as a quoted ISO-8601 string",
+                Severity::Warning,
+            );
+        }
         crate::formats::Visited::Node {
             value: Value::Time(_),
         } => {
@@ -1592,7 +1609,14 @@ fn write_scalar_value(v: &Value, out: &mut String) {
         // as the identical kind (`normalize_timestamp` produces exactly
         // this date-or-datetime shape, see `resolve_plain_scalar`).
         Value::Date(s) => out.push_str(s),
-        Value::Datetime(s) => out.push_str(&super::temporal_text(s, true)),
+        Value::Datetime(s) => {
+            let text = super::temporal_text(s, true);
+            if super::fraction_inexact(&text) {
+                write_quoted(&text, &YAML_ESCAPES, out);
+            } else {
+                out.push_str(&text);
+            }
+        }
         // Unlike `Date`/`Datetime`, YAML's implicit resolver has no bare
         // standalone-time form at all (`normalize_timestamp`'s grammar
         // always requires a date) -- a genuine `Time` value (e.g. from a
@@ -3746,5 +3770,24 @@ mod v035_tests {
     #[test]
     fn a_string_that_reads_as_a_sexagesimal_float_is_written_quoted() {
         assert_eq!(written(Value::Str("1:30.5".to_string())), "a: \"1:30.5\"");
+    }
+
+    #[test]
+    fn a_fraction_past_six_digits_fails_the_read_and_is_quoted_on_write() {
+        let err = read_yaml("t: 2024-01-15T12:00:00.1234567+01:00\n")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("fractional second"), "{err}");
+        // Zeros past the sixth digit are insignificant.
+        assert!(read_yaml("t: 2024-01-15T12:00:00.1234560\n").is_ok());
+        let doc = one(
+            "t",
+            Value::Datetime("2024-01-15T12:00:00.1234567+01:00".to_string()),
+        );
+        let mut report = WriteReport::new();
+        let text = write_yaml(&doc, false, Some(&mut report)).unwrap();
+        assert_eq!(text, "t: \"2024-01-15T12:00:00.1234567+01:00\"");
+        assert_eq!(report.adjustments()[0].code, "format.temporal-stringified");
+        assert_eq!(check_yaml(&doc).adjustments().len(), 1);
     }
 }

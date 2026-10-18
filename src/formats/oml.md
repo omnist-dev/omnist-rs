@@ -56,7 +56,10 @@ generic string.
 **`time`/`datetime` literal text is canonicalized on read** (issue #90,
 fixed while building the [conformance harness](../conformance.md) against
 omnist-spec): a missing `:SS` is filled to `:00`, and an under-padded
-fractional-second component is zero-padded to 6 digits. `date` literals
+fractional-second component is zero-padded to 6 digits. A `time` or
+`datetime` built through the API with a non-zero digit past the sixth is
+written as a quoted string and reported as `format.temporal-stringified`
+(the literal's `1*6DIGIT` cannot spell it); zeros past the sixth are dropped. `date` literals
 have no optional grammar components and pass through unchanged. This
 means a bare `12:00` reads as `Scalar::Time("12:00:00")`, **not**
 `"12:00"` -- see the corrected note in [Python

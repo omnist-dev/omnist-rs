@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.11.1-alpha
+
+Bug wave after omnist-spec v0.35.0-beta (the pin does not move: vectors 703 pass,
+0 fail, 28 skip of 731; fixtures 19 / 19). Patch bump, one behaviour change a
+caller can observe in each of the first two items.
+
+- **An XML integer pretyped over the digit limit is `document.limit.int-digits`**
+  (omnist-rs#204, E-4a). `read_xml_with_schema` used to leave an `integer` leaf
+  of more than 4,300 decimal digits a string, so `materialize` reported
+  `materialize.inexact-conversion`; the read now fails with
+  `document.limit.int-digits` at the leaf's Document path (`$.r.n`, or
+  `$.r.n[1]` when the label repeats), in linear time, and
+  `read_xml_with_schema_and_limits` honours `Limits::max_int_digits`.
+  Migration: match on the new code. A `number` leaf over the limit is unchanged.
+- **A TOML or YAML fraction past six digits fails instead of truncating.** The
+  Document model holds at most six fractional digits; `00:32:00.9999999` and
+  `2024-01-15T12:00:00.000000001+01:00` were silently cut to six (or to none).
+  A non-zero digit beyond the sixth is now a `parse.codec-syntax` error naming
+  the literal; zeros beyond it are dropped as before. Offsets were already kept.
+  Migration: shorten the literal or read it as a string.
+- **No writer emits a fraction its reader rejects.** A `time` or `datetime`
+  built through the API with a non-zero digit past the sixth was written as an
+  OML literal (`1*6DIGIT`) the OML reader rejects, and as a native TOML or YAML
+  literal the readers now refuse. OML, TOML and YAML write it as a quoted string
+  and report `format.temporal-stringified` (`check_oml` reports it too); zeros
+  past the sixth are dropped. JSON and XML already wrote strings.
+- **A multi-megabyte hex, octal or binary integer is refused in linear time.**
+  The digit limit was decided by rendering the integer in decimal (superlinear):
+  a 4 MB TOML or YAML hex literal took about 9 s, an 8 MB one about 40 s. The
+  bit length now decides it (4 MB: about 70 ms). The error is unchanged.
+- Checked and clean: an 8 MB XML attribute (50 ms) and a 100,000-deep XML
+  document (`document.limit.depth`, 2 ms), linear from 1 to 8 MB and 1k to 100k;
+  deep JSON, YAML, TOML and OML, huge labels and strings, NaN and Infinity, huge
+  integers in every format, all coded diagnostics and no panic.
+
 ## 0.11.0-alpha
 
 Adopts omnist-spec v0.35.0-beta (the pin was v0.34.0-beta). Vectors 703 pass, 0

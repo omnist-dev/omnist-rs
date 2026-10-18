@@ -135,8 +135,21 @@ pub(super) fn write_scalar(v: &Scalar) -> String {
         // Bare, no quotes -- by construction (see `Scalar::Date`'s own
         // doc comment) always already a validated, canonical spelling.
         Scalar::Date(s) => s.clone(),
-        Scalar::Time(s) => crate::formats::temporal_text(s, false).into_owned(),
-        Scalar::Datetime(s) => crate::formats::temporal_text(s, true).into_owned(),
+        Scalar::Time(s) => temporal_literal(s, false),
+        Scalar::Datetime(s) => temporal_literal(s, true),
+    }
+}
+
+/// A bare temporal literal, or, when its fraction has a non-zero digit past
+/// the sixth (the grammar's `1*6DIGIT` cannot spell it, and the reader would
+/// reject it), the ISO-8601 text as a quoted string (E-37 rule 4,
+/// `format.temporal-stringified`, reported by `check_oml`).
+fn temporal_literal(s: &str, datetime: bool) -> String {
+    let text = crate::formats::temporal_text(s, datetime);
+    if crate::formats::fraction_inexact(&text) {
+        write_string(&text)
+    } else {
+        text.into_owned()
     }
 }
 
