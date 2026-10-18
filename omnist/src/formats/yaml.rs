@@ -3771,4 +3771,23 @@ mod v035_tests {
     fn a_string_that_reads_as_a_sexagesimal_float_is_written_quoted() {
         assert_eq!(written(Value::Str("1:30.5".to_string())), "a: \"1:30.5\"");
     }
+
+    #[test]
+    fn a_fraction_past_six_digits_fails_the_read_and_is_quoted_on_write() {
+        let err = read_yaml("t: 2024-01-15T12:00:00.1234567+01:00\n")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("fractional second"), "{err}");
+        // Zeros past the sixth digit are insignificant.
+        assert!(read_yaml("t: 2024-01-15T12:00:00.1234560\n").is_ok());
+        let doc = one(
+            "t",
+            Value::Datetime("2024-01-15T12:00:00.1234567+01:00".to_string()),
+        );
+        let mut report = WriteReport::new();
+        let text = write_yaml(&doc, false, Some(&mut report)).unwrap();
+        assert_eq!(text, "t: \"2024-01-15T12:00:00.1234567+01:00\"");
+        assert_eq!(report.adjustments()[0].code, "format.temporal-stringified");
+        assert_eq!(check_yaml(&doc).adjustments().len(), 1);
+    }
 }

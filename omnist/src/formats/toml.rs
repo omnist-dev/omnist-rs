@@ -1082,6 +1082,50 @@ mod tests {
     }
 
     #[test]
+    fn an_inexact_fraction_is_written_quoted_and_reported() {
+        for (v, text_in) in [
+            (
+                Value::Time("07:32:00.1234567".to_string()),
+                "07:32:00.1234567",
+            ),
+            (
+                Value::Datetime("1979-05-27T07:32:00.1234567+01:00".to_string()),
+                "1979-05-27T07:32:00.1234567+01:00",
+            ),
+        ] {
+            let doc = doc_of(obj(vec![("t", v)]));
+            let mut report = WriteReport::new();
+            let text = write_toml(&doc, false, Some(&mut report)).unwrap();
+            assert_eq!(text, format!("t = \"{text_in}\"\n"));
+            assert_eq!(report.adjustments().len(), 1);
+            assert_eq!(report.adjustments()[0].code, "format.temporal-stringified");
+            assert_eq!(check_toml(&doc).adjustments().len(), 1);
+            assert!(read_toml(&text).is_ok());
+        }
+        // Zeros past the sixth digit are dropped, the literal stays native.
+        let doc = doc_of(obj(vec![(
+            "t",
+            Value::Time("07:32:00.1234560".to_string()),
+        )]));
+        assert_eq!(
+            write_toml(&doc, false, None).unwrap(),
+            "t = 07:32:00.123456\n"
+        );
+    }
+
+    #[test]
+    fn an_all_zero_fraction_reads_as_no_fraction() {
+        for text in ["t = 07:32:00.000\n", "t = 07:32:00.0000000\n"] {
+            let doc = read_toml(text).unwrap();
+            assert_eq!(
+                *doc.root().get_one("t").unwrap().value().unwrap(),
+                Scalar::Time("07:32:00".to_string()),
+                "{text:?}"
+            );
+        }
+    }
+
+    #[test]
     fn zeros_beyond_microseconds_are_insignificant() {
         let doc = read_toml("t = 00:32:00.9999990\n").unwrap();
         assert_eq!(
